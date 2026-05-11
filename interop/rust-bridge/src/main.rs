@@ -12,6 +12,7 @@ use std::env;
 use std::io::{self, Read, Write};
 use std::process;
 
+use fips_core::bloom::BloomFilter;
 use fips_core::noise::HandshakeState;
 use fips_identity::Identity;
 use secp256k1::SecretKey;
@@ -150,19 +151,56 @@ fn run_xk(static_sk_hex: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// `bloom <numBits> <hashCount> <hex-key>...`: build a BloomFilter with the
+/// given parameters, insert each key, and print the resulting bytes as hex
+/// on a single stdout line (no framing).
+fn run_bloom(args: &[String]) -> io::Result<()> {
+    if args.len() < 2 {
+        return Err(io::Error::other("usage: bloom <numBits> <hashCount> [key-hex ...]"));
+    }
+    let num_bits: usize = args[0]
+        .parse()
+        .map_err(|e| io::Error::other(format!("bad numBits: {e}")))?;
+    let hash_count: u8 = args[1]
+        .parse()
+        .map_err(|e| io::Error::other(format!("bad hashCount: {e}")))?;
+    let mut f = BloomFilter::with_params(num_bits, hash_count)
+        .map_err(|e| io::Error::other(format!("bloom init: {e:?}")))?;
+    for key in &args[2..] {
+        let bytes =
+            hex::decode(key).map_err(|e| io::Error::other(format!("bad key hex: {e}")))?;
+        f.insert_bytes(&bytes);
+    }
+    println!("{}", hex::encode(f.as_bytes()));
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
+    if args.len() < 2 {
         eprintln!("usage: fips-rust-bridge <ik|xk> <responder-sk-hex>");
+        eprintln!("       fips-rust-bridge bloom <numBits> <hashCount> [key-hex ...]");
         process::exit(2);
     }
     let mode = args[1].as_str();
-    let sk = args[2].as_str();
     let res = match mode {
-        "ik" => run_ik(sk),
-        "xk" => run_xk(sk),
+        "ik" => {
+            if args.len() != 3 {
+                eprintln!("usage: fips-rust-bridge ik <responder-sk-hex>");
+                process::exit(2);
+            }
+            run_ik(&args[2])
+        }
+        "xk" => {
+            if args.len() != 3 {
+                eprintln!("usage: fips-rust-bridge xk <responder-sk-hex>");
+                process::exit(2);
+            }
+            run_xk(&args[2])
+        }
+        "bloom" => run_bloom(&args[2..]),
         _ => {
-            eprintln!("unknown mode {mode}; want 'ik' or 'xk'");
+            eprintln!("unknown mode {mode}; want 'ik' | 'xk' | 'bloom'");
             process::exit(2);
         }
     };

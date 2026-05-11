@@ -61,6 +61,14 @@ export {
 } from "./crypto/index.js";
 
 export {
+  BloomError,
+  BloomFilter,
+  DEFAULT_FILTER_SIZE_BITS,
+  DEFAULT_HASH_COUNT,
+  SIZE_CLASS_BYTES,
+} from "./bloom/index.js";
+
+export {
   CipherState,
   NoiseHandshake,
   SymmetricState,
