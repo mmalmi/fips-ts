@@ -35,6 +35,30 @@ describe("NodeAddr derivation (16-byte truncated SHA-256 of x-only pubkey)", () 
     expect(() => deriveNodeAddr(bad)).toThrow();
   });
 
+  it("test_node_addr_from_slice: 16 bytes accepted; wrong length rejected", async () => {
+    const { nodeAddrFromSlice } = await import("../src/index.js");
+    const addr = nodeAddrFromSlice(new Uint8Array(NODE_ADDR_LENGTH));
+    expect(addr.length).toBe(NODE_ADDR_LENGTH);
+    expect(() => nodeAddrFromSlice(new Uint8Array(8))).toThrow();
+    expect(() => nodeAddrFromSlice(new Uint8Array(20))).toThrow();
+  });
+
+  it("test_node_addr_ordering: NodeAddrs are comparable lexicographically", async () => {
+    const { compareNodeAddr, generateIdentity } = await import("../src/index.js");
+    const id1 = await generateIdentity();
+    const id2 = await generateIdentity();
+    const c = compareNodeAddr(id1.nodeAddr, id2.nodeAddr);
+    expect([-1, 0, 1]).toContain(c);
+    // A NodeAddr compares equal to itself.
+    expect(compareNodeAddr(id1.nodeAddr, id1.nodeAddr)).toBe(0);
+    // Mirror Rust's Ord: smaller-byte-first beats larger-byte-first.
+    const lo = new Uint8Array(16);
+    const hi = new Uint8Array(16);
+    hi[0] = 1;
+    expect(compareNodeAddr(lo, hi)).toBe(-1);
+    expect(compareNodeAddr(hi, lo)).toBe(1);
+  });
+
   it("vector: known x-only key derives expected nodeAddr", () => {
     // Test vector: x = sha256("test"); use as if it were an x-coord (this is
     // just a fixed 32-byte string for codec validation, not a real point).

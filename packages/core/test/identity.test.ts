@@ -72,4 +72,31 @@ describe("Identity (ported from fips-identity::tests)", () => {
     expect(nsec.startsWith("nsec1")).toBe(true);
     expect(toHex(decodeNsec(nsec))).toBe(toHex(secret));
   });
+
+  it("test_decode_npub_invalid_checksum: tampered bech32 character is rejected", async () => {
+    const id = await identityFromSecretKey(new Uint8Array(32).fill(0x77));
+    const valid = encodeNpub(id.xOnlyPubkey);
+    // Flip a single character in the data section (away from the 6-char
+    // checksum tail) so the checksum no longer matches.
+    const idx = 10;
+    const orig = valid[idx];
+    const sub = orig === "a" ? "q" : "a";
+    const flipped = valid.slice(0, idx) + sub + valid.slice(idx + 1);
+    expect(flipped).not.toBe(valid);
+    expect(() => decodeNpub(flipped)).toThrow();
+  });
+
+  it("test_identity_from_secret_bytes: same secret bytes produce the same NodeAddr", async () => {
+    const secret = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) secret[i] = i + 1;
+    const id1 = await identityFromSecretKey(secret);
+    const id2 = await identityFromSecretKey(secret);
+    expect(toHex(id1.nodeAddr)).toBe(toHex(id2.nodeAddr));
+    expect(toHex(id1.publicKey)).toBe(toHex(id2.publicKey));
+  });
+
+  it("identityFromSecretKey rejects wrong-length secret bytes", async () => {
+    await expect(identityFromSecretKey(new Uint8Array(31))).rejects.toThrow();
+    await expect(identityFromSecretKey(new Uint8Array(33))).rejects.toThrow();
+  });
 });

@@ -50,3 +50,30 @@ export function nodeAddrFromHex(hex: string): NodeAddr {
   }
   return b;
 }
+
+/**
+ * Construct a NodeAddr from a raw 16-byte slice (mirrors Rust
+ * NodeAddr::from_slice). Throws on wrong length.
+ */
+export function nodeAddrFromSlice(slice: Uint8Array): NodeAddr {
+  if (slice.length !== NODE_ADDR_LENGTH) {
+    throw new Error(`NodeAddr slice must be ${NODE_ADDR_LENGTH} bytes, got ${slice.length}`);
+  }
+  return new Uint8Array(slice);
+}
+
+/**
+ * Lexicographic comparison of two NodeAddrs. Returns -1, 0, or 1 — matches
+ * Rust's `Ord` impl (NodeAddrs are byte arrays). Used by routing tables and
+ * root-election tiebreakers.
+ */
+export function compareNodeAddr(a: NodeAddr, b: NodeAddr): -1 | 0 | 1 {
+  if (a.length !== NODE_ADDR_LENGTH || b.length !== NODE_ADDR_LENGTH) {
+    throw new Error("NodeAddr must be 16 bytes");
+  }
+  for (let i = 0; i < NODE_ADDR_LENGTH; i++) {
+    if (a[i] < b[i]) return -1;
+    if (a[i] > b[i]) return 1;
+  }
+  return 0;
+}

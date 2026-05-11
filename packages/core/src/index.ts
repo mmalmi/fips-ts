@@ -11,8 +11,10 @@ export {
   COMPRESSED_PUBKEY_LENGTH,
   NODE_ADDR_LENGTH,
   X_ONLY_PUBKEY_LENGTH,
+  compareNodeAddr,
   deriveNodeAddr,
   nodeAddrFromHex,
+  nodeAddrFromSlice,
   nodeAddrToHex,
   type NodeAddr,
 } from "./nodeaddr/index.js";
