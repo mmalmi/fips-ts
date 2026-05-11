@@ -14,6 +14,7 @@ use std::process;
 
 use fips_core::bloom::BloomFilter;
 use fips_core::noise::HandshakeState;
+use fips_core::protocol::FilterAnnounce;
 use fips_identity::Identity;
 use secp256k1::SecretKey;
 
@@ -175,6 +176,30 @@ fn run_bloom(args: &[String]) -> io::Result<()> {
     Ok(())
 }
 
+/// `filter-announce <sequence> [key-hex ...]`: build a v1 FilterAnnounce
+/// (8192-bit / 5-hash filter, sequence as u64) and print the full encoded
+/// wire bytes as hex on stdout.
+fn run_filter_announce(args: &[String]) -> io::Result<()> {
+    if args.is_empty() {
+        return Err(io::Error::other("usage: filter-announce <sequence> [key-hex ...]"));
+    }
+    let sequence: u64 = args[0]
+        .parse()
+        .map_err(|e| io::Error::other(format!("bad sequence: {e}")))?;
+    let mut f = BloomFilter::new();
+    for key in &args[1..] {
+        let bytes =
+            hex::decode(key).map_err(|e| io::Error::other(format!("bad key hex: {e}")))?;
+        f.insert_bytes(&bytes);
+    }
+    let fa = FilterAnnounce::new(f, sequence);
+    let encoded = fa
+        .encode()
+        .map_err(|e| io::Error::other(format!("encode: {e:?}")))?;
+    println!("{}", hex::encode(&encoded));
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -199,8 +224,9 @@ fn main() {
             run_xk(&args[2])
         }
         "bloom" => run_bloom(&args[2..]),
+        "filter-announce" => run_filter_announce(&args[2..]),
         _ => {
-            eprintln!("unknown mode {mode}; want 'ik' | 'xk' | 'bloom'");
+            eprintln!("unknown mode {mode}; want 'ik' | 'xk' | 'bloom' | 'filter-announce'");
             process::exit(2);
         }
     };

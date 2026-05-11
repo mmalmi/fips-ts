@@ -69,6 +69,30 @@ export {
 } from "./bloom/index.js";
 
 export {
+  DisconnectReason,
+  FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE,
+  HandshakeMessageType,
+  LinkMessageType,
+  SESSION_DATAGRAM_HEADER_SIZE,
+  V1_SIZE_CLASS,
+  buildFilterAnnounce,
+  decodeDisconnect,
+  decodeFilterAnnounce,
+  decodeSessionDatagram,
+  decrementTtl,
+  disconnectReasonFromByte,
+  encodeDisconnect,
+  encodeFilterAnnounce,
+  encodeSessionDatagram,
+  handshakeMessageTypeFromByte,
+  isHandshakeMessageType,
+  linkMessageTypeFromByte,
+  type Disconnect,
+  type FilterAnnounce,
+  type SessionDatagram,
+} from "./protocol/index.js";
+
+export {
   CipherState,
   NoiseHandshake,
   SymmetricState,
