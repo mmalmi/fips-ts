@@ -1,84 +1,58 @@
 /**
- * Encryption envelope for FIPS signaling content.
+ * NIP-44 v2 wrapper for FIPS WebRTC signaling content.
  *
- * The format chosen here is binary-safe and conveys: (1) the sender's
- * ephemeral perception of the recipient, (2) the ciphertext, (3) the AEAD
- * tag, (4) a fresh nonce.
+ * NIP-44 v2 (https://github.com/nostr-protocol/nips/blob/master/44.md):
+ *   conversation_key = HKDF-SHA256(shared_x, salt="nip44-v2", info=null)[..32]
+ *   payload          = base64(0x02 || nonce(32) || ciphertext || hmac(32))
+ *   cipher           = ChaCha20 (no Poly), MAC = HMAC-SHA256 over nonce||ct
  *
- *   base64( nonce(12) || ciphertext_and_tag )
+ * We use `nostr-tools/nip44` for the implementation, which matches the
+ * reference vectors. The conversation key is derived once per (us, peer) and
+ * cached for the lifetime of the transport.
  *
- * Key derivation: HKDF-SHA256 over secp256k1 ECDH(x-only) with a fixed info
- * string "fips/signaling/v1" and zero salt. Recipient identity is implied by
- * the outer event `["p", recipient_xonly_hex]` tag.
- *
- * This is not strictly NIP-44 (NIP-44 uses HMAC + padding). v2 task: swap in
- * a NIP-44 v2 implementation to interop with general Nostr clients.
+ * The Nostr `pubkey` argument is the 32-byte x-only hex (not the 33-byte
+ * compressed key FIPS uses internally).
  */
 
-import { chacha20poly1305 } from "@noble/ciphers/chacha";
-import { randomBytes } from "@noble/hashes/utils";
+import { v2 as nip44v2 } from "nostr-tools/nip44";
 
-import { concatBytes, ecdh, fromHex, hkdfDerive, toHex, type FipsIdentity } from "@fips/core";
+import { type FipsIdentity } from "@fips/core";
 
-const INFO = new TextEncoder().encode("fips/signaling/v1");
+const conversationKeyCache = new WeakMap<FipsIdentity, Map<string, Uint8Array>>();
 
-function deriveSymKey(
+function getConversationKey(
   identity: FipsIdentity,
-  remoteXOnlyPubkeyHex: string,
+  peerXOnlyHex: string,
 ): Uint8Array {
-  if (remoteXOnlyPubkeyHex.length !== 64) {
-    throw new Error("remote pubkey must be 32-byte x-only hex");
+  let cache = conversationKeyCache.get(identity);
+  if (!cache) {
+    cache = new Map();
+    conversationKeyCache.set(identity, cache);
   }
-  // Build a compressed 0x02|x pubkey to feed ECDH (we lose the parity bit
-  // since x-only is what Nostr uses; both endpoints reconstruct the same
-  // x-coord, which is what ECDH compresses to anyway).
-  const remoteCompressed = concatBytes(new Uint8Array([0x02]), fromHex(remoteXOnlyPubkeyHex));
-  const shared = ecdh(identity.secretKey, remoteCompressed);
-  return hkdfDerive(shared, new Uint8Array(0), INFO, 32);
+  const cached = cache.get(peerXOnlyHex);
+  if (cached) return cached;
+  if (peerXOnlyHex.length !== 64) {
+    throw new Error("NIP-44 peer pubkey must be 32-byte x-only hex");
+  }
+  const ck = nip44v2.utils.getConversationKey(identity.secretKey, peerXOnlyHex);
+  cache.set(peerXOnlyHex, ck);
+  return ck;
 }
 
 export function encryptSignalContent(
   identity: FipsIdentity,
-  recipientXOnlyPubkeyHex: string,
+  recipientXOnlyHex: string,
   plaintext: string,
 ): string {
-  const key = deriveSymKey(identity, recipientXOnlyPubkeyHex);
-  const nonce = randomBytes(12);
-  const ct = chacha20poly1305(key, nonce).encrypt(new TextEncoder().encode(plaintext));
-  return base64Encode(concatBytes(nonce, ct));
+  const ck = getConversationKey(identity, recipientXOnlyHex);
+  return nip44v2.encrypt(plaintext, ck);
 }
 
 export function decryptSignalContent(
   identity: FipsIdentity,
-  senderXOnlyPubkeyHex: string,
+  senderXOnlyHex: string,
   content: string,
 ): string {
-  const key = deriveSymKey(identity, senderXOnlyPubkeyHex);
-  const decoded = base64Decode(content);
-  if (decoded.length < 12 + 16) throw new Error("ciphertext too short");
-  const nonce = decoded.slice(0, 12);
-  const ct = decoded.slice(12);
-  const plaintext = chacha20poly1305(key, nonce).decrypt(ct);
-  return new TextDecoder().decode(plaintext);
+  const ck = getConversationKey(identity, senderXOnlyHex);
+  return nip44v2.decrypt(content, ck);
 }
-
-function base64Encode(b: Uint8Array): string {
-  if (typeof btoa === "function") {
-    let s = "";
-    for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
-    return btoa(s);
-  }
-  return Buffer.from(b).toString("base64");
-}
-
-function base64Decode(s: string): Uint8Array {
-  if (typeof atob === "function") {
-    const bin = atob(s);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-  return new Uint8Array(Buffer.from(s, "base64"));
-}
-
-void toHex; // keep import available

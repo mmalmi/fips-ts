@@ -18,7 +18,7 @@ Protocol id: `fips-webrtc-v1`. Version: 1.
 
 ## Signal (Nostr kind 21059, encrypted)
 
-Wrapped under NIP-59 gift wrap with NIP-44 to the recipient. The decrypted inner content is a JSON `WebRtcSignal`:
+The event `content` is **NIP-44 v2** ciphertext (base64) from `nostr-tools/nip44`, encrypted with the conversation key `HKDF-SHA256(ECDH(senderSk, recipientPk), salt="nip44-v2")`. The plaintext is a JSON `WebRtcSignal`:
 
 ```ts
 interface WebRtcSignal {
@@ -58,3 +58,12 @@ interface WebRtcSignal {
 ```
 
 `candidate` messages are part of the schema for forward compatibility but unused in v1.
+
+## NIP-59 gift wrap (TODO — Rust interop)
+
+Rust FIPS uses kind 21059 as a NIP-59 gift-wrap envelope around the encrypted
+signal rather than putting the NIP-44 ciphertext directly into a kind 21059
+event's content. This v1 implementation skips that outer wrap. To be
+byte-compatible with Rust signaling, add `nostr-tools/nip59` `wrapEvent` /
+`unwrapEvent` around `sendSignal` / `handleSignalEvent` in
+`NostrWebRtcSignaling.ts`.
