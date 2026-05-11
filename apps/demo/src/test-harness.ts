@@ -181,6 +181,86 @@ async function echoOverChain(three: ThreeNodes, payload: string, port = 9000): P
   });
 }
 
+async function makeWebRtcChain(relayUrl: string): Promise<ThreeNodes> {
+  const logger = {
+    debug: (..._a: unknown[]) => {},
+    info: (...a: unknown[]) => console.log("[webrtc:info]", ...a),
+    warn: (...a: unknown[]) => console.warn("[webrtc:warn]", ...a),
+    error: (...a: unknown[]) => console.error("[webrtc:err]", ...a),
+  };
+  const aId = await generateIdentity();
+  const bId = await generateIdentity();
+  const cId = await generateIdentity();
+  const a = new FipsNode({
+    identity: aId,
+    logger,
+    transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+  });
+  const b = new FipsNode({
+    identity: bId,
+    logger,
+    forwarding: true,
+    transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+  });
+  const c = new FipsNode({
+    identity: cId,
+    logger,
+    transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+  });
+  c.registerService(9000, async ({ payload, reply }) => {
+    await reply(payload);
+  });
+  await a.start();
+  await b.start();
+  await c.start();
+  // A<->B and B<->C, but NOT A<->C.
+  await a.connect({ transport: "webrtc", addr: toHex(bId.publicKey) });
+  await b.connect({ transport: "webrtc", addr: toHex(cId.publicKey) });
+  return { a, b, c, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey), cPub: toHex(cId.publicKey) };
+}
+
+async function webRtcReconnect(relayUrl: string): Promise<{ first: string; second: string }> {
+  const logger = {
+    debug: (..._a: unknown[]) => {},
+    info: (...a: unknown[]) => console.log("[webrtc:info]", ...a),
+    warn: (...a: unknown[]) => console.warn("[webrtc:warn]", ...a),
+    error: (...a: unknown[]) => console.error("[webrtc:err]", ...a),
+  };
+  const aId = await generateIdentity();
+  const bId = await generateIdentity();
+
+  async function dial(): Promise<NodePair> {
+    const a = new FipsNode({
+      identity: aId,
+      logger,
+      transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+    });
+    const b = new FipsNode({
+      identity: bId,
+      logger,
+      transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+    });
+    b.registerService(9000, async ({ payload, reply }) => {
+      await reply(payload);
+    });
+    await a.start();
+    await b.start();
+    await a.connect({ transport: "webrtc", addr: toHex(bId.publicKey) });
+    return { a, b, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey) };
+  }
+
+  const pair1 = await dial();
+  const first = await echoOverPair(pair1, "before-reconnect");
+  await pair1.a.stop();
+  await pair1.b.stop();
+
+  const pair2 = await dial();
+  const second = await echoOverPair(pair2, "after-reconnect");
+  await pair2.a.stop();
+  await pair2.b.stop();
+  return { first, second };
+}
+
 async function reconnectMemoryPair(): Promise<{ first: string; second: string }> {
   const hub = new MemoryHub();
   const aId = await generateIdentity();
@@ -231,6 +311,8 @@ async function reconnectMemoryPair(): Promise<{ first: string; second: string }>
 
 export const harness = {
   makeWebRtcPair,
+  makeWebRtcChain,
+  webRtcReconnect,
   memoryThreeNodes,
   memoryHashtreePair,
   reconnectMemoryPair,
