@@ -40,6 +40,16 @@ export {
 } from "./identity/nip19.js";
 
 export {
+  authChallengeDigest,
+  generateAuthChallenge,
+  signChallenge,
+  verifyChallenge,
+  type AuthResponse,
+} from "./identity/auth.js";
+
+export { PeerIdentity } from "./identity/peer.js";
+
+export {
   aeadOpen,
   aeadSeal,
   deriveSessionKeys,

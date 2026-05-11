@@ -31,4 +31,29 @@ export class ReplayWindow {
     this.seen.add(counter);
     return true;
   }
+
+  /**
+   * Non-destructive check: would `accept(counter)` succeed right now?
+   * Mirrors Rust ReplayWindow::check.
+   */
+  check(counter: bigint): boolean {
+    if (counter < 0n) return false;
+    if (this.high < 0n) return true;
+    if (counter > this.high) return true;
+    const low =
+      this.high > ReplayWindow.WINDOW - 1n ? this.high - (ReplayWindow.WINDOW - 1n) : 0n;
+    if (counter < low) return false;
+    return !this.seen.has(counter);
+  }
+
+  /** Highest counter ever accepted, or 0 if none (Rust returns 0 too). */
+  get highest(): bigint {
+    return this.high < 0n ? 0n : this.high;
+  }
+
+  /** Forget all state. */
+  reset(): void {
+    this.high = -1n;
+    this.seen.clear();
+  }
 }
