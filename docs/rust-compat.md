@@ -46,7 +46,10 @@ Port 256 is the IPv6 shim (not used in browser). Apps should use 1024–65535. H
 
 ## Crypto
 
-- DH: secp256k1 ECDH; shared-secret material is the 32-byte x-coordinate
+- DH: secp256k1 ECDH followed by `SHA-256(x-coordinate)`. Both sides hash
+  only the x-coord so initiator and responder agree even when the initiator
+  only knows the x-only pubkey (from an npub). See
+  `~/src/fips/crates/fips-core/src/noise/handshake.rs::ecdh`.
 - AEAD: ChaCha20-Poly1305 (ring in Rust, `@noble/ciphers` in TS)
 - Hash: SHA-256
 - Patterns (implemented in `packages/core/src/noise/`):
@@ -56,6 +59,23 @@ Port 256 is the IPv6 shim (not used in browser). Apps should use 1024–65535. H
 - Nonce: 4 zero bytes ‖ 8-byte LE counter (12 bytes); Established frames
   index AEAD nonces by the explicit u64 counter carried in the frame header
 - Replay window: 2048 packets (WireGuard style)
+
+### Deviations from the Noise spec that we match for Rust interop
+
+- **Pre-message MixHash normalizes responder static to 0x02 parity** so
+  initiator-with-x-only and responder-with-real-key produce identical hash
+  chains.
+- **EncryptAndHash uses empty AAD** during the handshake (Noise spec says
+  AAD = h; Rust's `cipher.encrypt(plaintext)` uses `&[]`).
+- **XK msg1 omits the trailing empty-payload AEAD tag** entirely (33 bytes
+  rather than 49). Rust's `write_xk_message_1` does not call
+  `encrypt_and_hash` after the `e, es` tokens.
+- **IK msg2 `se` actually computes `DH(e_initiator, s_responder)`** (i.e.,
+  `es` operands) rather than the spec's `DH(s_initiator, e_responder)`. XK
+  msg3 `se` uses the standard semantics.
+
+These behaviors are codified in `packages/core/src/noise/handshake.ts` and
+covered by the live interop tests in `packages/core/test/interop/`.
 
 Handshake-payload sizes (must be exactly 8 bytes — currently zeros; Rust
 carries a u64 epoch here):

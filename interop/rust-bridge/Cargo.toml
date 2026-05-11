@@ -1,0 +1,19 @@
+[package]
+name = "fips-rust-bridge"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+# Path-dependency on the user's local Rust FIPS repo. The bridge exists only
+# to prove interop between this TS implementation and the Rust reference; it
+# is not a published crate.
+
+[dependencies]
+fips-core = { path = "../../../fips/crates/fips-core" }
+fips-identity = { path = "../../../fips/crates/fips-identity" }
+secp256k1 = { version = "0.30", features = ["global-context"] }
+hex = "0.4"
+
+[[bin]]
+name = "fips-rust-bridge"
+path = "src/main.rs"

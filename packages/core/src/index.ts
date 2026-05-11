@@ -30,6 +30,16 @@ export {
 } from "./identity/index.js";
 
 export {
+  encodeNpub,
+  decodeNpub,
+  encodeNsec,
+  decodeNsec,
+  npubFromHex,
+  npubToHex,
+  NpubError,
+} from "./identity/nip19.js";
+
+export {
   aeadOpen,
   aeadSeal,
   deriveSessionKeys,

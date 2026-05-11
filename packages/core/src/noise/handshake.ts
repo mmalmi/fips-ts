@@ -98,12 +98,20 @@ export class NoiseHandshake {
 
     // Pre-message: `<- s` means the responder's static is known to both before
     // the handshake. Both sides MixHash(responder_static).
+    //
+    // FIPS-specific: normalize the parity byte to 0x02 before hashing. The
+    // initiator may only have the x-only key (e.g., from an npub) and not
+    // know the responder's true parity, so both sides hash the same bytes
+    // regardless of parity. This does NOT affect ECDH (which already hashes
+    // only the x-coordinate) or `e`/`s` bytes on the wire.
     const responderStatic =
       this.role === "responder" ? this.s.pub : this.rs;
     if (!responderStatic) {
       throw new Error("noise IK/XK initiator must know responder's static pubkey");
     }
-    this.ss.mixHash(responderStatic);
+    const normalized = new Uint8Array(responderStatic);
+    normalized[0] = 0x02;
+    this.ss.mixHash(normalized);
   }
 
   /** Returns the running handshake hash for diagnostics. */
@@ -147,8 +155,14 @@ export class NoiseHandshake {
           throw new Error(`unknown token ${tok}`);
       }
     }
-    const encPayload = this.ss.encryptAndHash(payload);
-    out = concatBytes(out, encPayload);
+    // FIPS-specific: skip the trailing payload AEAD entirely when there's no
+    // payload to carry (matches Rust write_xk_message_1, which emits a
+    // 33-byte msg without the 16-byte empty-payload tag the Noise spec would
+    // otherwise produce). All other handshake steps carry an 8-byte epoch.
+    if (payload.length > 0) {
+      const encPayload = this.ss.encryptAndHash(payload);
+      out = concatBytes(out, encPayload);
+    }
     this.step += 1;
     return out;
   }
@@ -201,7 +215,11 @@ export class NoiseHandshake {
       }
     }
     const remaining = message.subarray(off);
-    const payload = this.ss.decryptAndHash(remaining);
+    // Symmetric to writeMessage: skip decrypt_and_hash when the message has
+    // no trailing AEAD bytes (Rust read_xk_message_1 does not call
+    // decrypt_and_hash either).
+    const payload =
+      remaining.length > 0 ? this.ss.decryptAndHash(remaining) : new Uint8Array(0);
     this.step += 1;
     return payload;
   }
@@ -223,7 +241,8 @@ export class NoiseHandshake {
       if (step === 0) return ["e", "es", "s", "ss"];
       if (step === 1) return ["e", "ee", "se"];
     } else if (this.pattern === "XK") {
-      if (step === 0) return ["e"];
+      // Standard Noise XK:  -> e, es    <- e, ee    -> s, se
+      if (step === 0) return ["e", "es"];
       if (step === 1) return ["e", "ee"];
       if (step === 2) return ["s", "se"];
     }
@@ -253,7 +272,22 @@ export class NoiseHandshake {
         }
         break;
       case "se":
-        if (this.role === "initiator") {
+        // Rust FIPS deviates from Noise spec for `se` in IK msg2: it
+        // computes DH(e_initiator, s_responder) — same operands as `es`,
+        // mixed in a second time. For Rust interop on the IK pattern we
+        // match that behavior. XK msg3 `se` uses the standard Noise
+        // semantics (DH between initiator's static and responder's
+        // ephemeral). See ~/src/fips/crates/fips-core/src/noise/handshake.rs
+        // write_message_2 / read_message_2.
+        if (this.pattern === "IK") {
+          if (this.role === "initiator") {
+            priv = this.e!.priv;
+            pub = this.rs!;
+          } else {
+            priv = this.s.priv;
+            pub = this.re!;
+          }
+        } else if (this.role === "initiator") {
           priv = this.s.priv;
           pub = this.re!;
         } else {

@@ -10,7 +10,10 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
@@ -19,7 +22,8 @@
   "dependencies": {
     "@noble/ciphers": "^1.1.3",
     "@noble/curves": "^1.7.0",
-    "@noble/hashes": "^1.6.1"
+    "@noble/hashes": "^1.6.1",
+    "@scure/base": "^2.2.0"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

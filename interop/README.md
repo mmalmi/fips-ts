@@ -1,0 +1,41 @@
+# Rust ↔ TypeScript interop
+
+Two pieces:
+
+- `rust-bridge/` — a tiny Cargo binary that depends on `~/src/fips/crates/fips-core`
+  via path. Runs a Noise IK or XK **responder** using the Rust reference
+  implementation. Reads 4-byte big-endian length-prefixed frames from
+  stdin, writes responses to stdout.
+- The Vitest suite at `packages/core/test/interop/noise-interop.test.ts`
+  spawns the bridge and drives the **initiator** side from TypeScript.
+  Both IK and XK patterns are exchanged, and a transport-message
+  round-trip after each handshake verifies the split CipherStates agree.
+
+## Build the bridge
+
+```sh
+cargo build --release --manifest-path interop/rust-bridge/Cargo.toml
+```
+
+## Run the interop tests
+
+```sh
+pnpm --filter '@fips/core' test:unit
+```
+
+(They auto-skip if the bridge binary isn't built, so the rest of the suite
+stays green in environments without a Rust toolchain.)
+
+## What this proves
+
+A handshake-and-transport round-trip end-to-end through the Rust
+implementation verifies that all of the following match byte-for-byte:
+
+- secp256k1 ECDH with `SHA-256(x-coordinate)` post-hashing
+- Noise IK + XK state machines (including the FIPS-specific deviations
+  documented in `docs/rust-compat.md`)
+- ChaCha20-Poly1305 with the `4×0 || u64 LE counter` nonce
+- HKDF chain and the symmetric-state split
+
+If you change anything in `packages/core/src/noise/` or `identity/index.ts`,
+re-run these tests to catch interop regressions immediately.

@@ -1,4 +1,5 @@
 import { schnorr, secp256k1 } from "@noble/curves/secp256k1";
+import { sha256 } from "@noble/hashes/sha256";
 import { randomBytes } from "@noble/hashes/utils";
 
 import { fromHex, toHex } from "../codec/hex.js";
@@ -67,8 +68,13 @@ export function verifySchnorr(
 }
 
 /**
- * secp256k1 ECDH: returns the 32-byte x-coordinate of `secret * peerPubkey`.
- * Used internally by the Noise IK/XK handshakes.
+ * FIPS Noise DH: SHA-256 of the ECDH x-coordinate.
+ *
+ * This matches Rust FIPS `crates/fips-core/src/noise/handshake.rs::ecdh` which
+ * hashes the x-coord to produce a parity-independent shared secret (necessary
+ * because Nostr npubs are x-only without parity, so initiator and responder
+ * may pick opposite parities for the same logical key but P and -P produce
+ * the same x). Without this hash, Noise handshakes do not interop with Rust.
  */
 export function ecdh(
   secretKey: Uint8Array,
@@ -78,6 +84,8 @@ export function ecdh(
     throw new Error("peer pubkey must be 33-byte compressed");
   }
   const shared = secp256k1.getSharedSecret(secretKey, peerCompressedPubkey, true);
-  // getSharedSecret returns 33 bytes (compressed point); take x-coordinate.
-  return shared.slice(1);
+  // getSharedSecret returns 33 bytes (parity prefix || x-coord). Hash the
+  // x-coord per FIPS spec.
+  const x = shared.slice(1);
+  return sha256(x);
 }

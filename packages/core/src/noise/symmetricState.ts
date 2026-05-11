@@ -56,16 +56,23 @@ export class SymmetricState {
     return this.h.slice();
   }
 
-  /** ciphertext = ENCRYPT(k, n++, h, plaintext); MixHash(ciphertext). */
+  /**
+   * EncryptAndHash with **empty AAD**.
+   *
+   * Rust FIPS deviates from the Noise spec here: the spec says AAD = h, but
+   * `fips-core::noise::SymmetricState::encrypt_and_hash` calls
+   * `cipher.encrypt(plaintext)` which uses empty AAD. We match that for
+   * byte-for-byte interop. Transcript integrity is still preserved by the
+   * subsequent MixHash(ciphertext).
+   */
   encryptAndHash(plaintext: Uint8Array): Uint8Array {
-    const ct = this.cipher.encryptWithAd(this.h, plaintext);
+    const ct = this.cipher.encryptWithAd(new Uint8Array(0), plaintext);
     this.mixHash(ct);
     return ct;
   }
 
-  /** plaintext = DECRYPT(k, n++, h, ciphertext); MixHash(ciphertext). */
   decryptAndHash(ciphertext: Uint8Array): Uint8Array {
-    const pt = this.cipher.decryptWithAd(this.h, ciphertext);
+    const pt = this.cipher.decryptWithAd(new Uint8Array(0), ciphertext);
     this.mixHash(ciphertext);
     return pt;
   }
