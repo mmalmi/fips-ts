@@ -46,19 +46,30 @@ Port 256 is the IPv6 shim (not used in browser). Apps should use 1024–65535. H
 
 ## Crypto
 
-- DH: secp256k1 ECDH
+- DH: secp256k1 ECDH; shared-secret material is the 32-byte x-coordinate
 - AEAD: ChaCha20-Poly1305 (ring in Rust, `@noble/ciphers` in TS)
 - Hash: SHA-256
-- Patterns:
+- Patterns (implemented in `packages/core/src/noise/`):
   - Link layer (FMP): `Noise_IK_secp256k1_ChaChaPoly_SHA256`
   - Session layer (FSP): `Noise_XK_secp256k1_ChaChaPoly_SHA256`
-- Nonce: 4 zero bytes ‖ 8-byte LE counter (12 bytes)
+- Noise HKDF: chained HMAC-SHA256 with byte counters 0x01/0x02/0x03
+- Nonce: 4 zero bytes ‖ 8-byte LE counter (12 bytes); Established frames
+  index AEAD nonces by the explicit u64 counter carried in the frame header
 - Replay window: 2048 packets (WireGuard style)
 
-Sizes:
-- IK msg1: 106 bytes
-- IK msg2: 57 bytes
-- XK msg1: 33 bytes, msg2: 57 bytes, msg3: 73 bytes
+Handshake-payload sizes (must be exactly 8 bytes — currently zeros; Rust
+carries a u64 epoch here):
+
+- IK msg1: 106 bytes = 33 (e) + 49 (enc_s) + 24 (enc_payload+tag)
+- IK msg2: 57 bytes  = 33 (e) + 24 (enc_payload+tag)
+- XK msg1: 33 bytes  = 33 (e), no encrypted payload (no key yet)
+- XK msg2: 57 bytes  = 33 (e) + 24 (enc_payload+tag)
+- XK msg3: 73 bytes  = 49 (enc_s) + 24 (enc_payload+tag)
+
+Deterministic vectors are at `fixtures/rust-vectors/noise-handshakes.json`
+(regenerate with `REGENERATE_VECTORS=1 pnpm -C packages/core test:unit`).
+Once Rust ships an equivalent exporter, the two JSON files should match
+byte-for-byte modulo the epoch field.
 
 ## Nostr
 

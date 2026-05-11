@@ -39,6 +39,17 @@ export {
 } from "./crypto/index.js";
 
 export {
+  CipherState,
+  NoiseHandshake,
+  SymmetricState,
+  noiseHkdf2,
+  noiseHkdf3,
+  type NoiseHandshakeInit,
+  type NoisePattern,
+  type NoiseRole,
+} from "./noise/index.js";
+
+export {
   FMP_ESTABLISHED_HEADER_LEN,
   FMP_INNER_DATA,
   FMP_INNER_KEEPALIVE,

@@ -3,22 +3,19 @@
  *
  * Wire frames match Rust FIPS byte layout (FMP Msg1/Msg2/Established with
  * 4-byte common prefix and fixed Noise IK payload sizes 106/57). The inner
- * handshake currently uses a simplified static-DH key agreement rather than
- * the full Noise_IK pattern; this is documented in docs/rust-compat.md and
- * is the v2 interop task.
+ * handshake is the real Noise_IK_secp256k1_ChaChaPoly_SHA256 pattern with an
+ * 8-byte epoch payload (currently zero; in Rust this is a u64 LE epoch).
  *
  * The link's job:
- *   - exchange long-term static pubkeys
- *   - derive a pair of symmetric AEAD keys with HKDF
- *   - frame keep-alive and data packets with ChaCha20-Poly1305
- *   - enforce replay window
+ *   - Noise IK handshake (msg1/msg2)
+ *   - frame keep-alive and data packets with the split CipherStates
+ *   - enforce replay window on the receive side
  */
 
-import { aeadOpen, aeadSeal } from "../crypto/aead.js";
-import { deriveSessionKeys } from "../crypto/kdf.js";
 import { ReplayWindow } from "../crypto/replay.js";
-import { bytesEqual, concatBytes } from "../codec/hex.js";
-import { ecdh, type FipsIdentity } from "../identity/index.js";
+import { bytesEqual } from "../codec/hex.js";
+import type { FipsIdentity } from "../identity/index.js";
+import { CipherState, NoiseHandshake } from "../noise/index.js";
 
 import {
   decodeFmpEstablished,
@@ -46,6 +43,8 @@ export interface FmpLinkInit {
   remotePubkey?: Uint8Array; // 33 compressed; initiator needs this
   role: FmpRole;
   sessionIdx: number; // local SessionIndex
+  /** Optional deterministic ephemeral for vectors/tests. */
+  ephemeralOverride?: Uint8Array;
 }
 
 export interface FmpHandshakeOutbound {
@@ -58,40 +57,13 @@ export interface FmpHandshakeResult {
   remotePubkey: Uint8Array;
 }
 
-export interface FmpDataOutbound {
-  packet: Uint8Array; // outer FMP Established frame
-}
+/** 8-byte epoch payload carried inside each FMP handshake step. */
+const EPOCH_PAYLOAD_LEN = 8;
 
-interface NoiseIkMsg1 {
-  initiatorStatic: Uint8Array; // 33 bytes compressed
-  payload: Uint8Array;         // remaining 73 bytes (random / future use)
-}
-
-interface NoiseIkMsg2 {
-  payload: Uint8Array; // 57 bytes (random / future use)
-}
-
-function encodeNoiseMsg1(m: NoiseIkMsg1): Uint8Array {
-  if (m.initiatorStatic.length !== 33) throw new Error("static must be 33 bytes");
-  if (m.payload.length !== NOISE_IK_MSG1_LEN - 33) {
-    throw new Error(`msg1 payload must be ${NOISE_IK_MSG1_LEN - 33} bytes`);
-  }
-  return concatBytes(m.initiatorStatic, m.payload);
-}
-
-function decodeNoiseMsg1(buf: Uint8Array): NoiseIkMsg1 {
-  if (buf.length !== NOISE_IK_MSG1_LEN) throw new Error("bad noise msg1 length");
-  return {
-    initiatorStatic: buf.slice(0, 33),
-    payload: buf.slice(33),
-  };
-}
-
-function encodeNoiseMsg2(m: NoiseIkMsg2): Uint8Array {
-  if (m.payload.length !== NOISE_IK_MSG2_LEN) {
-    throw new Error(`msg2 payload must be ${NOISE_IK_MSG2_LEN} bytes`);
-  }
-  return m.payload;
+function epochPayload(): Uint8Array {
+  // The Rust implementation carries a u64-LE epoch here; for now we emit
+  // zeros to match the byte length. Wire layout is preserved.
+  return new Uint8Array(EPOCH_PAYLOAD_LEN);
 }
 
 export class FmpLink {
@@ -99,11 +71,12 @@ export class FmpLink {
   readonly localSessionIdx: number;
   readonly identity: FipsIdentity;
 
-  remotePubkey?: Uint8Array; // 33 compressed
+  remotePubkey?: Uint8Array;
   remoteSessionIdx?: number;
 
-  private txKey?: Uint8Array;
-  private rxKey?: Uint8Array;
+  private hs?: NoiseHandshake;
+  private tx?: CipherState;
+  private rx?: CipherState;
   private txCounter = 0n;
   private rxReplay = new ReplayWindow();
 
@@ -114,17 +87,24 @@ export class FmpLink {
     this.role = init.role;
     this.localSessionIdx = init.sessionIdx;
     if (init.remotePubkey) this.remotePubkey = init.remotePubkey;
+    this.hs = new NoiseHandshake({
+      pattern: "IK",
+      role: init.role,
+      identity: init.identity,
+      remoteStatic: init.remotePubkey,
+      ephemeralOverride: init.ephemeralOverride,
+    });
   }
 
-  /** Initiator-only: build FMP Msg1 to send. */
-  buildMsg1(rand: (n: number) => Uint8Array): FmpHandshakeOutbound {
+  buildMsg1(_rand: (n: number) => Uint8Array): FmpHandshakeOutbound {
     if (this.role !== "initiator") throw new Error("only initiator builds Msg1");
     if (!this.remotePubkey) throw new Error("initiator needs remote pubkey");
+    if (!this.hs) throw new Error("noise handshake state missing");
     this.state = "handshaking";
-    const noiseMsg1 = encodeNoiseMsg1({
-      initiatorStatic: this.identity.publicKey,
-      payload: rand(NOISE_IK_MSG1_LEN - 33),
-    });
+    const noiseMsg1 = this.hs.writeMessage(epochPayload());
+    if (noiseMsg1.length !== NOISE_IK_MSG1_LEN) {
+      throw new Error(`noise IK msg1 size ${noiseMsg1.length} != ${NOISE_IK_MSG1_LEN}`);
+    }
     const packet = encodeFmpMsg1({
       senderIdx: this.localSessionIdx,
       noiseMsg1,
@@ -132,64 +112,61 @@ export class FmpLink {
     return { packet };
   }
 
-  /** Responder receives Msg1, derives keys, replies with Msg2. */
   handleMsg1(
     packet: Uint8Array,
-    rand: (n: number) => Uint8Array,
+    _rand: (n: number) => Uint8Array,
   ): FmpHandshakeResult {
     if (this.role !== "responder") throw new Error("only responder handles Msg1");
+    if (!this.hs) throw new Error("noise handshake state missing");
     const msg1 = decodeFmpMsg1(packet);
-    const inner = decodeNoiseMsg1(msg1.noiseMsg1);
+    const payload = this.hs.readMessage(msg1.noiseMsg1);
+    if (payload.length !== EPOCH_PAYLOAD_LEN) {
+      throw new Error("noise IK msg1 inner payload must be 8 bytes");
+    }
     this.remoteSessionIdx = msg1.senderIdx;
-    this.remotePubkey = inner.initiatorStatic;
-    this.deriveKeys();
-    this.state = "established";
+    const rs = this.hs.getRemoteStatic();
+    if (!rs) throw new Error("noise IK responder did not capture remote static");
+    this.remotePubkey = rs;
+    const noiseMsg2 = this.hs.writeMessage(epochPayload());
+    if (noiseMsg2.length !== NOISE_IK_MSG2_LEN) {
+      throw new Error(`noise IK msg2 size ${noiseMsg2.length} != ${NOISE_IK_MSG2_LEN}`);
+    }
     const reply = encodeFmpMsg2({
       senderIdx: this.localSessionIdx,
       receiverIdx: msg1.senderIdx,
-      noiseMsg2: encodeNoiseMsg2({ payload: rand(NOISE_IK_MSG2_LEN) }),
+      noiseMsg2,
     });
-    return { reply, established: true, remotePubkey: inner.initiatorStatic };
+    this.finalize();
+    return { reply, established: true, remotePubkey: rs };
   }
 
-  /** Initiator receives Msg2 and finalizes. */
   handleMsg2(packet: Uint8Array): FmpHandshakeResult {
     if (this.role !== "initiator") throw new Error("only initiator handles Msg2");
+    if (!this.hs) throw new Error("noise handshake state missing");
     const msg2 = decodeFmpMsg2(packet);
     if (msg2.receiverIdx !== this.localSessionIdx) {
       throw new Error("FMP Msg2 receiver_idx mismatch");
     }
+    const payload = this.hs.readMessage(msg2.noiseMsg2);
+    if (payload.length !== EPOCH_PAYLOAD_LEN) {
+      throw new Error("noise IK msg2 inner payload must be 8 bytes");
+    }
     this.remoteSessionIdx = msg2.senderIdx;
-    this.deriveKeys();
-    this.state = "established";
+    this.finalize();
     return { established: true, remotePubkey: this.remotePubkey! };
   }
 
-  private deriveKeys(): void {
-    if (!this.remotePubkey) throw new Error("missing remote pubkey for key derivation");
-    const shared = ecdh(this.identity.secretKey, this.remotePubkey);
-    const initiatorPub =
-      this.role === "initiator" ? this.identity.xOnlyPubkey : this.remotePubkey.slice(1);
-    const responderPub =
-      this.role === "responder" ? this.identity.xOnlyPubkey : this.remotePubkey.slice(1);
-    const { initiatorTx, responderTx } = deriveSessionKeys(
-      shared,
-      initiatorPub,
-      responderPub,
-      "fips/fmp/v1",
-    );
-    if (this.role === "initiator") {
-      this.txKey = initiatorTx;
-      this.rxKey = responderTx;
-    } else {
-      this.txKey = responderTx;
-      this.rxKey = initiatorTx;
-    }
+  private finalize(): void {
+    if (!this.hs) throw new Error("noise handshake state missing");
+    const { tx, rx } = this.hs.splitTxRx();
+    this.tx = tx;
+    this.rx = rx;
+    this.state = "established";
+    this.hs = undefined;
   }
 
-  /** Send application bytes through this established FMP link. */
   encryptOutgoing(payload: Uint8Array, msgType = FMP_INNER_DATA): Uint8Array {
-    if (this.state !== "established" || !this.txKey || this.remoteSessionIdx === undefined) {
+    if (this.state !== "established" || !this.tx || this.remoteSessionIdx === undefined) {
       throw new Error("FMP link not established");
     }
     const counter = this.txCounter++;
@@ -203,7 +180,11 @@ export class FmpLink {
       { flags: 0, receiverIdx: this.remoteSessionIdx, counter },
       ciphertextLen,
     );
-    const ciphertext = aeadSeal(this.txKey, counter, inner, aad);
+    // CipherState manages its own monotonic nonce, but FIPS Established uses
+    // the explicit u64 counter from the frame header. We bypass CipherState's
+    // internal counter and use the AEAD primitive with the frame counter so
+    // both endpoints derive the same 12-byte nonce.
+    const ciphertext = aeadWithCounter(this.tx, counter, aad, inner);
     return encodeFmpEstablished({
       flags: 0,
       receiverIdx: this.remoteSessionIdx,
@@ -216,9 +197,8 @@ export class FmpLink {
     return this.encryptOutgoing(new Uint8Array(0), FMP_INNER_KEEPALIVE);
   }
 
-  /** Decrypt an incoming FMP Established frame; returns the inner payload. */
   decryptIncoming(packet: Uint8Array): { msgType: number; payload: Uint8Array } {
-    if (this.state !== "established" || !this.rxKey) {
+    if (this.state !== "established" || !this.rx) {
       throw new Error("FMP link not established");
     }
     const est = decodeFmpEstablished(packet);
@@ -232,7 +212,7 @@ export class FmpLink {
       { flags: est.flags, receiverIdx: est.receiverIdx, counter: est.counter },
       est.ciphertext.length,
     );
-    const plaintext = aeadOpen(this.rxKey, est.counter, est.ciphertext, aad);
+    const plaintext = openWithCounter(this.rx, est.counter, aad, est.ciphertext);
     const inner = decodeFmpInner(plaintext);
     return { msgType: inner.msgType, payload: inner.payload };
   }
@@ -246,4 +226,28 @@ export { FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2 };
 
 export function isEqualPubkey(a: Uint8Array, b: Uint8Array): boolean {
   return bytesEqual(a, b);
+}
+
+// --- AEAD helpers that use an explicit u64 counter for the FIPS Established
+// header counter, bypassing CipherState's internal monotonic counter ---
+
+import { chacha20poly1305 } from "@noble/ciphers/chacha";
+import { noiseNonce } from "../crypto/aead.js";
+
+function aeadWithCounter(
+  cs: CipherState,
+  counter: bigint,
+  aad: Uint8Array,
+  pt: Uint8Array,
+): Uint8Array {
+  return chacha20poly1305(cs.getKey(), noiseNonce(counter), aad).encrypt(pt);
+}
+
+function openWithCounter(
+  cs: CipherState,
+  counter: bigint,
+  aad: Uint8Array,
+  ct: Uint8Array,
+): Uint8Array {
+  return chacha20poly1305(cs.getKey(), noiseNonce(counter), aad).decrypt(ct);
 }

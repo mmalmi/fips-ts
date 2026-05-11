@@ -1,0 +1,14 @@
+{
+  "ik": {
+    "msg1": "02438a4f623099e7c238970a8481b03d449fd45cc2c2185e739b28f28ce5342bb3379f7322dcb798669dd9360ee1548396316c2a4e72b71255ebf503ecd1c1678eab7b087ce5b251ef976a1d4b69ae30ec61858c65b775d5e83019bcb5dc5487f199d58c98b326684ee4",
+    "msg2": "031eafc5715a488cec873b85f397b6aeda16392e2ae1e24e7998737472d23ce451f19e996f623da56986feda4e03c0dc4e721a9fc27d915ee8",
+    "handshakeHash": "412ab670500d0ea7fbc54ef0964f0a733c798b173850b1c16741d0b9a56ae2c0"
+  },
+  "xk": {
+    "msg1": "02438a4f623099e7c238970a8481b03d449fd45cc2c2185e739b28f28ce5342bb3",
+    "msg2": "031eafc5715a488cec873b85f397b6aeda16392e2ae1e24e7998737472d23ce451fa1d399b221bffc569670398ea91ea6bf8565940f419ce17",
+    "msg3": "d1e078ed4c92c2e2ca20e6e08f3cbab2ad2666ff17b8c05137aacefb3fb91424783fbc3680fe432d41738e7d88d264f264d652d5befa776ba3486e43ad9ea8d4cf3c5486e063a8b2b7",
+    "handshakeHash": "4749569358961366224860d44ac6d94b5b9ed1087e744a8b36bb253c950fa204"
+  },
+  "notes": "Inputs: initiator_sk=0xa1*32, responder_sk=0xb2*32, initiator_e=0xc3*32, responder_e=0xd4*32, epoch=8×0. Produced by packages/core/test/noise-vectors.test.ts. Compare with Rust FIPS once vectors are exported there."
+}
