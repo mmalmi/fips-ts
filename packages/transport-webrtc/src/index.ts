@@ -35,6 +35,15 @@ export {
 } from "./signalEncryption.js";
 
 export {
+  buildGiftWrap,
+  unwrapGiftWrap,
+  FIPS_SIGNAL_WRAP_KIND,
+  FIPS_SIGNAL_RUMOR_KIND,
+  NIP59_SEAL_KIND,
+  type UnwrappedRumor,
+} from "./giftWrap.js";
+
+export {
   validateWebRtcSignal,
   SignalValidationError,
   type WebRtcSignal,

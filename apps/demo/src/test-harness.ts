@@ -106,6 +106,56 @@ async function memoryThreeNodes(): Promise<ThreeNodes> {
   return { a, b, c, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey), cPub: toHex(cId.publicKey) };
 }
 
+async function webRtcHashtreePair(relayUrl: string): Promise<{
+  aPub: string;
+  cFetched: string | null;
+  teardown: () => Promise<void>;
+}> {
+  const logger = {
+    debug: (..._a: unknown[]) => {},
+    info: (...a: unknown[]) => console.log("[webrtc:info]", ...a),
+    warn: (...a: unknown[]) => console.warn("[webrtc:warn]", ...a),
+    error: (...a: unknown[]) => console.error("[webrtc:err]", ...a),
+  };
+  const aId = await generateIdentity();
+  const cId = await generateIdentity();
+  const aNode = new FipsNode({
+    identity: aId,
+    logger,
+    transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+  });
+  const cNode = new FipsNode({
+    identity: cId,
+    logger,
+    transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+  });
+
+  const aStore = new MemHashtreeStore();
+  const blob = new TextEncoder().encode("hashtree-over-webrtc-smoke");
+  const hash = sha256(blob);
+  await aStore.put(hash, blob);
+  new FipsHashtreeStore({ node: aNode, localStore: aStore, peers: [] });
+  const cAdapter = new FipsHashtreeStore({
+    node: cNode,
+    localStore: new MemHashtreeStore(),
+    peers: [toHex(aId.publicKey)],
+    requestTimeoutMs: 15_000,
+  });
+
+  await aNode.start();
+  await cNode.start();
+  await cNode.connect({ transport: "webrtc", addr: toHex(aId.publicKey) });
+  const fetched = await cAdapter.get(hash);
+  return {
+    aPub: toHex(aId.publicKey),
+    cFetched: fetched ? new TextDecoder().decode(fetched) : null,
+    teardown: async () => {
+      await aNode.stop();
+      await cNode.stop();
+    },
+  };
+}
+
 async function memoryHashtreePair(): Promise<{
   aPub: string;
   cFetched: string | null;
@@ -313,6 +363,7 @@ export const harness = {
   makeWebRtcPair,
   makeWebRtcChain,
   webRtcReconnect,
+  webRtcHashtreePair,
   memoryThreeNodes,
   memoryHashtreePair,
   reconnectMemoryPair,

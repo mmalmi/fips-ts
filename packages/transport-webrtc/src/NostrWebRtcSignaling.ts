@@ -1,19 +1,21 @@
 /**
  * NostrWebRtcSignaling — publishes FIPS adverts (kind 37195) and exchanges
- * WebRTC offers/answers via encrypted signaling events (kind 21059).
+ * WebRTC offers/answers via NIP-59 gift-wrapped signals (kind 21059).
  *
  * Adverts are addressed-replaceable per identity (d=fips-overlay-v1).
- * Signaling events are addressed by recipient via the `p` tag; their content
- * is encrypted with signalEncryption.
+ * Signaling events are NIP-59 gift wraps: the outer event is signed by a
+ * fresh one-time ephemeral key (not the real sender), its content is the
+ * NIP-44-encrypted seal (kind 13, signed by the real sender), whose content
+ * is the NIP-44-encrypted rumor carrying the WebRTC signal.
+ *
+ * See `giftWrap.ts` for the layering details and Rust-FIPS-vs-NIP59 kind
+ * choice (21059 vs 1059).
  */
 
-import { fromHex, toHex, type FipsIdentity, type Logger } from "@fips/core";
+import { toHex, type FipsIdentity, type Logger } from "@fips/core";
 
+import { buildGiftWrap, unwrapGiftWrap, FIPS_SIGNAL_RUMOR_KIND } from "./giftWrap.js";
 import { NostrRelayClient, type NostrEvent } from "./NostrRelayClient.js";
-import {
-  decryptSignalContent,
-  encryptSignalContent,
-} from "./signalEncryption.js";
 import { signEvent, verifyEvent } from "./nostrEvent.js";
 import type { WebRtcSignal } from "./WebRtcSignal.js";
 
@@ -86,15 +88,12 @@ export class NostrWebRtcSignaling {
   }
 
   async sendSignal(recipientXOnlyHex: string, signal: WebRtcSignal): Promise<void> {
-    const plaintext = JSON.stringify(signal);
-    const content = encryptSignalContent(this.identity, recipientXOnlyHex, plaintext);
-    const ev = signEvent(this.identity, {
-      created_at: Math.floor(Date.now() / 1000),
-      kind: FIPS_SIGNAL_KIND,
-      tags: [["p", recipientXOnlyHex]],
-      content,
-    });
-    await Promise.all(this.relays.map((r) => r.publish(ev).catch((err) => {
+    const giftWrap = buildGiftWrap(
+      this.identity,
+      recipientXOnlyHex,
+      JSON.stringify(signal),
+    );
+    await Promise.all(this.relays.map((r) => r.publish(giftWrap).catch((err) => {
       this.logger?.warn("signal publish failed", r.url, err);
     })));
   }
@@ -139,23 +138,25 @@ export class NostrWebRtcSignaling {
       this.logger?.warn("signal event sig invalid", ev.id);
       return;
     }
-    let plaintext: string;
+    let unwrapped;
     try {
-      plaintext = decryptSignalContent(this.identity, ev.pubkey, ev.content);
+      unwrapped = unwrapGiftWrap(this.identity, ev);
     } catch (err) {
-      this.logger?.warn("signal decrypt failed", err);
+      this.logger?.warn("gift wrap decrypt failed", err);
+      return;
+    }
+    if (unwrapped.kind !== FIPS_SIGNAL_RUMOR_KIND) {
+      this.logger?.warn("gift wrap rumor kind unexpected", unwrapped.kind);
       return;
     }
     let signal: WebRtcSignal;
     try {
-      signal = JSON.parse(plaintext);
+      signal = JSON.parse(unwrapped.content);
     } catch {
       this.logger?.warn("signal JSON parse failed");
       return;
     }
-    this.onSignal(signal, ev.pubkey);
+    this.onSignal(signal, unwrapped.senderXOnlyHex);
   }
 }
 
-// Suppress unused import warning — fromHex used by callers.
-void fromHex;
