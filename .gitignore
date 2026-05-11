@@ -1,0 +1,10 @@
+node_modules
+dist
+.turbo
+.vite
+*.log
+.DS_Store
+playwright-report
+test-results
+coverage
+*.tsbuildinfo

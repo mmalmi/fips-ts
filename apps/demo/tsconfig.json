@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "noEmit": false
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/core" },
+    { "path": "../../packages/transport-memory" },
+    { "path": "../../packages/transport-webrtc" },
+    { "path": "../../packages/browser" },
+    { "path": "../../packages/hashtree-adapter" }
+  ]
+}

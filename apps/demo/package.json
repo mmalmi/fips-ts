@@ -1,0 +1,24 @@
+{
+  "name": "demo",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fips/browser": "workspace:*",
+    "@fips/core": "workspace:*",
+    "@fips/transport-memory": "workspace:*",
+    "@fips/transport-webrtc": "workspace:*",
+    "@fips/hashtree-adapter": "workspace:*",
+    "@noble/hashes": "^1.6.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}
