@@ -32,7 +32,6 @@ import {
 import type { NostrEvent } from "./NostrRelayClient.js";
 
 export const FIPS_SIGNAL_RUMOR_KIND = 14;
-export const LEGACY_FIPS_SIGNAL_RUMOR_KIND = 21059;
 export const FIPS_SIGNAL_WRAP_KIND = 21059;
 export const NIP59_SEAL_KIND = 13;
 

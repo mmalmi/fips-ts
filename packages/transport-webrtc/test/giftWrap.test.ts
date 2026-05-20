@@ -6,7 +6,6 @@ import {
   buildGiftWrap,
   FIPS_SIGNAL_RUMOR_KIND,
   FIPS_SIGNAL_WRAP_KIND,
-  LEGACY_FIPS_SIGNAL_RUMOR_KIND,
   NIP59_SEAL_KIND,
   unwrapGiftWrap,
 } from "../src/giftWrap.js";
@@ -54,6 +53,5 @@ describe("NIP-59 gift wrap (FIPS-flavored, outer kind 21059)", () => {
     expect(NIP59_SEAL_KIND).toBe(13);
     expect(FIPS_SIGNAL_RUMOR_KIND).toBe(14);
     expect(FIPS_SIGNAL_WRAP_KIND).toBe(21059);
-    expect(LEGACY_FIPS_SIGNAL_RUMOR_KIND).toBe(21059);
   });
 });

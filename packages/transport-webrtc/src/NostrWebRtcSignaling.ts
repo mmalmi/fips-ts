@@ -15,7 +15,6 @@ import { toHex, type FipsIdentity, type Logger } from "@fips/core";
 
 import {
   FIPS_SIGNAL_RUMOR_KIND,
-  LEGACY_FIPS_SIGNAL_RUMOR_KIND,
   buildGiftWrap,
   unwrapGiftWrap,
 } from "./giftWrap.js";
@@ -168,10 +167,7 @@ export class NostrWebRtcSignaling {
       this.logger?.warn("gift wrap decrypt failed", err);
       return;
     }
-    if (
-      unwrapped.kind !== FIPS_SIGNAL_RUMOR_KIND &&
-      unwrapped.kind !== LEGACY_FIPS_SIGNAL_RUMOR_KIND
-    ) {
+    if (unwrapped.kind !== FIPS_SIGNAL_RUMOR_KIND) {
       this.logger?.warn("gift wrap rumor kind unexpected", unwrapped.kind);
       return;
     }
