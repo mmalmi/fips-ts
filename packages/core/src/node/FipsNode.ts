@@ -10,7 +10,12 @@ import {
   FMP_PHASE_MSG2,
   peekFmpPhase,
 } from "../fmp/wire.js";
-import { peekFspPhase, FSP_PHASE_ESTABLISHED } from "../fsp/wire.js";
+import {
+  FSP_MSG_DATA,
+  FSP_MSG_ENDPOINT_DATA,
+  FSP_PHASE_ESTABLISHED,
+  peekFspPhase,
+} from "../fsp/wire.js";
 import type { FipsIdentity } from "../identity/index.js";
 import {
   noopLogger,
@@ -24,6 +29,7 @@ import {
 
 import type {
   DatagramEvent,
+  EndpointDataEvent,
   ErrorEvent,
   FipsEventName,
   FipsNodeConfig,
@@ -189,6 +195,16 @@ export class FipsNode {
     await this.sendFspToward(args.dst, fspFrame);
   }
 
+  /** Send app-owned endpoint bytes to a target identity without service ports. */
+  async sendEndpointData(args: {
+    dst: string; // remote pubkey hex
+    payload: Uint8Array;
+  }): Promise<void> {
+    const session = await this.ensureSession(args.dst);
+    const fspFrame = session.fsp.encryptEndpointData(args.payload);
+    await this.sendFspToward(args.dst, fspFrame);
+  }
+
   on(event: FipsEventName, cb: (data: unknown) => void): () => void {
     let set = this.listeners.get(event);
     if (!set) {
@@ -201,6 +217,7 @@ export class FipsNode {
 
   private emit(event: "peer", data: PeerEvent): void;
   private emit(event: "datagram", data: DatagramEvent): void;
+  private emit(event: "endpointData", data: EndpointDataEvent): void;
   private emit(event: "session", data: SessionEvent): void;
   private emit(event: "error", data: ErrorEvent): void;
   private emit(event: FipsEventName, data: unknown): void {
@@ -385,7 +402,7 @@ export class FipsNode {
         throw new Error(`FSP Established before handshake from ${srcHex}`);
       }
       const result = session.fsp.decryptIncoming(fspFrame);
-      if (result.msgType === 0x10 && result.data) {
+      if (result.msgType === FSP_MSG_DATA && result.data) {
         const dp = result.data;
         const handler = this.services.get(dp.dstPort);
         const reply: ServiceContext["reply"] = async (data, replyPort) => {
@@ -404,6 +421,13 @@ export class FipsNode {
           payload: dp.payload,
         });
         if (handler) await handler({ src: srcHex, srcPort: dp.srcPort, dstPort: dp.dstPort, payload: dp.payload, reply });
+      }
+      if (result.msgType === FSP_MSG_ENDPOINT_DATA && result.endpointData) {
+        this.emit("endpointData", {
+          src: srcHex,
+          dst: toHex(this.identity.publicKey),
+          payload: result.endpointData,
+        });
       }
       return;
     }

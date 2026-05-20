@@ -5,7 +5,6 @@
     { "path": "./packages/transport-memory" },
     { "path": "./packages/transport-webrtc" },
     { "path": "./packages/browser" },
-    { "path": "./packages/hashtree-adapter" },
     { "path": "./apps/demo" }
   ]
 }

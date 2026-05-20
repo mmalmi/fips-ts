@@ -14,7 +14,11 @@ Protocol id: `fips-webrtc-v1`. Version: 1.
 }
 ```
 
-`d`-tag = `fips-overlay-v1` to make adverts replaceable per identity.
+`d`-tag = the app discovery scope, for example `hashtree-v1`, to make
+adverts replaceable per identity and per app.
+Content `identifier` remains `fips-overlay-v1`.
+`protocol` tag = the same app discovery scope.
+`version` tag = `1`.
 
 ## Signal (Nostr kind 21059, NIP-59 gift-wrapped)
 

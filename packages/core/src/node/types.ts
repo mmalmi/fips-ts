@@ -34,7 +34,7 @@ export interface FipsNodeConfig {
   logger?: Logger;
 }
 
-export type FipsEventName = "peer" | "route" | "session" | "datagram" | "error";
+export type FipsEventName = "peer" | "route" | "session" | "datagram" | "endpointData" | "error";
 
 export interface PeerEvent {
   remotePubkey: string;
@@ -47,6 +47,12 @@ export interface DatagramEvent {
   dst: string;       // local pubkey hex
   srcPort: number;
   dstPort: number;
+  payload: Uint8Array;
+}
+
+export interface EndpointDataEvent {
+  src: string;       // remote pubkey hex
+  dst: string;       // local pubkey hex
   payload: Uint8Array;
 }
 

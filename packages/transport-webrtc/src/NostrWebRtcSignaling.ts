@@ -2,7 +2,7 @@
  * NostrWebRtcSignaling — publishes FIPS adverts (kind 37195) and exchanges
  * WebRTC offers/answers via NIP-59 gift-wrapped signals (kind 21059).
  *
- * Adverts are addressed-replaceable per identity (d=fips-overlay-v1).
+ * Adverts are addressed-replaceable per identity and app scope (`d=<app>`).
  * Signaling events are NIP-59 gift wraps: the outer event is signed by a
  * fresh one-time ephemeral key (not the real sender), its content is the
  * NIP-44-encrypted seal (kind 13, signed by the real sender), whose content
@@ -21,10 +21,14 @@ import type { WebRtcSignal } from "./WebRtcSignal.js";
 
 export const FIPS_ADVERT_KIND = 37195;
 export const FIPS_SIGNAL_KIND = 21059;
-export const FIPS_ADVERT_D_TAG = "fips-overlay-v1";
+export const FIPS_ADVERT_IDENTIFIER = "fips-overlay-v1";
+export const FIPS_ADVERT_D_TAG = FIPS_ADVERT_IDENTIFIER;
+export const FIPS_DEFAULT_DISCOVERY_APP = "fips-overlay-v1";
+export const FIPS_PROTOCOL_VERSION = "1";
+export const DEFAULT_FIPS_ADVERT_TTL_MS = 30 * 60 * 1000;
 
 export interface FipsAdvertContent {
-  identifier: typeof FIPS_ADVERT_D_TAG;
+  identifier: typeof FIPS_ADVERT_IDENTIFIER;
   version: 1;
   endpoints: Array<{ transport: "webrtc"; addr: string }>;
   signalRelays: string[];
@@ -34,6 +38,8 @@ export interface FipsAdvertContent {
 export interface NostrWebRtcSignalingOptions {
   identity: FipsIdentity;
   relays: NostrRelayClient[];
+  discoveryApp?: string;
+  advertTtlMs?: number;
   logger?: Logger;
   /** Called with the parsed inner signal and the outer event sender. */
   onSignal: (signal: WebRtcSignal, senderXOnlyHex: string) => void;
@@ -43,6 +49,8 @@ export interface NostrWebRtcSignalingOptions {
 export class NostrWebRtcSignaling {
   private readonly identity: FipsIdentity;
   private readonly relays: NostrRelayClient[];
+  private readonly discoveryApp: string;
+  private readonly advertTtlMs: number;
   private readonly logger?: Logger;
   private readonly onSignal: NostrWebRtcSignalingOptions["onSignal"];
   private readonly seenEventIds = new Set<string>();
@@ -51,6 +59,8 @@ export class NostrWebRtcSignaling {
   constructor(opts: NostrWebRtcSignalingOptions) {
     this.identity = opts.identity;
     this.relays = opts.relays;
+    this.discoveryApp = normalizeDiscoveryApp(opts.discoveryApp);
+    this.advertTtlMs = opts.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS;
     this.logger = opts.logger;
     this.onSignal = opts.onSignal;
   }
@@ -76,10 +86,16 @@ export class NostrWebRtcSignaling {
   }
 
   async publishAdvert(advert: FipsAdvertContent): Promise<void> {
+    const expiresAt = Math.floor((Date.now() + this.advertTtlMs) / 1000);
     const ev = signEvent(this.identity, {
       created_at: Math.floor(Date.now() / 1000),
       kind: FIPS_ADVERT_KIND,
-      tags: [["d", FIPS_ADVERT_D_TAG]],
+      tags: [
+        ["d", this.discoveryApp],
+        ["protocol", this.discoveryApp],
+        ["version", FIPS_PROTOCOL_VERSION],
+        ["expiration", String(expiresAt)],
+      ],
       content: JSON.stringify(advert),
     });
     await Promise.all(this.relays.map((r) => r.publish(ev).catch((err) => {
@@ -108,16 +124,19 @@ export class NostrWebRtcSignaling {
       const off = await relay.subscribe(
         {
           kinds: [FIPS_ADVERT_KIND],
-          "#d": [FIPS_ADVERT_D_TAG],
+          "#d": [this.discoveryApp],
           ...extraFilter,
         },
         {
           onEvent: (ev) => {
             if (this.seenEventIds.has(ev.id)) return;
             if (!verifyEvent(ev)) return;
+            if (tagValue(ev, "protocol") !== this.discoveryApp) return;
+            const version = tagValue(ev, "version");
+            if (version && version !== FIPS_PROTOCOL_VERSION) return;
             try {
               const parsed = JSON.parse(ev.content) as FipsAdvertContent;
-              if (parsed.identifier !== FIPS_ADVERT_D_TAG) return;
+              if (parsed.identifier !== FIPS_ADVERT_IDENTIFIER) return;
               this.seenEventIds.add(ev.id);
               cb(ev, parsed);
             } catch {
@@ -160,3 +179,11 @@ export class NostrWebRtcSignaling {
   }
 }
 
+function normalizeDiscoveryApp(app: string | undefined): string {
+  const normalized = app?.trim();
+  return normalized || FIPS_DEFAULT_DISCOVERY_APP;
+}
+
+function tagValue(ev: NostrEvent, tagName: string): string | undefined {
+  return ev.tags.find((tag) => tag[0] === tagName)?.[1];
+}

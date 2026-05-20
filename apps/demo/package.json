@@ -13,9 +13,7 @@
     "@fips/browser": "workspace:*",
     "@fips/core": "workspace:*",
     "@fips/transport-memory": "workspace:*",
-    "@fips/transport-webrtc": "workspace:*",
-    "@fips/hashtree-adapter": "workspace:*",
-    "@noble/hashes": "^1.6.1"
+    "@fips/transport-webrtc": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

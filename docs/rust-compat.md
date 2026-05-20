@@ -95,6 +95,7 @@ byte-for-byte modulo the epoch field.
 
 - Advert kind: 37195 (parameterized replaceable)
 - Signaling kind: 21059 (NIP-59 gift-wrap, NIP-44 encrypted)
+- Advert tags: `d=<app-scope>`, `protocol=<app-scope>`, `version=1`
 
 Advert content (JSON):
 

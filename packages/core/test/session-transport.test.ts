@@ -108,4 +108,30 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
     // Replay: same encrypted FSP frame must be rejected by the ReplayWindow.
     expect(() => resp.decryptIncoming(frame)).toThrow(/replay|duplicate/i);
   });
+
+  it("FspSession endpoint data carries opaque payloads without service ports", async () => {
+    const { FspSession, FSP_MSG_ENDPOINT_DATA } = await import("../src/index.js");
+    const a = await identityFromSecretKey(new Uint8Array(32).fill(0x35));
+    const b = await identityFromSecretKey(new Uint8Array(32).fill(0x53));
+
+    const init = new FspSession({
+      identity: a,
+      role: "initiator",
+      remotePubkey: b.publicKey,
+    });
+    const resp = new FspSession({ identity: b, role: "responder" });
+
+    const m1 = init.buildMsg1(() => new Uint8Array(0));
+    const m2 = resp.handleMsg1(m1, () => new Uint8Array(0));
+    const m3 = init.handleMsg2(m2, () => new Uint8Array(0));
+    resp.handleMsg3(m3);
+
+    const payload = new TextEncoder().encode("opaque hashtree frame");
+    const frame = init.encryptEndpointData(payload);
+    const result = resp.decryptIncoming(frame);
+
+    expect(result.msgType).toBe(FSP_MSG_ENDPOINT_DATA);
+    expect(result.endpointData).toEqual(payload);
+    expect(result.data).toBeUndefined();
+  });
 });

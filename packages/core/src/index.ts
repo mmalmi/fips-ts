@@ -134,6 +134,7 @@ export {
   FSP_ESTABLISHED_HEADER_LEN,
   FSP_INNER_HEADER_LEN,
   FSP_MSG_DATA,
+  FSP_MSG_ENDPOINT_DATA,
   FSP_MSG_KEEPALIVE,
   FSP_PHASE_ESTABLISHED,
   FSP_PHASE_MSG1,
@@ -168,6 +169,7 @@ export { FipsNode } from "./node/FipsNode.js";
 export type {
   Clock,
   DatagramEvent,
+  EndpointDataEvent,
   ErrorEvent,
   FipsEventName,
   FipsNodeConfig,

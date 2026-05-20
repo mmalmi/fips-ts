@@ -7,21 +7,6 @@
 import { FipsNode, generateIdentity, toHex } from "@fips/core";
 import { MemoryHub, MemoryTransport } from "@fips/transport-memory";
 import { WebRtcTransport } from "@fips/transport-webrtc";
-import { FipsHashtreeStore } from "@fips/hashtree-adapter";
-import { sha256 } from "@noble/hashes/sha256";
-
-class MemHashtreeStore {
-  private readonly m = new Map<string, Uint8Array>();
-  async get(h: Uint8Array): Promise<Uint8Array | null> {
-    return this.m.get(toHex(h)) ?? null;
-  }
-  async put(h: Uint8Array, d: Uint8Array): Promise<boolean> {
-    const k = toHex(h);
-    const fresh = !this.m.has(k);
-    this.m.set(k, d);
-    return fresh;
-  }
-}
 
 interface NodePair {
   a: FipsNode;
@@ -104,91 +89,6 @@ async function memoryThreeNodes(): Promise<ThreeNodes> {
   await a.connect({ transport: "memory", addr: toHex(bId.publicKey) });
   await b.connect({ transport: "memory", addr: toHex(cId.publicKey) });
   return { a, b, c, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey), cPub: toHex(cId.publicKey) };
-}
-
-async function webRtcHashtreePair(relayUrl: string): Promise<{
-  aPub: string;
-  cFetched: string | null;
-  teardown: () => Promise<void>;
-}> {
-  const logger = {
-    debug: (..._a: unknown[]) => {},
-    info: (...a: unknown[]) => console.log("[webrtc:info]", ...a),
-    warn: (...a: unknown[]) => console.warn("[webrtc:warn]", ...a),
-    error: (...a: unknown[]) => console.error("[webrtc:err]", ...a),
-  };
-  const aId = await generateIdentity();
-  const cId = await generateIdentity();
-  const aNode = new FipsNode({
-    identity: aId,
-    logger,
-    transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
-  });
-  const cNode = new FipsNode({
-    identity: cId,
-    logger,
-    transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
-  });
-
-  const aStore = new MemHashtreeStore();
-  const blob = new TextEncoder().encode("hashtree-over-webrtc-smoke");
-  const hash = sha256(blob);
-  await aStore.put(hash, blob);
-  new FipsHashtreeStore({ node: aNode, localStore: aStore, peers: [] });
-  const cAdapter = new FipsHashtreeStore({
-    node: cNode,
-    localStore: new MemHashtreeStore(),
-    peers: [toHex(aId.publicKey)],
-    requestTimeoutMs: 15_000,
-  });
-
-  await aNode.start();
-  await cNode.start();
-  await cNode.connect({ transport: "webrtc", addr: toHex(aId.publicKey) });
-  const fetched = await cAdapter.get(hash);
-  return {
-    aPub: toHex(aId.publicKey),
-    cFetched: fetched ? new TextDecoder().decode(fetched) : null,
-    teardown: async () => {
-      await aNode.stop();
-      await cNode.stop();
-    },
-  };
-}
-
-async function memoryHashtreePair(): Promise<{
-  aPub: string;
-  cFetched: string | null;
-  aTeardown: () => Promise<void>;
-}> {
-  const hub = new MemoryHub();
-  const aId = await generateIdentity();
-  const cId = await generateIdentity();
-  const aNode = new FipsNode({ identity: aId, transports: [new MemoryTransport({ hub })] });
-  const cNode = new FipsNode({ identity: cId, transports: [new MemoryTransport({ hub })] });
-  const aStore = new MemHashtreeStore();
-  const blob = new TextEncoder().encode("hashtree-over-fips-smoke");
-  const hash = sha256(blob);
-  await aStore.put(hash, blob);
-  new FipsHashtreeStore({ node: aNode, localStore: aStore, peers: [] });
-  const cAdapter = new FipsHashtreeStore({
-    node: cNode,
-    localStore: new MemHashtreeStore(),
-    peers: [toHex(aId.publicKey)],
-    requestTimeoutMs: 5_000,
-  });
-  await aNode.start();
-  await cNode.start();
-  await cNode.connect({ transport: "memory", addr: toHex(aId.publicKey) });
-  const fetched = await cAdapter.get(hash);
-  return {
-    aPub: toHex(aId.publicKey),
-    cFetched: fetched ? new TextDecoder().decode(fetched) : null,
-    aTeardown: async () => {
-      await aNode.stop();
-      await cNode.stop();
-    },
-  };
 }
 
 async function echoOverPair(pair: NodePair, payload: string, port = 9000): Promise<string> {
@@ -363,9 +263,7 @@ export const harness = {
   makeWebRtcPair,
   makeWebRtcChain,
   webRtcReconnect,
-  webRtcHashtreePair,
   memoryThreeNodes,
-  memoryHashtreePair,
   reconnectMemoryPair,
   echoOverPair,
   echoOverChain,

@@ -1,42 +1,37 @@
 # Hashtree integration
 
-Hashtree content routing **stays in hashtree**. FIPS only carries opaque bytes between identities. The adapter glues them together.
+Hashtree content routing **stays in hashtree**. FIPS only carries opaque bytes between identities.
 
-## Layering
+The Hashtree-side integration now lives in the Hashtree repository as `@hashtree/fips-transport`. It sends existing `@hashtree/mesh` MessagePack-tagged `DataRequest` / `DataResponse` frames over FIPS EndpointData, exposed through a generic FIPS endpoint interface:
 
-```
-HashTree.readFile(cid)
-  └─ Store.get(hash)
-       └─ FipsHashtreeStore
-            ├─ localStore.get(hash)             // fast path
-            └─ for each peer ∈ peers:
-                  fipsNode.sendDatagram({ dst: peer, dstPort: 7001, payload: encodeRequest({ h: hash, htl }) })
-                  await response                 // FSP service datagram from peer
-                  verifyHash(hash, data); return data
+```ts
+send(peerId, bytes)
+onMessage(({ peerId, data }) => ...)
 ```
 
-The request/response payloads inside the FIPS service-port datagram are the **existing `@hashtree/mesh` MessagePack-tagged frames**:
+For public Hashtree swarms, use the FIPS Nostr discovery app scope:
 
-```
-[type_byte:1][msgpack(DataRequest | DataResponse)]
+```text
+hashtree-v1
 ```
 
-`type_byte = 0x00` (request), `0x01` (response). HTL semantics, hash verification, peer selection — all reused from `@hashtree/mesh`.
+Private or narrower swarms can use app scopes such as `hashtree-v1:<topic>`.
+The advert content still uses the FIPS advert identifier `fips-overlay-v1`; the
+Hashtree scope lives in the FIPS `d` and `protocol` tags. A generic FIPS daemon
+advert and a Hashtree endpoint advert are separate replaceable events.
+
+Those may be different identities. A host daemon can advertise generic FIPS
+reachability while a Hashtree endpoint identity behind that daemon advertises
+`hashtree-v1`; FIPS routing/gateway state is responsible for reaching the
+endpoint identity.
 
 ## What FIPS does NOT do
 
-- decrement HTL (that's hashtree's concern)
+- decrement HTL or choose retry/hedge policy (that's hashtree's concern)
 - track which peers have which blob (no content routing)
 - chunk or merkleize data
 - run the @hashtree/core Store interface
 
-## Multi-hop fetch
+## Silence
 
-When B does not have hash H:
-
-1. A asks B for H with htl=10.
-2. B has no local copy; B uses its own `FipsHashtreeStore.peers` to ask C with htl decremented per hashtree policy.
-3. C returns data over FIPS to B.
-4. B returns data over FIPS to A.
-
-This is *hashtree* multi-hop, not FIPS multi-hop. FIPS just delivers each pair-of-identities datagram. FIPS may itself route through intermediate FIPS forwarders; that is independent of hashtree HTL.
+Hashtree's blob protocol does not require explicit misses. If a peer has no matching blob it can remain silent. The Hashtree transport treats silence as unknown/no response, not as proof of absence and not as a reason to retry the same peer forever.

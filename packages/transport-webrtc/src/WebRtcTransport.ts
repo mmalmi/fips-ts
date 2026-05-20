@@ -24,6 +24,8 @@ export interface WebRtcTransportConfig {
   advertiseOnNostr?: boolean;
   acceptConnections?: boolean;
   autoConnect?: boolean;
+  discoveryApp?: string;
+  advertTtlMs?: number;
 
   mtu?: number;
   maxConnections?: number;
@@ -124,6 +126,8 @@ export class WebRtcTransport implements Transport {
     this.signaling = new NostrWebRtcSignaling({
       identity: ctx.localIdentity,
       relays: this.relayClients,
+      discoveryApp: this.cfg.discoveryApp,
+      advertTtlMs: this.cfg.advertTtlMs,
       logger: this.logger,
       onSignal: (signal, senderXOnly) =>
         this.handleIncomingSignal(signal, senderXOnly).catch((err) => {

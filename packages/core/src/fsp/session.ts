@@ -23,6 +23,7 @@ import {
   encodeFspHandshake,
   encodeFspInner,
   FSP_MSG_DATA,
+  FSP_MSG_ENDPOINT_DATA,
   FSP_MSG_KEEPALIVE,
   NOISE_XK_MSG1_LEN,
   NOISE_XK_MSG2_LEN,
@@ -152,6 +153,21 @@ export class FspSession {
     return encodeFspEstablished({ flags: 0, counter, ciphertext });
   }
 
+  encryptEndpointData(payload: Uint8Array): Uint8Array {
+    if (this.state !== "established" || !this.tx) throw new Error("FSP not established");
+    const counter = this.txCounter++;
+    const inner = encodeFspInner({
+      timestamp: Math.floor(Date.now() / 1000),
+      msgType: FSP_MSG_ENDPOINT_DATA,
+      innerFlags: 0,
+      payload,
+    });
+    const ciphertextLen = inner.length + 16;
+    const aad = encodeFspEstablishedHeader({ flags: 0, counter }, ciphertextLen);
+    const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
+    return encodeFspEstablished({ flags: 0, counter, ciphertext });
+  }
+
   encryptKeepalive(): Uint8Array {
     if (this.state !== "established" || !this.tx) throw new Error("FSP not established");
     const counter = this.txCounter++;
@@ -169,7 +185,7 @@ export class FspSession {
 
   decryptIncoming(
     packet: Uint8Array,
-  ): { msgType: number; data?: DataPacket } {
+  ): { msgType: number; data?: DataPacket; endpointData?: Uint8Array } {
     if (this.state !== "established" || !this.rx) throw new Error("FSP not established");
     const est = decodeFspEstablished(packet);
     if (!this.replay.accept(est.counter)) {
@@ -187,6 +203,9 @@ export class FspSession {
     const inner = decodeFspInner(plaintext);
     if (inner.msgType === FSP_MSG_DATA) {
       return { msgType: inner.msgType, data: decodeDataPacket(inner.payload) };
+    }
+    if (inner.msgType === FSP_MSG_ENDPOINT_DATA) {
+      return { msgType: inner.msgType, endpointData: inner.payload };
     }
     return { msgType: inner.msgType };
   }

@@ -33,6 +33,7 @@ export const FSP_INNER_HEADER_LEN = 4 + 1 + 1; // 6
 /** FSP inner msg types. */
 export const FSP_MSG_KEEPALIVE = 0x00;
 export const FSP_MSG_DATA = 0x10;        // DataPacket: src_port + dst_port + payload
+export const FSP_MSG_ENDPOINT_DATA = 0x15; // App endpoint payload without service ports
 
 export interface FspCommonPrefix {
   version: number;

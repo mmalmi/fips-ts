@@ -4,7 +4,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │ Application (hashtree, etc.)                                    │
 ├─────────────────────────────────────────────────────────────────┤
-│ FIPS Service Port datagrams       (port 7001 = hashtree)        │
+│ FIPS endpoint bytes / optional service-port datagrams           │
 ├─────────────────────────────────────────────────────────────────┤
 │ FSP — end-to-end encrypted session (Noise XK over secp256k1)    │
 ├─────────────────────────────────────────────────────────────────┤
@@ -25,8 +25,9 @@
 - **Transport** moves opaque bytes between adjacent peers (a transport address is `webrtc:<remote-pubkey>` or `memory:<pubkey>`, NOT a session id).
 - **FMP** is responsible for link encryption (IK), framing, replay protection, link-state, mesh forwarding.
 - **FSP** is end-to-end encrypted (XK), independent of the path the FMP frames take.
-- **Service ports** are u16 LE; ports 1024–65535 are application; port 256 is reserved (IPv6 shim, not implemented in browser).
-- **Hashtree** uses an application service port (default 7001) and reuses the existing `@hashtree/mesh` MessagePack DataRequest/DataResponse encoding.
+- **EndpointData** carries app-owned opaque bytes without service ports.
+- **Service ports** are u16 LE when an app wants local port dispatch; ports 1024–65535 are application; port 256 is reserved (IPv6 shim, not implemented in browser).
+- Application protocols stay above FIPS. Hashtree integration lives in Hashtree as `@hashtree/fips-transport`, which sends `@hashtree/mesh` frames as EndpointData bytes.
 
 ## Forwarding
 
