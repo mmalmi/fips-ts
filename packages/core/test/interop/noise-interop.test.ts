@@ -124,7 +124,6 @@ describe("Noise interop: TS initiator ↔ Rust responder (live handshake)", () =
 
   if (!bridgeAvailable()) {
     it.skip("(skipped — fips-rust-bridge binary not built)", () => {});
-    // eslint-disable-next-line no-console
     console.warn(
       "[noise-interop] skipping; build with: cargo build --release --manifest-path interop/rust-bridge/Cargo.toml",
     );

@@ -6,11 +6,14 @@ import {
   FIPS_ADVERT_D_TAG,
   FIPS_ADVERT_KIND,
   FIPS_PROTOCOL_VERSION,
+  FIPS_SIGNAL_KIND,
   NostrWebRtcSignaling,
   type FipsAdvertContent,
 } from "../src/NostrWebRtcSignaling.js";
+import { FIPS_SIGNAL_RUMOR_KIND, unwrapGiftWrap } from "../src/giftWrap.js";
 import type { NostrEvent, NostrFilter, NostrRelayClient } from "../src/NostrRelayClient.js";
 import { signEvent } from "../src/nostrEvent.js";
+import type { WebRtcSignal } from "../src/WebRtcSignal.js";
 
 class FakeRelay {
   readonly url = "ws://relay.test";
@@ -124,5 +127,36 @@ describe("NostrWebRtcSignaling adverts", () => {
     relay.emit(rightApp);
 
     expect(seen.map((event) => event.pubkey)).toEqual([toHex(author.xOnlyPubkey)]);
+  });
+
+  it("sends Rust FIPS-compatible private-message rumors inside signal wraps", async () => {
+    const sender = await identityFromSecretKey(new Uint8Array(32).fill(0x44));
+    const recipient = await identityFromSecretKey(new Uint8Array(32).fill(0x55));
+    const relay = new FakeRelay();
+    const signaling = new NostrWebRtcSignaling({
+      identity: sender,
+      relays: [relayClient(relay)],
+      onSignal: () => undefined,
+    });
+    const signal: WebRtcSignal = {
+      protocol: "fips-webrtc-v1",
+      version: 1,
+      sessionId: "session",
+      kind: "offer",
+      sender: toHex(sender.publicKey),
+      recipient: toHex(recipient.publicKey),
+      sdp: "v=0",
+      createdAtMs: 1,
+      expiresAtMs: 2,
+    };
+
+    await signaling.sendSignal(toHex(recipient.xOnlyPubkey), signal);
+
+    expect(relay.published).toHaveLength(1);
+    const [event] = relay.published;
+    expect(event.kind).toBe(FIPS_SIGNAL_KIND);
+    const unwrapped = unwrapGiftWrap(recipient, event);
+    expect(unwrapped.kind).toBe(FIPS_SIGNAL_RUMOR_KIND);
+    expect(JSON.parse(unwrapped.content)).toEqual(signal);
   });
 });

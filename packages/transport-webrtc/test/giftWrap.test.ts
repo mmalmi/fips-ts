@@ -6,13 +6,14 @@ import {
   buildGiftWrap,
   FIPS_SIGNAL_RUMOR_KIND,
   FIPS_SIGNAL_WRAP_KIND,
+  LEGACY_FIPS_SIGNAL_RUMOR_KIND,
   NIP59_SEAL_KIND,
   unwrapGiftWrap,
 } from "../src/giftWrap.js";
 import { verifyEvent } from "../src/nostrEvent.js";
 
-describe("NIP-59 gift wrap (FIPS-flavored, kind 21059)", () => {
-  it("wrap → unwrap recovers content and identifies real sender", async () => {
+describe("NIP-59 gift wrap (FIPS-flavored, outer kind 21059)", () => {
+  it("wrap -> unwrap recovers content and identifies real sender", async () => {
     const sender = await identityFromSecretKey(new Uint8Array(32).fill(0x11));
     const recipient = await identityFromSecretKey(new Uint8Array(32).fill(0x22));
 
@@ -49,8 +50,10 @@ describe("NIP-59 gift wrap (FIPS-flavored, kind 21059)", () => {
     expect(() => unwrapGiftWrap(stranger, wrap)).toThrow();
   });
 
-  it("seal kind is the NIP-59 standard (13), wrap kind is FIPS 21059", () => {
+  it("uses Rust FIPS signal kinds", () => {
     expect(NIP59_SEAL_KIND).toBe(13);
+    expect(FIPS_SIGNAL_RUMOR_KIND).toBe(14);
     expect(FIPS_SIGNAL_WRAP_KIND).toBe(21059);
+    expect(LEGACY_FIPS_SIGNAL_RUMOR_KIND).toBe(21059);
   });
 });

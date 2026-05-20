@@ -42,6 +42,7 @@ export {
   unwrapGiftWrap,
   FIPS_SIGNAL_WRAP_KIND,
   FIPS_SIGNAL_RUMOR_KIND,
+  LEGACY_FIPS_SIGNAL_RUMOR_KIND,
   NIP59_SEAL_KIND,
   type UnwrappedRumor,
 } from "./giftWrap.js";

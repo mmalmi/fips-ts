@@ -2,9 +2,10 @@
  * FIPS-flavored NIP-59 gift wrap.
  *
  * Standard NIP-59 publishes gift wraps as kind 1059 (regular event, stored by
- * relays). Rust FIPS uses kind 21059, which is in the 20000-29999 ephemeral
- * range — relays drop them after broadcast, so signaling never accumulates
- * relay state. We follow Rust FIPS for byte-compatible interop.
+ * relays). Rust FIPS uses kind 21059 for the outer gift wrap, which is in the
+ * 20000-29999 ephemeral range; relays drop them after broadcast, so signaling
+ * never accumulates relay state. We follow Rust FIPS for byte-compatible
+ * interop.
  *
  * Layering on the wire:
  *
@@ -14,7 +15,7 @@
  *   seal event (kind 13, signed by sender's real key)
  *     content: NIP-44(rumor, senderKey, recipientPubkey)
  *
- *   rumor (unsigned event, kind 21059 — FIPS signal payload as content)
+ *   rumor (unsigned event, kind 14 - NIP-17 private message content)
  */
 
 import { randomBytes } from "@noble/hashes/utils";
@@ -30,7 +31,8 @@ import {
 } from "./nostrEvent.js";
 import type { NostrEvent } from "./NostrRelayClient.js";
 
-export const FIPS_SIGNAL_RUMOR_KIND = 21059;
+export const FIPS_SIGNAL_RUMOR_KIND = 14;
+export const LEGACY_FIPS_SIGNAL_RUMOR_KIND = 21059;
 export const FIPS_SIGNAL_WRAP_KIND = 21059;
 export const NIP59_SEAL_KIND = 13;
 
@@ -139,7 +141,7 @@ export function unwrapGiftWrap(
   const rumorJson = nip44v2.decrypt(seal.content, sealConvKey);
   const rumor = JSON.parse(rumorJson) as UnsignedEvent & { id?: string };
   if (rumor.pubkey !== seal.pubkey) {
-    throw new Error("gift wrap: rumor pubkey ≠ seal pubkey");
+    throw new Error("gift wrap: rumor pubkey does not match seal pubkey");
   }
   return {
     senderXOnlyHex: rumor.pubkey,

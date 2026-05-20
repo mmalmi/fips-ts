@@ -1,5 +1,5 @@
 /**
- * NostrWebRtcSignaling — publishes FIPS adverts (kind 37195) and exchanges
+ * NostrWebRtcSignaling - publishes FIPS adverts (kind 37195) and exchanges
  * WebRTC offers/answers via NIP-59 gift-wrapped signals (kind 21059).
  *
  * Adverts are addressed-replaceable per identity and app scope (`d=<app>`).
@@ -8,13 +8,17 @@
  * NIP-44-encrypted seal (kind 13, signed by the real sender), whose content
  * is the NIP-44-encrypted rumor carrying the WebRTC signal.
  *
- * See `giftWrap.ts` for the layering details and Rust-FIPS-vs-NIP59 kind
- * choice (21059 vs 1059).
+ * See `giftWrap.ts` for the layering details and Rust FIPS kind choices.
  */
 
 import { toHex, type FipsIdentity, type Logger } from "@fips/core";
 
-import { buildGiftWrap, unwrapGiftWrap, FIPS_SIGNAL_RUMOR_KIND } from "./giftWrap.js";
+import {
+  FIPS_SIGNAL_RUMOR_KIND,
+  LEGACY_FIPS_SIGNAL_RUMOR_KIND,
+  buildGiftWrap,
+  unwrapGiftWrap,
+} from "./giftWrap.js";
 import { NostrRelayClient, type NostrEvent } from "./NostrRelayClient.js";
 import { signEvent, verifyEvent } from "./nostrEvent.js";
 import type { WebRtcSignal } from "./WebRtcSignal.js";
@@ -164,7 +168,10 @@ export class NostrWebRtcSignaling {
       this.logger?.warn("gift wrap decrypt failed", err);
       return;
     }
-    if (unwrapped.kind !== FIPS_SIGNAL_RUMOR_KIND) {
+    if (
+      unwrapped.kind !== FIPS_SIGNAL_RUMOR_KIND &&
+      unwrapped.kind !== LEGACY_FIPS_SIGNAL_RUMOR_KIND
+    ) {
       this.logger?.warn("gift wrap rumor kind unexpected", unwrapped.kind);
       return;
     }
