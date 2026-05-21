@@ -90,8 +90,10 @@ export class WebRtcTransport implements Transport {
   private relayClients: NostrRelayClient[] = [];
   private readonly conns = new Map<string, WebRtcConnection>(); // by pubkeyHex
   private readonly pendingDials = new Map<string, PendingDial>(); // by sessionId
+  private readonly autoConnectPeers = new Set<string>(); // by pubkeyHex
   private readonly knownSessionIds = new Set<string>();
   private readonly seenSessionIds = new Set<string>();
+  private advertCleanup?: () => void;
 
   constructor(config: WebRtcTransportConfig) {
     this.cfg = {
@@ -145,12 +147,23 @@ export class WebRtcTransport implements Transport {
         stunServers: this.cfg.stunServers ?? [],
       });
     }
+
+    if (this.cfg.autoConnect) {
+      this.advertCleanup = await this.signaling.subscribeAdverts((_event, advert) => {
+        this.handleAdvert(advert).catch((err) => {
+          this.logger.warn("handleAdvert", err);
+        });
+      });
+    }
   }
 
   async stop(): Promise<void> {
+    this.advertCleanup?.();
+    this.advertCleanup = undefined;
     this.signaling?.stop();
     for (const c of this.conns.values()) c.close();
     this.conns.clear();
+    this.autoConnectPeers.clear();
     for (const r of this.relayClients) r.close();
     this.relayClients = [];
     for (const dial of this.pendingDials.values()) {
@@ -158,6 +171,27 @@ export class WebRtcTransport implements Transport {
       dial.reject(new Error("transport stopped"));
     }
     this.pendingDials.clear();
+  }
+
+  private async handleAdvert(advert: { endpoints: Array<{ transport: string; addr: string }> }): Promise<void> {
+    const localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : "";
+    for (const endpoint of advert.endpoints) {
+      if (endpoint.transport !== "webrtc" || endpoint.addr.length !== 66) continue;
+      if (endpoint.addr === localPubkeyHex || this.conns.has(endpoint.addr)) continue;
+      if (this.autoConnectPeers.has(endpoint.addr)) continue;
+      if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections) {
+        return;
+      }
+
+      this.autoConnectPeers.add(endpoint.addr);
+      try {
+        await this.connect({ transport: "webrtc", addr: endpoint.addr });
+      } catch (err) {
+        this.logger.warn("autoConnect failed", endpoint.addr, err);
+      } finally {
+        this.autoConnectPeers.delete(endpoint.addr);
+      }
+    }
   }
 
   async connect(addr: TransportAddress): Promise<void> {
