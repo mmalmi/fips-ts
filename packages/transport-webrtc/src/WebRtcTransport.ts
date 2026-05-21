@@ -183,8 +183,12 @@ export class WebRtcTransport implements Transport {
         return;
       }
 
+      const shouldDelay = localPubkeyHex.length === 66
+        && localPubkeyHex.slice(2) > endpoint.addr.slice(2);
       this.autoConnectPeers.add(endpoint.addr);
       try {
+        if (shouldDelay) await new Promise((resolve) => setTimeout(resolve, 1200));
+        if (this.conns.has(endpoint.addr)) continue;
         await this.connect({ transport: "webrtc", addr: endpoint.addr });
       } catch (err) {
         this.logger.warn("autoConnect failed", endpoint.addr, err);
