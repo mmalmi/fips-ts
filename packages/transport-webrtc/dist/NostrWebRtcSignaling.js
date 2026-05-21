@@ -79,7 +79,11 @@ export class NostrWebRtcSignaling {
         await this.publishToRelays(ev, "advert publish failed");
     }
     async sendSignal(recipientXOnlyHex, signal) {
-        const giftWrap = buildGiftWrap(this.identity, recipientXOnlyHex, JSON.stringify(signal));
+        const now = Math.floor(Date.now() / 1000);
+        const giftWrap = buildGiftWrap(this.identity, recipientXOnlyHex, JSON.stringify(signal), FIPS_SIGNAL_RUMOR_KIND, {
+            outerCreatedAt: now,
+            expiration: Math.max(now + 1, Math.floor(signal.expiresAtMs / 1000)),
+        });
         await this.publishToRelays(giftWrap, "signal publish failed");
         this.logger?.debug("signal published", signal.kind, signal.sessionId, recipientXOnlyHex);
     }

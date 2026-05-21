@@ -32,6 +32,7 @@ export interface NostrRelayClientOptions {
     url: string;
     webSocket?: WebSocketCtor;
     connectTimeoutMs?: number;
+    publishAckTimeoutMs?: number;
     onClose?: () => void;
     logger?: {
         debug: (...a: unknown[]) => void;
@@ -47,8 +48,10 @@ export declare class NostrRelayClient {
     private ws?;
     private readyPromise?;
     private readonly subs;
+    private readonly pendingPublishes;
     private readonly WS;
     private readonly connectTimeoutMs;
+    private readonly publishAckTimeoutMs;
     private closed;
     private subCounter;
     private readonly logger;
@@ -59,6 +62,9 @@ export declare class NostrRelayClient {
     subscribe(filter: NostrFilter, cb: SubCallbacks): Promise<() => void>;
     close(): void;
     private onMessage;
+    private onPublishOk;
+    private clearPendingPublish;
+    private rejectPendingPublishes;
 }
 export {};
 //# sourceMappingURL=NostrRelayClient.d.ts.map

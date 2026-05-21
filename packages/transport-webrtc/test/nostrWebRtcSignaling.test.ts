@@ -183,6 +183,9 @@ describe("NostrWebRtcSignaling adverts", () => {
     expect(relay.published).toHaveLength(1);
     const [event] = relay.published;
     expect(event.kind).toBe(FIPS_SIGNAL_KIND);
+    expect(event.created_at).toBeGreaterThanOrEqual(Math.floor(Date.now() / 1000) - 5);
+    expect(event.tags).toContainEqual(["p", toHex(recipient.xOnlyPubkey)]);
+    expect(event.tags.some((tag) => tag[0] === "expiration")).toBe(true);
     const unwrapped = unwrapGiftWrap(recipient, event);
     expect(unwrapped.kind).toBe(FIPS_SIGNAL_RUMOR_KIND);
     expect(JSON.parse(unwrapped.content)).toEqual(signal);

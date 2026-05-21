@@ -36,6 +36,7 @@ export interface NostrRelayClientOptions {
   url: string;
   webSocket?: WebSocketCtor;
   connectTimeoutMs?: number;
+  publishAckTimeoutMs?: number;
   onClose?: () => void;
   logger?: { debug: (...a: unknown[]) => void; warn: (...a: unknown[]) => void };
 }
@@ -45,13 +46,21 @@ type SubCallbacks = {
   onEose?: () => void;
 };
 
+type PendingPublish = {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 export class NostrRelayClient {
   readonly url: string;
   private ws?: WebSocket;
   private readyPromise?: Promise<void>;
   private readonly subs = new Map<string, SubCallbacks>();
+  private readonly pendingPublishes = new Map<string, PendingPublish>();
   private readonly WS: WebSocketCtor;
   private readonly connectTimeoutMs: number;
+  private readonly publishAckTimeoutMs: number;
   private closed = false;
   private subCounter = 0;
   private readonly logger: NostrRelayClientOptions["logger"];
@@ -61,6 +70,7 @@ export class NostrRelayClient {
     this.WS = opts.webSocket ?? (globalThis as { WebSocket: WebSocketCtor }).WebSocket;
     if (!this.WS) throw new Error("no WebSocket constructor available");
     this.connectTimeoutMs = opts.connectTimeoutMs ?? 8_000;
+    this.publishAckTimeoutMs = opts.publishAckTimeoutMs ?? 2_500;
     this.logger = opts.logger;
   }
 
@@ -108,6 +118,7 @@ export class NostrRelayClient {
           const wasConnecting = !settled;
           this.closed = true;
           this.logger?.debug("relay closed", this.url);
+          this.rejectPendingPublishes(new Error("relay closed before publish OK"));
           if (wasConnecting) fail("relay closed before open");
         });
         ws.addEventListener("message", (m) => this.onMessage(m));
@@ -121,7 +132,19 @@ export class NostrRelayClient {
 
   async publish(event: NostrEvent): Promise<void> {
     await this.connect();
-    this.ws!.send(JSON.stringify(["EVENT", event]));
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingPublishes.delete(event.id);
+        reject(new Error("relay publish OK timeout"));
+      }, this.publishAckTimeoutMs);
+      this.pendingPublishes.set(event.id, { resolve, reject, timer });
+      try {
+        this.ws!.send(JSON.stringify(["EVENT", event]));
+      } catch (error) {
+        this.clearPendingPublish(event.id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
   }
 
   async subscribe(
@@ -144,6 +167,7 @@ export class NostrRelayClient {
 
   close(): void {
     this.closed = true;
+    this.rejectPendingPublishes(new Error("relay closed"));
     try {
       this.ws?.close();
     } catch {
@@ -167,9 +191,42 @@ export class NostrRelayClient {
       const sub = this.subs.get(arr[1] as string);
       sub?.onEose?.();
     } else if (tag === "OK") {
-      /* fine */
+      this.onPublishOk(arr);
     } else if (tag === "NOTICE") {
       this.logger?.warn("relay notice", arr[1]);
+    }
+  }
+
+  private onPublishOk(arr: unknown[]): void {
+    const eventId = arr[1];
+    if (typeof eventId !== "string") return;
+    const pending = this.pendingPublishes.get(eventId);
+    if (!pending) return;
+    this.pendingPublishes.delete(eventId);
+    clearTimeout(pending.timer);
+    const accepted = arr[2] === true;
+    if (accepted) {
+      pending.resolve();
+      return;
+    }
+    const message = typeof arr[3] === "string" && arr[3].trim()
+      ? arr[3]
+      : "relay rejected event";
+    pending.reject(new Error(message));
+  }
+
+  private clearPendingPublish(eventId: string): void {
+    const pending = this.pendingPublishes.get(eventId);
+    if (!pending) return;
+    this.pendingPublishes.delete(eventId);
+    clearTimeout(pending.timer);
+  }
+
+  private rejectPendingPublishes(error: Error): void {
+    for (const [eventId, pending] of this.pendingPublishes) {
+      this.pendingPublishes.delete(eventId);
+      clearTimeout(pending.timer);
+      pending.reject(error);
     }
   }
 }

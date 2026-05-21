@@ -22,11 +22,21 @@ import type { NostrEvent } from "./NostrRelayClient.js";
 export declare const FIPS_SIGNAL_RUMOR_KIND = 14;
 export declare const FIPS_SIGNAL_WRAP_KIND = 21059;
 export declare const NIP59_SEAL_KIND = 13;
+export interface BuildGiftWrapOptions {
+    /**
+     * Override the outer event timestamp. WebRTC signaling uses an ephemeral
+     * kind and must look fresh to relays; ordinary gift-wrap callers can keep
+     * the randomized NIP-59 timestamp default.
+     */
+    outerCreatedAt?: number;
+    /** Optional outer expiration tag, as a unix timestamp in seconds. */
+    expiration?: number;
+}
 /**
  * Build and sign a kind 21059 gift wrap containing the given rumor content,
  * sealed for `recipientXOnlyHex`.
  */
-export declare function buildGiftWrap(sender: FipsIdentity, recipientXOnlyHex: string, rumorContent: string, rumorKind?: number): NostrEvent;
+export declare function buildGiftWrap(sender: FipsIdentity, recipientXOnlyHex: string, rumorContent: string, rumorKind?: number, options?: BuildGiftWrapOptions): NostrEvent;
 export interface UnwrappedRumor {
     /** Real sender's xOnly hex (from the seal). */
     senderXOnlyHex: string;

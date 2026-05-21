@@ -13,8 +13,10 @@ export class NostrRelayClient {
     ws;
     readyPromise;
     subs = new Map();
+    pendingPublishes = new Map();
     WS;
     connectTimeoutMs;
+    publishAckTimeoutMs;
     closed = false;
     subCounter = 0;
     logger;
@@ -24,6 +26,7 @@ export class NostrRelayClient {
         if (!this.WS)
             throw new Error("no WebSocket constructor available");
         this.connectTimeoutMs = opts.connectTimeoutMs ?? 8_000;
+        this.publishAckTimeoutMs = opts.publishAckTimeoutMs ?? 2_500;
         this.logger = opts.logger;
     }
     isConnected() {
@@ -73,6 +76,7 @@ export class NostrRelayClient {
                     const wasConnecting = !settled;
                     this.closed = true;
                     this.logger?.debug("relay closed", this.url);
+                    this.rejectPendingPublishes(new Error("relay closed before publish OK"));
                     if (wasConnecting)
                         fail("relay closed before open");
                 });
@@ -87,7 +91,20 @@ export class NostrRelayClient {
     }
     async publish(event) {
         await this.connect();
-        this.ws.send(JSON.stringify(["EVENT", event]));
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.pendingPublishes.delete(event.id);
+                reject(new Error("relay publish OK timeout"));
+            }, this.publishAckTimeoutMs);
+            this.pendingPublishes.set(event.id, { resolve, reject, timer });
+            try {
+                this.ws.send(JSON.stringify(["EVENT", event]));
+            }
+            catch (error) {
+                this.clearPendingPublish(event.id);
+                reject(error instanceof Error ? error : new Error(String(error)));
+            }
+        });
     }
     async subscribe(filter, cb) {
         await this.connect();
@@ -106,6 +123,7 @@ export class NostrRelayClient {
     }
     close() {
         this.closed = true;
+        this.rejectPendingPublishes(new Error("relay closed"));
         try {
             this.ws?.close();
         }
@@ -134,10 +152,43 @@ export class NostrRelayClient {
             sub?.onEose?.();
         }
         else if (tag === "OK") {
-            /* fine */
+            this.onPublishOk(arr);
         }
         else if (tag === "NOTICE") {
             this.logger?.warn("relay notice", arr[1]);
+        }
+    }
+    onPublishOk(arr) {
+        const eventId = arr[1];
+        if (typeof eventId !== "string")
+            return;
+        const pending = this.pendingPublishes.get(eventId);
+        if (!pending)
+            return;
+        this.pendingPublishes.delete(eventId);
+        clearTimeout(pending.timer);
+        const accepted = arr[2] === true;
+        if (accepted) {
+            pending.resolve();
+            return;
+        }
+        const message = typeof arr[3] === "string" && arr[3].trim()
+            ? arr[3]
+            : "relay rejected event";
+        pending.reject(new Error(message));
+    }
+    clearPendingPublish(eventId) {
+        const pending = this.pendingPublishes.get(eventId);
+        if (!pending)
+            return;
+        this.pendingPublishes.delete(eventId);
+        clearTimeout(pending.timer);
+    }
+    rejectPendingPublishes(error) {
+        for (const [eventId, pending] of this.pendingPublishes) {
+            this.pendingPublishes.delete(eventId);
+            clearTimeout(pending.timer);
+            pending.reject(error);
         }
     }
 }

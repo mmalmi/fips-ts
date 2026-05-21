@@ -45,7 +45,7 @@ function identityFromSecretKey(sk) {
  * Build and sign a kind 21059 gift wrap containing the given rumor content,
  * sealed for `recipientXOnlyHex`.
  */
-export function buildGiftWrap(sender, recipientXOnlyHex, rumorContent, rumorKind = FIPS_SIGNAL_RUMOR_KIND) {
+export function buildGiftWrap(sender, recipientXOnlyHex, rumorContent, rumorKind = FIPS_SIGNAL_RUMOR_KIND, options = {}) {
     // 1. Build the rumor (NIP-59: unsigned, with stable id).
     const rumorBase = {
         pubkey: toHex(sender.xOnlyPubkey),
@@ -70,10 +70,14 @@ export function buildGiftWrap(sender, recipientXOnlyHex, rumorContent, rumorKind
     const wrapper = identityFromSecretKey(wrapSk);
     const wrapConvKey = nip44v2.utils.getConversationKey(wrapper.secretKey, recipientXOnlyHex);
     const wrapContent = nip44v2.encrypt(JSON.stringify(seal), wrapConvKey);
+    const tags = [["p", recipientXOnlyHex]];
+    if (typeof options.expiration === "number") {
+        tags.push(["expiration", String(options.expiration)]);
+    }
     return signEvent(wrapper, {
-        created_at: randomTimestampJitter(),
+        created_at: options.outerCreatedAt ?? randomTimestampJitter(),
         kind: FIPS_SIGNAL_WRAP_KIND,
-        tags: [["p", recipientXOnlyHex]],
+        tags,
         content: wrapContent,
     });
 }

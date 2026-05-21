@@ -37,6 +37,17 @@ export const NIP59_SEAL_KIND = 13;
 
 const TWO_DAYS_SECS = 2 * 24 * 60 * 60;
 
+export interface BuildGiftWrapOptions {
+  /**
+   * Override the outer event timestamp. WebRTC signaling uses an ephemeral
+   * kind and must look fresh to relays; ordinary gift-wrap callers can keep
+   * the randomized NIP-59 timestamp default.
+   */
+  outerCreatedAt?: number;
+  /** Optional outer expiration tag, as a unix timestamp in seconds. */
+  expiration?: number;
+}
+
 function randomTimestampJitter(): number {
   const now = Math.floor(Date.now() / 1000);
   return now - Math.floor(Math.random() * TWO_DAYS_SECS);
@@ -63,6 +74,7 @@ export function buildGiftWrap(
   recipientXOnlyHex: string,
   rumorContent: string,
   rumorKind: number = FIPS_SIGNAL_RUMOR_KIND,
+  options: BuildGiftWrapOptions = {},
 ): NostrEvent {
   // 1. Build the rumor (NIP-59: unsigned, with stable id).
   const rumorBase: UnsignedEvent = {
@@ -96,10 +108,14 @@ export function buildGiftWrap(
     recipientXOnlyHex,
   );
   const wrapContent = nip44v2.encrypt(JSON.stringify(seal), wrapConvKey);
+  const tags = [["p", recipientXOnlyHex]];
+  if (typeof options.expiration === "number") {
+    tags.push(["expiration", String(options.expiration)]);
+  }
   return signEvent(wrapper, {
-    created_at: randomTimestampJitter(),
+    created_at: options.outerCreatedAt ?? randomTimestampJitter(),
     kind: FIPS_SIGNAL_WRAP_KIND,
-    tags: [["p", recipientXOnlyHex]],
+    tags,
     content: wrapContent,
   });
 }
