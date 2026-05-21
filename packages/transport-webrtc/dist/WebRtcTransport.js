@@ -67,6 +67,13 @@ export class WebRtcTransport {
             }),
         });
         await this.signaling.start();
+        if (this.cfg.autoConnect) {
+            this.advertCleanup = await this.signaling.subscribeAdverts((_event, advert) => {
+                this.handleAdvert(advert).catch((err) => {
+                    this.logger.warn("handleAdvert", err);
+                });
+            });
+        }
         if (this.cfg.advertiseOnNostr) {
             await this.signaling.publishAdvert({
                 identifier: FIPS_ADVERT_D_TAG,
@@ -74,13 +81,6 @@ export class WebRtcTransport {
                 endpoints: [{ transport: "webrtc", addr: toHex(ctx.localIdentity.publicKey) }],
                 signalRelays: this.cfg.relays,
                 stunServers: this.cfg.stunServers ?? [],
-            });
-        }
-        if (this.cfg.autoConnect) {
-            this.advertCleanup = await this.signaling.subscribeAdverts((_event, advert) => {
-                this.handleAdvert(advert).catch((err) => {
-                    this.logger.warn("handleAdvert", err);
-                });
             });
         }
     }
