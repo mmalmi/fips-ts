@@ -1,0 +1,63 @@
+/**
+ * Sliding replay window (WireGuard-style, 2048 packets) over a u64 counter.
+ * Returns true if `counter` is acceptable (and updates state); false if it's a
+ * duplicate or too old.
+ */
+export class ReplayWindow {
+    static WINDOW = 2048n;
+    high = -1n;
+    seen = new Set();
+    accept(counter) {
+        if (counter < 0n)
+            return false;
+        if (this.high < 0n) {
+            this.high = counter;
+            this.seen.add(counter);
+            return true;
+        }
+        if (counter > this.high) {
+            // advance window; drop entries below new low
+            const newLow = counter > ReplayWindow.WINDOW - 1n ? counter - (ReplayWindow.WINDOW - 1n) : 0n;
+            for (const c of this.seen) {
+                if (c < newLow)
+                    this.seen.delete(c);
+            }
+            this.high = counter;
+            this.seen.add(counter);
+            return true;
+        }
+        const low = this.high > ReplayWindow.WINDOW - 1n ? this.high - (ReplayWindow.WINDOW - 1n) : 0n;
+        if (counter < low)
+            return false;
+        if (this.seen.has(counter))
+            return false;
+        this.seen.add(counter);
+        return true;
+    }
+    /**
+     * Non-destructive check: would `accept(counter)` succeed right now?
+     * Mirrors Rust ReplayWindow::check.
+     */
+    check(counter) {
+        if (counter < 0n)
+            return false;
+        if (this.high < 0n)
+            return true;
+        if (counter > this.high)
+            return true;
+        const low = this.high > ReplayWindow.WINDOW - 1n ? this.high - (ReplayWindow.WINDOW - 1n) : 0n;
+        if (counter < low)
+            return false;
+        return !this.seen.has(counter);
+    }
+    /** Highest counter ever accepted, or 0 if none (Rust returns 0 too). */
+    get highest() {
+        return this.high < 0n ? 0n : this.high;
+    }
+    /** Forget all state. */
+    reset() {
+        this.high = -1n;
+        this.seen.clear();
+    }
+}
+//# sourceMappingURL=replay.js.map

@@ -1,0 +1,56 @@
+import type { FipsIdentity } from "../identity/index.js";
+import type { Logger, Transport, TransportAddress } from "../transport/types.js";
+export interface ServiceContext {
+    src: string;
+    srcPort: number;
+    dstPort: number;
+    payload: Uint8Array;
+    reply: (data: Uint8Array, replyDstPort?: number) => Promise<void>;
+}
+export type FipsServiceHandler = (ctx: ServiceContext) => Promise<void> | void;
+export interface ServiceRegistration {
+    port: number;
+    handler: FipsServiceHandler;
+}
+export interface RandomSource {
+    bytes(n: number): Uint8Array;
+}
+export interface Clock {
+    nowMs(): number;
+}
+export interface FipsNodeConfig {
+    identity: FipsIdentity;
+    transports: Transport[];
+    forwarding?: boolean;
+    services?: ServiceRegistration[];
+    clock?: Clock;
+    random?: RandomSource;
+    logger?: Logger;
+}
+export type FipsEventName = "peer" | "route" | "session" | "datagram" | "endpointData" | "error";
+export interface PeerEvent {
+    remotePubkey: string;
+    remoteAddr: TransportAddress;
+    state: "connected" | "disconnected";
+}
+export interface DatagramEvent {
+    src: string;
+    dst: string;
+    srcPort: number;
+    dstPort: number;
+    payload: Uint8Array;
+}
+export interface EndpointDataEvent {
+    src: string;
+    dst: string;
+    payload: Uint8Array;
+}
+export interface SessionEvent {
+    remotePubkey: string;
+    state: "establishing" | "established" | "closed";
+}
+export interface ErrorEvent {
+    err: Error;
+    where: string;
+}
+//# sourceMappingURL=types.d.ts.map
