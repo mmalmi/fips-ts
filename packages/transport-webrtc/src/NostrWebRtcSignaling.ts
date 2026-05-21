@@ -29,6 +29,7 @@ export const FIPS_ADVERT_D_TAG = FIPS_ADVERT_IDENTIFIER;
 export const FIPS_DEFAULT_DISCOVERY_APP = "fips-overlay-v1";
 export const FIPS_PROTOCOL_VERSION = "1";
 export const DEFAULT_FIPS_ADVERT_TTL_MS = 30 * 60 * 1000;
+const RELAY_OPERATION_WARMUP_MS = 1_500;
 
 export interface FipsAdvertContent {
   identifier: typeof FIPS_ADVERT_IDENTIFIER;
@@ -71,7 +72,7 @@ export class NostrWebRtcSignaling {
   /** Subscribe to incoming signals for the local pubkey. */
   async start(): Promise<void> {
     const localXOnly = toHex(this.identity.xOnlyPubkey);
-    await Promise.all(this.relays.map(async (relay) => {
+    const operations = this.relays.map(async (relay) => {
       try {
         await relay.connect();
         const cleanup = await relay.subscribe(
@@ -81,10 +82,13 @@ export class NostrWebRtcSignaling {
           },
         );
         this.cleanups.push(cleanup);
+        return true;
       } catch (err) {
         this.logger?.warn("signal subscription failed", relay.url, err);
+        return false;
       }
-    }));
+    });
+    await waitForRelayWarmup(operations);
   }
 
   stop(): void {
@@ -105,9 +109,7 @@ export class NostrWebRtcSignaling {
       ],
       content: JSON.stringify(advert),
     });
-    await Promise.all(this.relays.map((r) => r.publish(ev).catch((err) => {
-      this.logger?.warn("advert publish failed", r.url, err);
-    })));
+    await this.publishToRelays(ev, "advert publish failed");
   }
 
   async sendSignal(recipientXOnlyHex: string, signal: WebRtcSignal): Promise<void> {
@@ -116,9 +118,7 @@ export class NostrWebRtcSignaling {
       recipientXOnlyHex,
       JSON.stringify(signal),
     );
-    await Promise.all(this.relays.map((r) => r.publish(giftWrap).catch((err) => {
-      this.logger?.warn("signal publish failed", r.url, err);
-    })));
+    await this.publishToRelays(giftWrap, "signal publish failed");
   }
 
   /** Discover adverts (kind 37195) matching the d-tag. */
@@ -127,7 +127,7 @@ export class NostrWebRtcSignaling {
     extraFilter: { authors?: string[] } = {},
   ): Promise<() => void> {
     const localCleanups: Array<() => void> = [];
-    await Promise.all(this.relays.map(async (relay) => {
+    const operations = this.relays.map(async (relay) => {
       try {
         const off = await relay.subscribe(
           {
@@ -154,11 +154,27 @@ export class NostrWebRtcSignaling {
           },
         );
         localCleanups.push(off);
+        return true;
       } catch (err) {
         this.logger?.warn("advert subscription failed", relay.url, err);
+        return false;
       }
-    }));
+    });
+    await waitForRelayWarmup(operations);
     return () => localCleanups.forEach((c) => c());
+  }
+
+  private async publishToRelays(event: NostrEvent, failureMessage: string): Promise<void> {
+    const operations = this.relays.map(async (relay) => {
+      try {
+        await relay.publish(event);
+        return true;
+      } catch (err) {
+        this.logger?.warn(failureMessage, relay.url, err);
+        return false;
+      }
+    });
+    await waitForRelayWarmup(operations);
   }
 
   private handleSignalEvent(ev: NostrEvent): void {
@@ -188,6 +204,22 @@ export class NostrWebRtcSignaling {
     }
     this.onSignal(signal, unwrapped.senderXOnlyHex);
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForRelayWarmup(operations: Array<Promise<boolean>>): Promise<void> {
+  if (operations.length === 0) return;
+  await Promise.race([
+    Promise.any(operations.map((operation) => operation.then((ok) => {
+      if (!ok) throw new Error("relay operation failed");
+      return true;
+    }))).catch(() => false),
+    Promise.all(operations).catch(() => []),
+    sleep(RELAY_OPERATION_WARMUP_MS),
+  ]);
 }
 
 function normalizeDiscoveryApp(app: string | undefined): string {

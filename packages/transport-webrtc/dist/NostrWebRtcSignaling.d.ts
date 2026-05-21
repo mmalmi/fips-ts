@@ -59,6 +59,7 @@ export declare class NostrWebRtcSignaling {
     subscribeAdverts(cb: (ev: NostrEvent, advert: FipsAdvertContent) => void, extraFilter?: {
         authors?: string[];
     }): Promise<() => void>;
+    private publishToRelays;
     private handleSignalEvent;
 }
 //# sourceMappingURL=NostrWebRtcSignaling.d.ts.map

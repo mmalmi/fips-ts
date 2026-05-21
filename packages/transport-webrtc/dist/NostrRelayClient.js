@@ -23,8 +23,11 @@ export class NostrRelayClient {
         this.WS = opts.webSocket ?? globalThis.WebSocket;
         if (!this.WS)
             throw new Error("no WebSocket constructor available");
-        this.connectTimeoutMs = opts.connectTimeoutMs ?? 5_000;
+        this.connectTimeoutMs = opts.connectTimeoutMs ?? 8_000;
         this.logger = opts.logger;
+    }
+    isConnected() {
+        return this.ws?.readyState === this.WS.OPEN;
     }
     connect() {
         if (this.readyPromise)

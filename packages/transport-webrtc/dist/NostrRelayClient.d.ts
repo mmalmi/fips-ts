@@ -53,6 +53,7 @@ export declare class NostrRelayClient {
     private subCounter;
     private readonly logger;
     constructor(opts: NostrRelayClientOptions);
+    isConnected(): boolean;
     connect(): Promise<void>;
     publish(event: NostrEvent): Promise<void>;
     subscribe(filter: NostrFilter, cb: SubCallbacks): Promise<() => void>;
