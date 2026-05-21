@@ -1,8 +1,13 @@
+const READY_FRAME = new Uint8Array([0xff, 0x46, 0x57, 0x52, 0x31]); // FWR1
+const DEFAULT_READY_FALLBACK_MS = 250;
 /**
  * A single WebRTC datachannel link to one remote pubkey.
  *
- * Reports `connected` only when both pc.connectionState === "connected" AND
- * dataChannel.readyState === "open".
+ * Reports `connected` after both pc.connectionState === "connected" and the
+ * data channel is open, then waits for the peer's small ready marker or a
+ * short compatibility grace period. The grace keeps old peers working while
+ * avoiding the common race where FMP Msg1 is sent before the responder's
+ * onmessage handler is installed.
  */
 export class WebRtcConnection {
     remotePubkeyHex;
@@ -12,6 +17,10 @@ export class WebRtcConnection {
     state = "connecting";
     onPacket;
     onState;
+    readyFallbackMs;
+    localReadySent = false;
+    remoteReady = false;
+    fallbackTimer;
     constructor(cfg) {
         this.remotePubkeyHex = cfg.remotePubkeyHex;
         this.remoteAddr = cfg.remoteAddr;
@@ -19,6 +28,7 @@ export class WebRtcConnection {
         this.dataChannel = cfg.dataChannel;
         this.onPacket = cfg.onPacket;
         this.onState = cfg.onState;
+        this.readyFallbackMs = cfg.readyFallbackMs ?? DEFAULT_READY_FALLBACK_MS;
         this.dataChannel.binaryType = "arraybuffer";
         this.dataChannel.addEventListener("message", (ev) => {
             let buf;
@@ -30,10 +40,25 @@ export class WebRtcConnection {
                 buf = new TextEncoder().encode(ev.data);
             else
                 return;
+            if (isReadyFrame(buf)) {
+                this.remoteReady = true;
+                if (this.fallbackTimer) {
+                    clearTimeout(this.fallbackTimer);
+                    this.fallbackTimer = undefined;
+                }
+                this.evaluateState();
+                return;
+            }
             this.onPacket(buf);
         });
-        this.dataChannel.addEventListener("open", () => this.evaluateState());
+        this.dataChannel.addEventListener("open", () => {
+            this.sendLocalReady();
+            this.startReadyFallback();
+            this.evaluateState();
+        });
         this.dataChannel.addEventListener("close", () => {
+            if (this.fallbackTimer)
+                clearTimeout(this.fallbackTimer);
             this.state = "disconnected";
             this.onState(this.state);
         });
@@ -48,7 +73,7 @@ export class WebRtcConnection {
         const pcState = this.pc.connectionState;
         const dcState = this.dataChannel.readyState;
         let next;
-        if (pcState === "connected" && dcState === "open")
+        if (pcState === "connected" && dcState === "open" && this.remoteReady)
             next = "connected";
         else if (pcState === "failed" || pcState === "closed")
             next = "failed";
@@ -61,6 +86,21 @@ export class WebRtcConnection {
             this.onState(next);
         }
     }
+    sendLocalReady() {
+        if (this.localReadySent || this.dataChannel.readyState !== "open")
+            return;
+        this.localReadySent = true;
+        this.dataChannel.send(READY_FRAME);
+    }
+    startReadyFallback() {
+        if (this.remoteReady || this.fallbackTimer || this.readyFallbackMs <= 0)
+            return;
+        this.fallbackTimer = setTimeout(() => {
+            this.fallbackTimer = undefined;
+            this.remoteReady = true;
+            this.evaluateState();
+        }, this.readyFallbackMs);
+    }
     send(data) {
         if (this.dataChannel.readyState !== "open") {
             throw new Error(`datachannel not open (state=${this.dataChannel.readyState})`);
@@ -72,6 +112,8 @@ export class WebRtcConnection {
         this.dataChannel.send(copy);
     }
     close() {
+        if (this.fallbackTimer)
+            clearTimeout(this.fallbackTimer);
         try {
             this.dataChannel.close();
         }
@@ -81,5 +123,14 @@ export class WebRtcConnection {
         }
         catch { /* ignore */ }
     }
+}
+function isReadyFrame(data) {
+    if (data.length !== READY_FRAME.length)
+        return false;
+    for (let i = 0; i < READY_FRAME.length; i++) {
+        if (data[i] !== READY_FRAME[i])
+            return false;
+    }
+    return true;
 }
 //# sourceMappingURL=WebRtcConnection.js.map

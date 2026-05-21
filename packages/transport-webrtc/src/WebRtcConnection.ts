@@ -7,13 +7,20 @@ export interface WebRtcConnectionConfig {
   dataChannel: RTCDataChannel;
   onPacket: (data: Uint8Array) => void;
   onState: (state: "connecting" | "connected" | "disconnected" | "failed") => void;
+  readyFallbackMs?: number;
 }
+
+const READY_FRAME = new Uint8Array([0xff, 0x46, 0x57, 0x52, 0x31]); // FWR1
+const DEFAULT_READY_FALLBACK_MS = 250;
 
 /**
  * A single WebRTC datachannel link to one remote pubkey.
  *
- * Reports `connected` only when both pc.connectionState === "connected" AND
- * dataChannel.readyState === "open".
+ * Reports `connected` after both pc.connectionState === "connected" and the
+ * data channel is open, then waits for the peer's small ready marker or a
+ * short compatibility grace period. The grace keeps old peers working while
+ * avoiding the common race where FMP Msg1 is sent before the responder's
+ * onmessage handler is installed.
  */
 export class WebRtcConnection {
   readonly remotePubkeyHex: string;
@@ -23,6 +30,10 @@ export class WebRtcConnection {
   private state: "connecting" | "connected" | "disconnected" | "failed" = "connecting";
   private readonly onPacket: (data: Uint8Array) => void;
   private readonly onState: (state: WebRtcConnection["state"]) => void;
+  private readonly readyFallbackMs: number;
+  private localReadySent = false;
+  private remoteReady = false;
+  private fallbackTimer?: ReturnType<typeof setTimeout>;
 
   constructor(cfg: WebRtcConnectionConfig) {
     this.remotePubkeyHex = cfg.remotePubkeyHex;
@@ -31,6 +42,7 @@ export class WebRtcConnection {
     this.dataChannel = cfg.dataChannel;
     this.onPacket = cfg.onPacket;
     this.onState = cfg.onState;
+    this.readyFallbackMs = cfg.readyFallbackMs ?? DEFAULT_READY_FALLBACK_MS;
 
     this.dataChannel.binaryType = "arraybuffer";
     this.dataChannel.addEventListener("message", (ev) => {
@@ -39,10 +51,24 @@ export class WebRtcConnection {
       else if (ev.data instanceof Uint8Array) buf = ev.data;
       else if (typeof ev.data === "string") buf = new TextEncoder().encode(ev.data);
       else return;
+      if (isReadyFrame(buf)) {
+        this.remoteReady = true;
+        if (this.fallbackTimer) {
+          clearTimeout(this.fallbackTimer);
+          this.fallbackTimer = undefined;
+        }
+        this.evaluateState();
+        return;
+      }
       this.onPacket(buf);
     });
-    this.dataChannel.addEventListener("open", () => this.evaluateState());
+    this.dataChannel.addEventListener("open", () => {
+      this.sendLocalReady();
+      this.startReadyFallback();
+      this.evaluateState();
+    });
     this.dataChannel.addEventListener("close", () => {
+      if (this.fallbackTimer) clearTimeout(this.fallbackTimer);
       this.state = "disconnected";
       this.onState(this.state);
     });
@@ -58,7 +84,7 @@ export class WebRtcConnection {
     const pcState = this.pc.connectionState;
     const dcState = this.dataChannel.readyState;
     let next: WebRtcConnection["state"];
-    if (pcState === "connected" && dcState === "open") next = "connected";
+    if (pcState === "connected" && dcState === "open" && this.remoteReady) next = "connected";
     else if (pcState === "failed" || pcState === "closed") next = "failed";
     else if (pcState === "disconnected") next = "disconnected";
     else next = "connecting";
@@ -66,6 +92,21 @@ export class WebRtcConnection {
       this.state = next;
       this.onState(next);
     }
+  }
+
+  private sendLocalReady(): void {
+    if (this.localReadySent || this.dataChannel.readyState !== "open") return;
+    this.localReadySent = true;
+    this.dataChannel.send(READY_FRAME);
+  }
+
+  private startReadyFallback(): void {
+    if (this.remoteReady || this.fallbackTimer || this.readyFallbackMs <= 0) return;
+    this.fallbackTimer = setTimeout(() => {
+      this.fallbackTimer = undefined;
+      this.remoteReady = true;
+      this.evaluateState();
+    }, this.readyFallbackMs);
   }
 
   send(data: Uint8Array): void {
@@ -80,7 +121,16 @@ export class WebRtcConnection {
   }
 
   close(): void {
+    if (this.fallbackTimer) clearTimeout(this.fallbackTimer);
     try { this.dataChannel.close(); } catch { /* ignore */ }
     try { this.pc.close(); } catch { /* ignore */ }
   }
+}
+
+function isReadyFrame(data: Uint8Array): boolean {
+  if (data.length !== READY_FRAME.length) return false;
+  for (let i = 0; i < READY_FRAME.length; i++) {
+    if (data[i] !== READY_FRAME[i]) return false;
+  }
+  return true;
 }
