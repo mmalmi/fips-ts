@@ -108,6 +108,8 @@ export class WebRtcTransport {
                 continue;
             if (endpoint.addr === localPubkeyHex || this.conns.has(endpoint.addr))
                 continue;
+            if (localPubkeyHex && localPubkeyHex > endpoint.addr)
+                continue;
             if (this.autoConnectPeers.has(endpoint.addr))
                 continue;
             if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections) {
