@@ -30,6 +30,7 @@ export interface WebRtcTransportConfig {
   mtu?: number;
   maxConnections?: number;
   connectTimeoutMs?: number;
+  relayConnectTimeoutMs?: number;
   iceGatherTimeoutMs?: number;
 
   dataChannelLabel?: string;
@@ -77,6 +78,7 @@ export class WebRtcTransport implements Transport {
       | "mtu"
       | "maxConnections"
       | "connectTimeoutMs"
+      | "relayConnectTimeoutMs"
       | "iceGatherTimeoutMs"
       | "dataChannelLabel"
       | "ordered"
@@ -103,6 +105,7 @@ export class WebRtcTransport implements Transport {
       mtu: 1200,
       maxConnections: 32,
       connectTimeoutMs: 30_000,
+      relayConnectTimeoutMs: 5_000,
       iceGatherTimeoutMs: 10_000,
       dataChannelLabel: "fips",
       ordered: false,
@@ -123,7 +126,12 @@ export class WebRtcTransport implements Transport {
   async start(ctx: TransportContext): Promise<void> {
     this.ctx = ctx;
     this.relayClients = this.cfg.relays.map(
-      (u) => new NostrRelayClient({ url: u, webSocket: this.cfg.webSocket, logger: this.logger }),
+      (u) => new NostrRelayClient({
+        url: u,
+        webSocket: this.cfg.webSocket,
+        connectTimeoutMs: this.cfg.relayConnectTimeoutMs,
+        logger: this.logger,
+      }),
     );
     this.signaling = new NostrWebRtcSignaling({
       identity: ctx.localIdentity,

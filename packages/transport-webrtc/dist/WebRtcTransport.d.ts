@@ -10,6 +10,7 @@ export interface WebRtcTransportConfig {
     mtu?: number;
     maxConnections?: number;
     connectTimeoutMs?: number;
+    relayConnectTimeoutMs?: number;
     iceGatherTimeoutMs?: number;
     dataChannelLabel?: string;
     ordered?: boolean;

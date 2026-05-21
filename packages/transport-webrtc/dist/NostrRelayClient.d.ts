@@ -31,6 +31,7 @@ export interface NostrFilter {
 export interface NostrRelayClientOptions {
     url: string;
     webSocket?: WebSocketCtor;
+    connectTimeoutMs?: number;
     onClose?: () => void;
     logger?: {
         debug: (...a: unknown[]) => void;
@@ -47,6 +48,7 @@ export declare class NostrRelayClient {
     private readyPromise?;
     private readonly subs;
     private readonly WS;
+    private readonly connectTimeoutMs;
     private closed;
     private subCounter;
     private readonly logger;

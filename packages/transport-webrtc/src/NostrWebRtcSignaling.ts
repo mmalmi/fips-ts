@@ -71,16 +71,20 @@ export class NostrWebRtcSignaling {
   /** Subscribe to incoming signals for the local pubkey. */
   async start(): Promise<void> {
     const localXOnly = toHex(this.identity.xOnlyPubkey);
-    for (const relay of this.relays) {
-      await relay.connect();
-      const cleanup = await relay.subscribe(
-        { kinds: [FIPS_SIGNAL_KIND], "#p": [localXOnly], limit: 100 },
-        {
-          onEvent: (ev) => this.handleSignalEvent(ev),
-        },
-      );
-      this.cleanups.push(cleanup);
-    }
+    await Promise.all(this.relays.map(async (relay) => {
+      try {
+        await relay.connect();
+        const cleanup = await relay.subscribe(
+          { kinds: [FIPS_SIGNAL_KIND], "#p": [localXOnly], limit: 100 },
+          {
+            onEvent: (ev) => this.handleSignalEvent(ev),
+          },
+        );
+        this.cleanups.push(cleanup);
+      } catch (err) {
+        this.logger?.warn("signal subscription failed", relay.url, err);
+      }
+    }));
   }
 
   stop(): void {
@@ -123,33 +127,37 @@ export class NostrWebRtcSignaling {
     extraFilter: { authors?: string[] } = {},
   ): Promise<() => void> {
     const localCleanups: Array<() => void> = [];
-    for (const relay of this.relays) {
-      const off = await relay.subscribe(
-        {
-          kinds: [FIPS_ADVERT_KIND],
-          "#d": [this.discoveryApp],
-          ...extraFilter,
-        },
-        {
-          onEvent: (ev) => {
-            if (this.seenEventIds.has(ev.id)) return;
-            if (!verifyEvent(ev)) return;
-            if (tagValue(ev, "protocol") !== this.discoveryApp) return;
-            const version = tagValue(ev, "version");
-            if (version && version !== FIPS_PROTOCOL_VERSION) return;
-            try {
-              const parsed = JSON.parse(ev.content) as FipsAdvertContent;
-              if (parsed.identifier !== FIPS_ADVERT_IDENTIFIER) return;
-              this.seenEventIds.add(ev.id);
-              cb(ev, parsed);
-            } catch {
-              /* malformed advert; ignore */
-            }
+    await Promise.all(this.relays.map(async (relay) => {
+      try {
+        const off = await relay.subscribe(
+          {
+            kinds: [FIPS_ADVERT_KIND],
+            "#d": [this.discoveryApp],
+            ...extraFilter,
           },
-        },
-      );
-      localCleanups.push(off);
-    }
+          {
+            onEvent: (ev) => {
+              if (this.seenEventIds.has(ev.id)) return;
+              if (!verifyEvent(ev)) return;
+              if (tagValue(ev, "protocol") !== this.discoveryApp) return;
+              const version = tagValue(ev, "version");
+              if (version && version !== FIPS_PROTOCOL_VERSION) return;
+              try {
+                const parsed = JSON.parse(ev.content) as FipsAdvertContent;
+                if (parsed.identifier !== FIPS_ADVERT_IDENTIFIER) return;
+                this.seenEventIds.add(ev.id);
+                cb(ev, parsed);
+              } catch {
+                /* malformed advert; ignore */
+              }
+            },
+          },
+        );
+        localCleanups.push(off);
+      } catch (err) {
+        this.logger?.warn("advert subscription failed", relay.url, err);
+      }
+    }));
     return () => localCleanups.forEach((c) => c());
   }
 

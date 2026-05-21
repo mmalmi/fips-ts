@@ -50,7 +50,31 @@ class FakeRelay {
   }
 }
 
+class FailingRelay {
+  readonly url = "ws://relay.failed";
+
+  async connect(): Promise<void> {
+    throw new Error("connect failed");
+  }
+
+  async publish(): Promise<void> {
+    throw new Error("publish failed");
+  }
+
+  async subscribe(): Promise<() => void> {
+    throw new Error("subscribe failed");
+  }
+
+  close(): void {
+    /* ignore */
+  }
+}
+
 function relayClient(relay: FakeRelay): NostrRelayClient {
+  return relay as unknown as NostrRelayClient;
+}
+
+function failingRelayClient(relay: FailingRelay): NostrRelayClient {
   return relay as unknown as NostrRelayClient;
 }
 
@@ -198,5 +222,33 @@ describe("NostrWebRtcSignaling adverts", () => {
     );
 
     expect(seen).toEqual([]);
+  });
+
+  it("keeps usable relays when one signaling relay fails", async () => {
+    const identity = await identityFromSecretKey(new Uint8Array(32).fill(0x88));
+    const goodRelay = new FakeRelay();
+    const failedRelay = new FailingRelay();
+    const signaling = new NostrWebRtcSignaling({
+      identity,
+      relays: [failingRelayClient(failedRelay), relayClient(goodRelay)],
+      discoveryApp: "hashtree-v1",
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+      onSignal: () => undefined,
+    });
+
+    await signaling.start();
+    await signaling.subscribeAdverts(() => undefined);
+    await signaling.publishAdvert(advertContent());
+
+    expect(goodRelay.filters).toEqual([
+      { kinds: [FIPS_SIGNAL_KIND], "#p": [toHex(identity.xOnlyPubkey)], limit: 100 },
+      { kinds: [FIPS_ADVERT_KIND], "#d": ["hashtree-v1"] },
+    ]);
+    expect(goodRelay.published).toHaveLength(1);
   });
 });

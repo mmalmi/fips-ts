@@ -37,6 +37,7 @@ export class WebRtcTransport {
             mtu: 1200,
             maxConnections: 32,
             connectTimeoutMs: 30_000,
+            relayConnectTimeoutMs: 5_000,
             iceGatherTimeoutMs: 10_000,
             dataChannelLabel: "fips",
             ordered: false,
@@ -55,7 +56,12 @@ export class WebRtcTransport {
     }
     async start(ctx) {
         this.ctx = ctx;
-        this.relayClients = this.cfg.relays.map((u) => new NostrRelayClient({ url: u, webSocket: this.cfg.webSocket, logger: this.logger }));
+        this.relayClients = this.cfg.relays.map((u) => new NostrRelayClient({
+            url: u,
+            webSocket: this.cfg.webSocket,
+            connectTimeoutMs: this.cfg.relayConnectTimeoutMs,
+            logger: this.logger,
+        }));
         this.signaling = new NostrWebRtcSignaling({
             identity: ctx.localIdentity,
             relays: this.relayClients,

@@ -35,6 +35,7 @@ export interface NostrFilter {
 export interface NostrRelayClientOptions {
   url: string;
   webSocket?: WebSocketCtor;
+  connectTimeoutMs?: number;
   onClose?: () => void;
   logger?: { debug: (...a: unknown[]) => void; warn: (...a: unknown[]) => void };
 }
@@ -50,6 +51,7 @@ export class NostrRelayClient {
   private readyPromise?: Promise<void>;
   private readonly subs = new Map<string, SubCallbacks>();
   private readonly WS: WebSocketCtor;
+  private readonly connectTimeoutMs: number;
   private closed = false;
   private subCounter = 0;
   private readonly logger: NostrRelayClientOptions["logger"];
@@ -58,28 +60,57 @@ export class NostrRelayClient {
     this.url = opts.url;
     this.WS = opts.webSocket ?? (globalThis as { WebSocket: WebSocketCtor }).WebSocket;
     if (!this.WS) throw new Error("no WebSocket constructor available");
+    this.connectTimeoutMs = opts.connectTimeoutMs ?? 5_000;
     this.logger = opts.logger;
   }
 
   connect(): Promise<void> {
     if (this.readyPromise) return this.readyPromise;
     this.readyPromise = new Promise<void>((resolve, reject) => {
-      const ws = new this.WS(this.url);
-      this.ws = ws;
-      ws.binaryType = "arraybuffer";
-      ws.addEventListener("open", () => {
-        this.logger?.debug("relay open", this.url);
-        resolve();
-      });
-      ws.addEventListener("error", (e) => {
-        this.logger?.warn("relay error", this.url, e);
-        if (!this.closed) reject(new Error("relay connect error"));
-      });
-      ws.addEventListener("close", () => {
-        this.closed = true;
-        this.logger?.debug("relay closed", this.url);
-      });
-      ws.addEventListener("message", (m) => this.onMessage(m));
+      let settled = false;
+      const finish = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+      const fail = (message: string): void => {
+        finish(() => {
+          try {
+            this.ws?.close();
+          } catch {
+            /* ignore */
+          }
+          reject(new Error(message));
+        });
+      };
+      const timer = setTimeout(() => {
+        this.logger?.warn("relay connect timeout", this.url);
+        fail("relay connect timeout");
+      }, this.connectTimeoutMs);
+      try {
+        const ws = new this.WS(this.url);
+        this.ws = ws;
+        ws.binaryType = "arraybuffer";
+        ws.addEventListener("open", () => {
+          this.logger?.debug("relay open", this.url);
+          finish(resolve);
+        });
+        ws.addEventListener("error", (e) => {
+          this.logger?.warn("relay error", this.url, e);
+          if (!this.closed) fail("relay connect error");
+        });
+        ws.addEventListener("close", () => {
+          const wasConnecting = !settled;
+          this.closed = true;
+          this.logger?.debug("relay closed", this.url);
+          if (wasConnecting) fail("relay closed before open");
+        });
+        ws.addEventListener("message", (m) => this.onMessage(m));
+      } catch (err) {
+        this.logger?.warn("relay constructor failed", this.url, err);
+        fail("relay connect error");
+      }
     });
     return this.readyPromise;
   }
