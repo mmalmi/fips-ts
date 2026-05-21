@@ -35,7 +35,7 @@ export interface WebRtcTransportConfig {
 
   dataChannelLabel?: string;
   ordered?: boolean;
-  maxRetransmits?: number;
+  maxRetransmits?: number | null;
 
   webSocket?: typeof WebSocket;
   rtcPeerConnection?: typeof RTCPeerConnection;
@@ -82,7 +82,6 @@ export class WebRtcTransport implements Transport {
       | "iceGatherTimeoutMs"
       | "dataChannelLabel"
       | "ordered"
-      | "maxRetransmits"
     >
   > &
     WebRtcTransportConfig;
@@ -108,8 +107,7 @@ export class WebRtcTransport implements Transport {
       relayConnectTimeoutMs: 5_000,
       iceGatherTimeoutMs: 10_000,
       dataChannelLabel: "fips",
-      ordered: false,
-      maxRetransmits: 0,
+      ordered: true,
       ...config,
     };
     this.mtu = this.cfg.mtu;
@@ -221,10 +219,13 @@ export class WebRtcTransport implements Transport {
     const pc = new this.RTCPC({
       iceServers: (this.cfg.stunServers ?? []).map((u) => ({ urls: u })),
     });
-    const dataChannel = pc.createDataChannel(this.cfg.dataChannelLabel, {
+    const dataChannelOptions: RTCDataChannelInit = {
       ordered: this.cfg.ordered,
-      maxRetransmits: this.cfg.maxRetransmits,
-    });
+    };
+    if (this.cfg.maxRetransmits !== undefined && this.cfg.maxRetransmits !== null) {
+      dataChannelOptions.maxRetransmits = this.cfg.maxRetransmits;
+    }
+    const dataChannel = pc.createDataChannel(this.cfg.dataChannelLabel, dataChannelOptions);
 
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {

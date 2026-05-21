@@ -13,7 +13,7 @@
  *   4 byte timestamp + 1 byte msg_type + 1 byte inner_flags + payload
  */
 import { BinaryReader } from "../codec/binary.js";
-export declare const FSP_VERSION = 1;
+export declare const FSP_VERSION = 0;
 export declare const FSP_PHASE_ESTABLISHED = 0;
 export declare const FSP_PHASE_MSG1 = 1;
 export declare const FSP_PHASE_MSG2 = 2;
@@ -24,6 +24,9 @@ export declare const NOISE_XK_MSG3_LEN = 73;
 export declare const FSP_ESTABLISHED_HEADER_LEN: number;
 export declare const FSP_AEAD_TAG_LEN = 16;
 export declare const FSP_INNER_HEADER_LEN: number;
+export declare const FSP_FLAG_CP = 1;
+export declare const FSP_FLAG_K = 2;
+export declare const FSP_FLAG_U = 4;
 /** FSP inner msg types. */
 export declare const FSP_MSG_KEEPALIVE = 0;
 export declare const FSP_MSG_DATA = 16;
@@ -47,6 +50,9 @@ export interface FspEstablishedHeader {
     counter: bigint;
 }
 export interface FspEstablished extends FspEstablishedHeader {
+    payloadLen: number;
+    srcCoords?: Uint8Array[];
+    destCoords?: Uint8Array[];
     ciphertext: Uint8Array;
 }
 export declare function encodeFspEstablishedHeader(h: FspEstablishedHeader, payloadLen: number): Uint8Array;

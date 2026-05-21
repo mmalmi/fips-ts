@@ -111,6 +111,14 @@ export function decodeSessionDatagram(buf) {
     if (msgType !== LinkMessageType.SessionDatagram) {
         throw new Error(`not a SessionDatagram (msg_type=0x${msgType.toString(16)})`);
     }
+    return decodeSessionDatagramPayload(r.rest());
+}
+/** Decode the payload after the leading msg_type byte has already been consumed. */
+export function decodeSessionDatagramPayload(buf) {
+    if (buf.length < SESSION_DATAGRAM_HEADER_SIZE - 1) {
+        throw new Error(`SessionDatagram payload too short: ${buf.length} < ${SESSION_DATAGRAM_HEADER_SIZE - 1}`);
+    }
+    const r = new BinaryReader(buf);
     const ttl = r.u8();
     const pathMtu = r.u16le();
     const srcAddr = r.bytes(16);

@@ -175,10 +175,9 @@ export class FmpLink {
       msgType,
       payload,
     });
-    const ciphertextLen = inner.length + 16;
     const aad = encodeFmpEstablishedHeader(
       { flags: 0, receiverIdx: this.remoteSessionIdx, counter },
-      ciphertextLen,
+      inner.length,
     );
     // CipherState manages its own monotonic nonce, but FIPS Established uses
     // the explicit u64 counter from the frame header. We bypass CipherState's
@@ -189,6 +188,7 @@ export class FmpLink {
       flags: 0,
       receiverIdx: this.remoteSessionIdx,
       counter,
+      payloadLen: inner.length,
       ciphertext,
     });
   }
@@ -210,7 +210,7 @@ export class FmpLink {
     }
     const aad = encodeFmpEstablishedHeader(
       { flags: est.flags, receiverIdx: est.receiverIdx, counter: est.counter },
-      est.ciphertext.length,
+      est.payloadLen,
     );
     const plaintext = openWithCounter(this.rx, est.counter, aad, est.ciphertext);
     const inner = decodeFmpInner(plaintext);

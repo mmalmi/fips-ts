@@ -13,7 +13,7 @@
  *   4 byte timestamp + 1 byte msg_type + 1 byte inner_flags + payload
  */
 import { BinaryReader, BinaryWriter } from "../codec/binary.js";
-export const FSP_VERSION = 1;
+export const FSP_VERSION = 0;
 export const FSP_PHASE_ESTABLISHED = 0x0;
 export const FSP_PHASE_MSG1 = 0x1;
 export const FSP_PHASE_MSG2 = 0x2;
@@ -24,6 +24,9 @@ export const NOISE_XK_MSG3_LEN = 73;
 export const FSP_ESTABLISHED_HEADER_LEN = 4 + 8; // 12
 export const FSP_AEAD_TAG_LEN = 16;
 export const FSP_INNER_HEADER_LEN = 4 + 1 + 1; // 6
+export const FSP_FLAG_CP = 0x01;
+export const FSP_FLAG_K = 0x02;
+export const FSP_FLAG_U = 0x04;
 /** FSP inner msg types. */
 export const FSP_MSG_KEEPALIVE = 0x00;
 export const FSP_MSG_DATA = 0x10; // DataPacket: src_port + dst_port + payload
@@ -100,9 +103,16 @@ export function encodeFspEstablishedHeader(h, payloadLen) {
     return w.toBytes();
 }
 export function encodeFspEstablished(p) {
-    const header = encodeFspEstablishedHeader(p, p.ciphertext.length);
+    if (p.ciphertext.length !== p.payloadLen + FSP_AEAD_TAG_LEN) {
+        throw new Error(`ciphertext length ${p.ciphertext.length} != payload_len ${p.payloadLen}+tag`);
+    }
+    const header = encodeFspEstablishedHeader(p, p.payloadLen);
     const w = new BinaryWriter();
     w.bytes(header);
+    if ((p.flags & FSP_FLAG_CP) !== 0) {
+        encodeOptionalCoords(p.srcCoords, w);
+        encodeOptionalCoords(p.destCoords, w);
+    }
     w.bytes(p.ciphertext);
     return w.toBytes();
 }
@@ -116,12 +126,31 @@ export function decodeFspEstablished(buf) {
         throw new Error("bad FSP version");
     if (prefix.phase !== FSP_PHASE_ESTABLISHED)
         throw new Error("not FSP Established");
-    const counter = r.u64le();
-    const ciphertext = r.rest();
-    if (ciphertext.length !== prefix.payloadLen) {
-        throw new Error(`FSP payload_len mismatch: header=${prefix.payloadLen} actual=${ciphertext.length}`);
+    if ((prefix.flags & FSP_FLAG_U) !== 0) {
+        throw new Error("plaintext FSP error frames are not supported here");
     }
-    return { flags: prefix.flags, counter, ciphertext };
+    const counter = r.u64le();
+    let ciphertext = r.rest();
+    let srcCoords;
+    let destCoords;
+    if ((prefix.flags & FSP_FLAG_CP) !== 0) {
+        const src = decodeOptionalCoords(ciphertext, 0);
+        const dest = decodeOptionalCoords(ciphertext, src.bytesRead);
+        srcCoords = src.coords;
+        destCoords = dest.coords;
+        ciphertext = ciphertext.subarray(src.bytesRead + dest.bytesRead);
+    }
+    if (ciphertext.length !== prefix.payloadLen + FSP_AEAD_TAG_LEN) {
+        throw new Error(`FSP payload_len mismatch: header=${prefix.payloadLen}+tag actual=${ciphertext.length}`);
+    }
+    return {
+        flags: prefix.flags,
+        counter,
+        payloadLen: prefix.payloadLen,
+        srcCoords,
+        destCoords,
+        ciphertext,
+    };
 }
 export function encodeFspInner(p) {
     const w = new BinaryWriter();
@@ -164,5 +193,34 @@ export function peekFspPhase(buf) {
     if (buf.length < 1)
         throw new Error("empty FSP packet");
     return buf[0] & 0xf;
+}
+function encodeOptionalCoords(coords, w) {
+    const count = coords?.length ?? 0;
+    if (count > 0xffff)
+        throw new Error("too many coordinate entries");
+    w.u16le(count);
+    for (const addr of coords ?? []) {
+        if (addr.length !== 16)
+            throw new Error("coordinate NodeAddr must be 16 bytes");
+        w.bytes(addr);
+    }
+}
+function decodeOptionalCoords(buf, offset) {
+    if (buf.length < offset + 2) {
+        throw new Error("FSP coordinate field too short");
+    }
+    const count = buf[offset] | (buf[offset + 1] << 8);
+    const len = 2 + count * 16;
+    if (buf.length < offset + len) {
+        throw new Error("FSP coordinate entries truncated");
+    }
+    if (count === 0)
+        return { bytesRead: len };
+    const coords = [];
+    for (let i = 0; i < count; i++) {
+        const start = offset + 2 + i * 16;
+        coords.push(buf.slice(start, start + 16));
+    }
+    return { coords, bytesRead: len };
 }
 //# sourceMappingURL=wire.js.map

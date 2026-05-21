@@ -259,6 +259,68 @@ async function reconnectMemoryPair(): Promise<{ first: string; second: string }>
   return { first, second };
 }
 
+async function echoWithRustWebRtcPeer(
+  relayUrl: string,
+  rustPubkeyHex: string,
+  payload: string,
+): Promise<string> {
+  const logger = {
+    debug: (...a: unknown[]) => console.log("[rust-webrtc]", ...a),
+    info: (...a: unknown[]) => console.log("[rust-webrtc:info]", ...a),
+    warn: (...a: unknown[]) => console.warn("[rust-webrtc:warn]", ...a),
+    error: (...a: unknown[]) => console.error("[rust-webrtc:err]", ...a),
+  };
+  const identity = await generateIdentity();
+  const node = new FipsNode({
+    identity,
+    logger,
+    transports: [
+      new WebRtcTransport({
+        relays: [relayUrl],
+        advertiseOnNostr: false,
+        acceptConnections: true,
+        autoConnect: false,
+        stunServers: [],
+        connectTimeoutMs: 20_000,
+        iceGatherTimeoutMs: 1_500,
+        logger,
+      }),
+    ],
+  });
+
+  node.on("error", (e) => console.warn("[rust-webrtc] node error", e));
+  node.on("peer", (e) => console.log("[rust-webrtc] peer", e));
+  node.on("session", (e) => console.log("[rust-webrtc] session", e));
+
+  await node.start();
+  try {
+    await node.connect({ transport: "webrtc", addr: rustPubkeyHex });
+    return await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        off();
+        reject(new Error("rust echo timeout"));
+      }, 20_000);
+      const off = node.on("endpointData", (evt) => {
+        const msg = evt as { src: string; payload: Uint8Array };
+        if (msg.src !== rustPubkeyHex) return;
+        clearTimeout(timer);
+        off();
+        resolve(new TextDecoder().decode(msg.payload));
+      });
+      void node.sendEndpointData({
+        dst: rustPubkeyHex,
+        payload: new TextEncoder().encode(payload),
+      }).catch((err) => {
+        clearTimeout(timer);
+        off();
+        reject(err);
+      });
+    });
+  } finally {
+    await node.stop();
+  }
+}
+
 export const harness = {
   makeWebRtcPair,
   makeWebRtcChain,
@@ -267,4 +329,5 @@ export const harness = {
   reconnectMemoryPair,
   echoOverPair,
   echoOverChain,
+  echoWithRustWebRtcPeer,
 };

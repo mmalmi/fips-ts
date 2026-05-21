@@ -79,17 +79,27 @@ export {
   decodeDisconnect,
   decodeFilterAnnounce,
   decodeSessionDatagram,
+  decodeSessionDatagramPayload,
+  decodeSessionAck,
+  decodeSessionMsg3,
+  decodeSessionSetup,
   decrementTtl,
   disconnectReasonFromByte,
   encodeDisconnect,
   encodeFilterAnnounce,
+  encodeSessionAck,
   encodeSessionDatagram,
+  encodeSessionMsg3,
+  encodeSessionSetup,
   handshakeMessageTypeFromByte,
   isHandshakeMessageType,
   linkMessageTypeFromByte,
   type Disconnect,
   type FilterAnnounce,
+  type SessionAck,
   type SessionDatagram,
+  type SessionMsg3,
+  type SessionSetup,
 } from "./protocol/index.js";
 
 export {
@@ -132,6 +142,9 @@ export { FmpLink } from "./fmp/link.js";
 
 export {
   FSP_ESTABLISHED_HEADER_LEN,
+  FSP_FLAG_CP,
+  FSP_FLAG_K,
+  FSP_FLAG_U,
   FSP_INNER_HEADER_LEN,
   FSP_MSG_DATA,
   FSP_MSG_ENDPOINT_DATA,

@@ -62,6 +62,8 @@ export declare const SESSION_DATAGRAM_HEADER_SIZE = 36;
 export declare function encodeSessionDatagram(d: SessionDatagram): Uint8Array;
 /** Decode from a buffer that includes the leading msg_type byte. */
 export declare function decodeSessionDatagram(buf: Uint8Array): SessionDatagram;
+/** Decode the payload after the leading msg_type byte has already been consumed. */
+export declare function decodeSessionDatagramPayload(buf: Uint8Array): SessionDatagram;
 /** Decrement TTL; returns false if it can no longer be forwarded. */
 export declare function decrementTtl(d: SessionDatagram): boolean;
 //# sourceMappingURL=link.d.ts.map

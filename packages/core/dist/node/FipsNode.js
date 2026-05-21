@@ -1,11 +1,12 @@
 import { randomBytes } from "@noble/hashes/utils";
-import { toHex } from "../codec/hex.js";
+import { bytesEqual, toHex } from "../codec/hex.js";
 import { FmpLink } from "../fmp/link.js";
 import { FspSession } from "../fsp/session.js";
-import { decodeFmpEstablished, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
+import { FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
 import { FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_PHASE_ESTABLISHED, peekFspPhase, } from "../fsp/wire.js";
+import { deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
+import { decodeSessionDatagramPayload, encodeSessionDatagram, LinkMessageType, } from "../protocol/link.js";
 import { noopLogger, transportAddressKey, } from "../transport/types.js";
-import { decodeForwardEnvelope, encodeForwardEnvelope, FORWARD_VERSION, } from "./forward.js";
 let sessionIdxCounter = 1;
 function nextSessionIdx() {
     const v = sessionIdxCounter++;
@@ -21,7 +22,8 @@ export class FipsNode {
     services = new Map();
     peers = new Map(); // by transportAddressKey
     peersByPubkey = new Map(); // by pubkey hex
-    sessions = new Map(); // by remote pubkey hex
+    peersByNodeAddr = new Map(); // by NodeAddr hex
+    sessions = new Map(); // by remote NodeAddr hex
     listeners = new Map();
     started = false;
     constructor(cfg) {
@@ -60,6 +62,7 @@ export class FipsNode {
         }
         this.peers.clear();
         this.peersByPubkey.clear();
+        this.peersByNodeAddr.clear();
         this.sessions.clear();
         this.started = false;
     }
@@ -100,7 +103,7 @@ export class FipsNode {
             link,
         };
         this.peers.set(key, peer);
-        this.peersByPubkey.set(addr.addr, peer);
+        this.rememberPeer(peer);
         const handshakeDone = new Promise((resolve, reject) => {
             peer.outgoingHandshake = { resolve, reject };
         });
@@ -124,13 +127,13 @@ export class FipsNode {
             dstPort: args.dstPort,
             payload: args.payload,
         });
-        await this.sendFspToward(args.dst, fspFrame);
+        await this.sendFspToward(session.remoteNodeAddr, fspFrame);
     }
     /** Send app-owned endpoint bytes to a target identity without service ports. */
     async sendEndpointData(args) {
         const session = await this.ensureSession(args.dst);
         const fspFrame = session.fsp.encryptEndpointData(args.payload);
-        await this.sendFspToward(args.dst, fspFrame);
+        await this.sendFspToward(session.remoteNodeAddr, fspFrame);
     }
     on(event, cb) {
         let set = this.listeners.get(event);
@@ -162,10 +165,13 @@ export class FipsNode {
                 peer.link.close();
                 this.peers.delete(key);
                 this.peersByPubkey.delete(peer.pubkeyHex);
-                for (const pkHex of this.sessions.keys()) {
-                    if (pkHex === peer.pubkeyHex) {
-                        this.sessions.delete(pkHex);
-                        this.emit("session", { remotePubkey: pkHex, state: "closed" });
+                if (peer.pubkey.length > 0) {
+                    this.peersByNodeAddr.delete(nodeAddrToHex(deriveNodeAddr(peer.pubkey)));
+                }
+                for (const [nodeHex, session] of this.sessions) {
+                    if (session.remotePubkeyHex === peer.pubkeyHex) {
+                        this.sessions.delete(nodeHex);
+                        this.emit("session", { remotePubkey: peer.pubkeyHex, state: "closed" });
                     }
                 }
                 this.emit("peer", {
@@ -175,6 +181,12 @@ export class FipsNode {
                 });
             }
         }
+    }
+    rememberPeer(peer) {
+        if (peer.pubkey.length === 0 || !peer.pubkeyHex)
+            return;
+        this.peersByPubkey.set(peer.pubkeyHex, peer);
+        this.peersByNodeAddr.set(nodeAddrToHex(deriveNodeAddr(peer.pubkey)), peer);
     }
     onTransportPacket(transport, p) {
         try {
@@ -202,7 +214,7 @@ export class FipsNode {
                     const result = peer.link.handleMsg1(p.data, (n) => this.random.bytes(n));
                     peer.pubkey = result.remotePubkey;
                     peer.pubkeyHex = toHex(result.remotePubkey);
-                    this.peersByPubkey.set(peer.pubkeyHex, peer);
+                    this.rememberPeer(peer);
                     if (result.reply) {
                         void transport.send(p.remoteAddr, result.reply).catch((err) => {
                             this.emit("error", { err: err, where: "send Msg2" });
@@ -219,8 +231,9 @@ export class FipsNode {
                     if (!peer)
                         throw new Error("FMP Msg2 with no peer state");
                     peer.link.handleMsg2(p.data);
+                    peer.pubkey = peer.link.remotePubkey;
                     peer.pubkeyHex = toHex(peer.link.remotePubkey);
-                    this.peersByPubkey.set(peer.pubkeyHex, peer);
+                    this.rememberPeer(peer);
                     this.emit("peer", {
                         remotePubkey: peer.pubkeyHex,
                         remoteAddr: peer.remoteAddr,
@@ -234,15 +247,10 @@ export class FipsNode {
                     if (!peer || peer.link.state !== "established") {
                         throw new Error("FMP Established before handshake complete");
                     }
-                    // Inner is encoded by FmpLink.encryptOutgoing — its inner payload is
-                    // either FORWARD_ENVELOPE (peer-to-peer routed packet) or DATA
-                    // intended for this hop's FSP layer.
                     const { msgType, payload } = peer.link.decryptIncoming(p.data);
-                    // msgType DATA (0x01) carries FSP frames bound for THIS node (i.e.
-                    // the FMP link's remote endpoint is also the FSP endpoint). Forwarded
-                    // packets use the FORWARD envelope (see node/forward.ts).
-                    void msgType;
-                    this.routeIncomingFsp(peer, payload);
+                    this.routeIncomingLinkMessage(peer, msgType, payload).catch((err) => {
+                        this.emit("error", { err: err, where: "link-message" });
+                    });
                     break;
                 }
                 default:
@@ -254,64 +262,41 @@ export class FipsNode {
             this.logger.warn("transport packet error", err);
         }
     }
-    /**
-     * Incoming FMP-inner bytes: could be an FSP frame for us, or a FORWARD
-     * envelope to relay if forwarding is enabled.
-     */
-    routeIncomingFsp(peer, inner) {
-        if (inner.length >= 1 && inner[0] === FORWARD_VERSION) {
-            this.handleForwardEnvelope(peer, inner).catch((err) => {
-                this.emit("error", { err: err, where: "forward" });
-            });
+    async routeIncomingLinkMessage(peer, msgType, payload) {
+        if (msgType !== LinkMessageType.SessionDatagram) {
+            if (isKnownUnhandledLinkMessage(msgType))
+                return;
+            this.logger.warn("unsupported FMP link message", msgType);
             return;
         }
-        // Otherwise: an FSP frame addressed to this node from the peer.
-        void this.handleFspFromPeer(peer, peer.pubkey, inner).catch((err) => {
-            this.emit("error", { err: err, where: "fsp" });
-        });
-    }
-    async handleForwardEnvelope(peer, inner) {
-        const env = decodeForwardEnvelope(inner);
-        const dstHex = toHex(env.dstPubkey);
-        const ourHex = toHex(this.identity.publicKey);
-        if (dstHex === ourHex) {
-            // Final destination is us: process FSP, using env.srcPubkey as the
-            // logical session counterparty.
-            await this.handleFspFromPeer(peer, env.srcPubkey, env.fspFrame);
+        const datagram = decodeSessionDatagramPayload(payload);
+        if (bytesEqual(datagram.destAddr, this.identity.nodeAddr)) {
+            await this.handleFspFromPeer(peer, datagram.srcAddr, datagram.payload);
             return;
         }
         if (!this.forwarding) {
-            this.logger.warn("dropping forward; forwarding=false");
+            this.logger.warn("dropping SessionDatagram; forwarding=false");
             return;
         }
-        if (env.ttl <= 0) {
-            this.logger.warn("dropping forward; ttl=0");
+        if (datagram.ttl <= 1) {
+            this.logger.warn("dropping SessionDatagram; ttl exhausted");
             return;
         }
-        const nextHop = this.peersByPubkey.get(dstHex);
-        if (!nextHop || nextHop.link.state !== "established") {
-            this.logger.warn("no next-hop FMP link", dstHex);
-            return;
-        }
-        const repacked = encodeForwardEnvelope({
-            version: FORWARD_VERSION,
-            ttl: env.ttl - 1,
-            srcPubkey: env.srcPubkey,
-            dstPubkey: env.dstPubkey,
-            fspFrame: env.fspFrame,
+        await this.sendSessionDatagram({
+            ...datagram,
+            ttl: datagram.ttl - 1,
         });
-        const outer = nextHop.link.encryptOutgoing(repacked);
-        await nextHop.transport.send(nextHop.remoteAddr, outer);
     }
-    async handleFspFromPeer(_peer, srcPubkey, fspFrame) {
+    async handleFspFromPeer(_peer, srcNodeAddr, fspFrame) {
         const phase = peekFspPhase(fspFrame);
-        const srcHex = toHex(srcPubkey);
-        let session = this.sessions.get(srcHex);
+        const srcNodeHex = nodeAddrToHex(srcNodeAddr);
+        let session = this.sessions.get(srcNodeHex);
         if (phase === FSP_PHASE_ESTABLISHED) {
             if (!session || session.fsp.state !== "established") {
-                throw new Error(`FSP Established before handshake from ${srcHex}`);
+                throw new Error(`FSP Established before handshake from ${srcNodeHex}`);
             }
             const result = session.fsp.decryptIncoming(fspFrame);
+            const srcHex = session.remotePubkeyHex ?? srcNodeHex;
             if (result.msgType === FSP_MSG_DATA && result.data) {
                 const dp = result.data;
                 const handler = this.services.get(dp.dstPort);
@@ -345,19 +330,20 @@ export class FipsNode {
         // Handshake phases 1/2/3.
         if (phase === 1) {
             const fsp = new FspSession({ identity: this.identity, role: "responder" });
-            const reply = fsp.handleMsg1(fspFrame, (n) => this.random.bytes(n));
-            session = { remotePubkeyHex: srcHex, remotePubkey: srcPubkey, fsp };
-            this.sessions.set(srcHex, session);
-            this.emit("session", { remotePubkey: srcHex, state: "establishing" });
-            await this.sendFspToward(srcHex, reply);
+            const reply = fsp.handleSessionSetup(fspFrame, (n) => this.random.bytes(n), this.identity.nodeAddr);
+            session = { remoteNodeAddr: srcNodeAddr, fsp };
+            this.sessions.set(srcNodeHex, session);
+            this.emit("session", { remotePubkey: srcNodeHex, state: "establishing" });
+            await this.sendFspToward(srcNodeAddr, reply);
             return;
         }
         if (phase === 2) {
             if (!session)
-                throw new Error(`FSP msg2 with no session ${srcHex}`);
-            const reply = session.fsp.handleMsg2(fspFrame, (n) => this.random.bytes(n));
-            this.emit("session", { remotePubkey: srcHex, state: "established" });
-            await this.sendFspToward(srcHex, reply);
+                throw new Error(`FSP msg2 with no session ${srcNodeHex}`);
+            const reply = session.fsp.handleSessionAck(fspFrame, (n) => this.random.bytes(n));
+            const eventPubkey = session.remotePubkeyHex ?? srcNodeHex;
+            this.emit("session", { remotePubkey: eventPubkey, state: "established" });
+            await this.sendFspToward(srcNodeAddr, reply);
             session.setupResolve?.();
             session.setupResolve = undefined;
             session.setupReject = undefined;
@@ -365,15 +351,25 @@ export class FipsNode {
         }
         if (phase === 3) {
             if (!session)
-                throw new Error(`FSP msg3 with no session ${srcHex}`);
-            session.fsp.handleMsg3(fspFrame);
-            this.emit("session", { remotePubkey: srcHex, state: "established" });
+                throw new Error(`FSP msg3 with no session ${srcNodeHex}`);
+            session.fsp.handleSessionMsg3(fspFrame);
+            if (session.fsp.remotePubkey) {
+                session.remotePubkey = session.fsp.remotePubkey;
+                session.remotePubkeyHex = toHex(session.fsp.remotePubkey);
+            }
+            this.emit("session", {
+                remotePubkey: session.remotePubkeyHex ?? srcNodeHex,
+                state: "established",
+            });
             return;
         }
         throw new Error(`unknown FSP phase ${phase}`);
     }
     async ensureSession(remotePubkeyHex) {
-        let session = this.sessions.get(remotePubkeyHex);
+        const remotePubkey = hexBytes(remotePubkeyHex);
+        const remoteNodeAddr = deriveNodeAddr(remotePubkey);
+        const remoteNodeHex = nodeAddrToHex(remoteNodeAddr);
+        let session = this.sessions.get(remoteNodeHex);
         if (session && session.fsp.state === "established")
             return session;
         if (session && session.fsp.state === "handshaking") {
@@ -383,17 +379,16 @@ export class FipsNode {
             });
             return session;
         }
-        const remotePubkey = hexBytes(remotePubkeyHex);
         const fsp = new FspSession({
             identity: this.identity,
             role: "initiator",
             remotePubkey,
         });
-        session = { remotePubkeyHex, remotePubkey, fsp };
-        this.sessions.set(remotePubkeyHex, session);
+        session = { remoteNodeAddr, remotePubkeyHex, remotePubkey, fsp };
+        this.sessions.set(remoteNodeHex, session);
         this.emit("session", { remotePubkey: remotePubkeyHex, state: "establishing" });
-        const msg1 = fsp.buildMsg1((n) => this.random.bytes(n));
-        await this.sendFspToward(remotePubkeyHex, msg1);
+        const msg1 = fsp.buildSessionSetup((n) => this.random.bytes(n), this.identity.nodeAddr, remoteNodeAddr);
+        await this.sendFspToward(remoteNodeAddr, msg1);
         await new Promise((resolve, reject) => {
             session.setupResolve = resolve;
             session.setupReject = reject;
@@ -402,34 +397,35 @@ export class FipsNode {
         return session;
     }
     /**
-     * Send an FSP frame toward `remotePubkeyHex`. If we have a direct FMP link
-     * to that pubkey, wrap as inner-data. Otherwise wrap in a FORWARD envelope
-     * and send via any forwarding-eligible adjacent peer.
+     * Wrap an FSP frame in a SessionDatagram and send it toward a remote NodeAddr.
      */
-    async sendFspToward(remotePubkeyHex, fspFrame) {
-        const direct = this.peersByPubkey.get(remotePubkeyHex);
+    async sendFspToward(remoteNodeAddr, fspFrame) {
+        await this.sendSessionDatagram({
+            ttl: 64,
+            pathMtu: 1200,
+            srcAddr: this.identity.nodeAddr,
+            destAddr: remoteNodeAddr,
+            payload: fspFrame,
+        });
+    }
+    async sendSessionDatagram(datagram) {
+        const destNodeHex = nodeAddrToHex(datagram.destAddr);
+        const direct = this.peersByNodeAddr.get(destNodeHex);
         if (direct && direct.link.state === "established") {
-            const outer = direct.link.encryptOutgoing(fspFrame);
+            const encoded = encodeSessionDatagram(datagram);
+            const outer = direct.link.encryptOutgoing(encoded.subarray(1), LinkMessageType.SessionDatagram);
             await direct.transport.send(direct.remoteAddr, outer);
             return;
         }
-        // No direct link: try forwarding through any established adjacent peer.
-        const dstPubkey = hexBytes(remotePubkeyHex);
-        const envelope = encodeForwardEnvelope({
-            version: FORWARD_VERSION,
-            ttl: 8,
-            srcPubkey: this.identity.publicKey,
-            dstPubkey,
-            fspFrame,
-        });
         for (const peer of this.peersByPubkey.values()) {
             if (peer.link.state === "established") {
-                const outer = peer.link.encryptOutgoing(envelope);
+                const encoded = encodeSessionDatagram(datagram);
+                const outer = peer.link.encryptOutgoing(encoded.subarray(1), LinkMessageType.SessionDatagram);
                 await peer.transport.send(peer.remoteAddr, outer);
                 return;
             }
         }
-        throw new Error(`no route to ${remotePubkeyHex}`);
+        throw new Error(`no route to ${destNodeHex}`);
     }
 }
 function hexBytes(hex) {
@@ -441,6 +437,14 @@ function hexBytes(hex) {
     }
     return out;
 }
-// Silence the "imported but unused" check on decodeFmpEstablished.
-void decodeFmpEstablished;
+function isKnownUnhandledLinkMessage(msgType) {
+    return (msgType === LinkMessageType.Heartbeat ||
+        msgType === LinkMessageType.Disconnect ||
+        msgType === LinkMessageType.SenderReport ||
+        msgType === LinkMessageType.ReceiverReport ||
+        msgType === LinkMessageType.TreeAnnounce ||
+        msgType === LinkMessageType.FilterAnnounce ||
+        msgType === LinkMessageType.LookupRequest ||
+        msgType === LinkMessageType.LookupResponse);
+}
 //# sourceMappingURL=FipsNode.js.map

@@ -5,6 +5,7 @@ export {
   SESSION_DATAGRAM_HEADER_SIZE,
   decodeDisconnect,
   decodeSessionDatagram,
+  decodeSessionDatagramPayload,
   decrementTtl,
   disconnectReasonFromByte,
   encodeDisconnect,
@@ -24,3 +25,15 @@ export {
   encodeFilterAnnounce,
   type FilterAnnounce,
 } from "./filter.js";
+
+export {
+  decodeSessionAck,
+  decodeSessionMsg3,
+  decodeSessionSetup,
+  encodeSessionAck,
+  encodeSessionMsg3,
+  encodeSessionSetup,
+  type SessionAck,
+  type SessionMsg3,
+  type SessionSetup,
+} from "./session.js";

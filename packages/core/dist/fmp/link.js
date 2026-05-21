@@ -129,8 +129,7 @@ export class FmpLink {
             msgType,
             payload,
         });
-        const ciphertextLen = inner.length + 16;
-        const aad = encodeFmpEstablishedHeader({ flags: 0, receiverIdx: this.remoteSessionIdx, counter }, ciphertextLen);
+        const aad = encodeFmpEstablishedHeader({ flags: 0, receiverIdx: this.remoteSessionIdx, counter }, inner.length);
         // CipherState manages its own monotonic nonce, but FIPS Established uses
         // the explicit u64 counter from the frame header. We bypass CipherState's
         // internal counter and use the AEAD primitive with the frame counter so
@@ -140,6 +139,7 @@ export class FmpLink {
             flags: 0,
             receiverIdx: this.remoteSessionIdx,
             counter,
+            payloadLen: inner.length,
             ciphertext,
         });
     }
@@ -157,7 +157,7 @@ export class FmpLink {
         if (!this.rxReplay.accept(est.counter)) {
             throw new Error("FMP replay/duplicate counter");
         }
-        const aad = encodeFmpEstablishedHeader({ flags: est.flags, receiverIdx: est.receiverIdx, counter: est.counter }, est.ciphertext.length);
+        const aad = encodeFmpEstablishedHeader({ flags: est.flags, receiverIdx: est.receiverIdx, counter: est.counter }, est.payloadLen);
         const plaintext = openWithCounter(this.rx, est.counter, aad, est.ciphertext);
         const inner = decodeFmpInner(plaintext);
         return { msgType: inner.msgType, payload: inner.payload };

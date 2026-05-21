@@ -10,6 +10,7 @@ export declare class FipsNode {
     private services;
     private peers;
     private peersByPubkey;
+    private peersByNodeAddr;
     private sessions;
     private listeners;
     private started;
@@ -37,20 +38,15 @@ export declare class FipsNode {
     on(event: FipsEventName, cb: (data: unknown) => void): () => void;
     private emit;
     private onTransportConn;
+    private rememberPeer;
     private onTransportPacket;
-    /**
-     * Incoming FMP-inner bytes: could be an FSP frame for us, or a FORWARD
-     * envelope to relay if forwarding is enabled.
-     */
-    private routeIncomingFsp;
-    private handleForwardEnvelope;
+    private routeIncomingLinkMessage;
     private handleFspFromPeer;
     private ensureSession;
     /**
-     * Send an FSP frame toward `remotePubkeyHex`. If we have a direct FMP link
-     * to that pubkey, wrap as inner-data. Otherwise wrap in a FORWARD envelope
-     * and send via any forwarding-eligible adjacent peer.
+     * Wrap an FSP frame in a SessionDatagram and send it toward a remote NodeAddr.
      */
     private sendFspToward;
+    private sendSessionDatagram;
 }
 //# sourceMappingURL=FipsNode.d.ts.map

@@ -11,6 +11,15 @@ import { noiseNonce } from "../crypto/aead.js";
 import { ReplayWindow } from "../crypto/replay.js";
 import type { FipsIdentity } from "../identity/index.js";
 import { CipherState, NoiseHandshake } from "../noise/index.js";
+import type { NodeAddr } from "../nodeaddr/index.js";
+import {
+  decodeSessionAck,
+  decodeSessionMsg3,
+  decodeSessionSetup,
+  encodeSessionAck,
+  encodeSessionMsg3,
+  encodeSessionSetup,
+} from "../protocol/session.js";
 
 import {
   decodeDataPacket,
@@ -85,6 +94,27 @@ export class FspSession {
     return encodeFspHandshake({ phase: 1, noiseMsg });
   }
 
+  buildSessionSetup(
+    _rand: (n: number) => Uint8Array,
+    srcNodeAddr: NodeAddr,
+    destNodeAddr: NodeAddr,
+  ): Uint8Array {
+    if (this.role !== "initiator") throw new Error("only initiator builds SessionSetup");
+    if (!this.remotePubkey) throw new Error("initiator needs remote pubkey");
+    if (!this.hs) throw new Error("noise handshake state missing");
+    this.state = "handshaking";
+    const noiseMsg = this.hs.writeMessage(new Uint8Array(0));
+    if (noiseMsg.length !== NOISE_XK_MSG1_LEN) {
+      throw new Error(`XK msg1 size ${noiseMsg.length} != ${NOISE_XK_MSG1_LEN}`);
+    }
+    return encodeSessionSetup({
+      srcCoords: [srcNodeAddr],
+      destCoords: [destNodeAddr],
+      flags: 0,
+      handshakePayload: noiseMsg,
+    });
+  }
+
   handleMsg1(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array {
     if (this.role !== "responder") throw new Error("only responder handles XK msg1");
     if (!this.hs) throw new Error("noise handshake state missing");
@@ -97,6 +127,31 @@ export class FspSession {
       throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
     }
     return encodeFspHandshake({ phase: 2, noiseMsg });
+  }
+
+  handleSessionSetup(
+    packet: Uint8Array,
+    _rand: (n: number) => Uint8Array,
+    localNodeAddr: NodeAddr,
+  ): Uint8Array {
+    if (this.role !== "responder") throw new Error("only responder handles SessionSetup");
+    if (!this.hs) throw new Error("noise handshake state missing");
+    const setup = decodeSessionSetup(packet);
+    if (setup.handshakePayload.length !== NOISE_XK_MSG1_LEN) {
+      throw new Error("bad XK msg1 length");
+    }
+    const payload = this.hs.readMessage(setup.handshakePayload);
+    if (payload.length !== 0) throw new Error("XK msg1 inner payload must be empty");
+    const noiseMsg = this.hs.writeMessage(epoch());
+    if (noiseMsg.length !== NOISE_XK_MSG2_LEN) {
+      throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
+    }
+    return encodeSessionAck({
+      srcCoords: [localNodeAddr],
+      destCoords: setup.srcCoords,
+      flags: 0,
+      handshakePayload: noiseMsg,
+    });
   }
 
   handleMsg2(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array {
@@ -115,6 +170,21 @@ export class FspSession {
     return encodeFspHandshake({ phase: 3, noiseMsg });
   }
 
+  handleSessionAck(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array {
+    if (this.role !== "initiator") throw new Error("only initiator handles SessionAck");
+    if (!this.hs) throw new Error("noise handshake state missing");
+    const ack = decodeSessionAck(packet);
+    if (ack.handshakePayload.length !== NOISE_XK_MSG2_LEN) throw new Error("bad XK msg2 length");
+    const payload = this.hs.readMessage(ack.handshakePayload);
+    if (payload.length !== EPOCH_LEN) throw new Error("XK msg2 inner payload must be 8 bytes");
+    const noiseMsg = this.hs.writeMessage(epoch());
+    if (noiseMsg.length !== NOISE_XK_MSG3_LEN) {
+      throw new Error(`XK msg3 size ${noiseMsg.length} != ${NOISE_XK_MSG3_LEN}`);
+    }
+    this.finalize();
+    return encodeSessionMsg3({ flags: 0, handshakePayload: noiseMsg });
+  }
+
   handleMsg3(packet: Uint8Array): void {
     if (this.role !== "responder") throw new Error("only responder handles XK msg3");
     if (!this.hs) throw new Error("noise handshake state missing");
@@ -122,6 +192,19 @@ export class FspSession {
     if (frame.phase !== 3) throw new Error("expected XK msg3");
     if (frame.noiseMsg.length !== NOISE_XK_MSG3_LEN) throw new Error("bad XK msg3 length");
     const payload = this.hs.readMessage(frame.noiseMsg);
+    if (payload.length !== EPOCH_LEN) throw new Error("XK msg3 inner payload must be 8 bytes");
+    const rs = this.hs.getRemoteStatic();
+    if (!rs) throw new Error("XK responder did not capture remote static");
+    this.remotePubkey = rs;
+    this.finalize();
+  }
+
+  handleSessionMsg3(packet: Uint8Array): void {
+    if (this.role !== "responder") throw new Error("only responder handles SessionMsg3");
+    if (!this.hs) throw new Error("noise handshake state missing");
+    const msg3 = decodeSessionMsg3(packet);
+    if (msg3.handshakePayload.length !== NOISE_XK_MSG3_LEN) throw new Error("bad XK msg3 length");
+    const payload = this.hs.readMessage(msg3.handshakePayload);
     if (payload.length !== EPOCH_LEN) throw new Error("XK msg3 inner payload must be 8 bytes");
     const rs = this.hs.getRemoteStatic();
     if (!rs) throw new Error("XK responder did not capture remote static");
@@ -147,10 +230,9 @@ export class FspSession {
       innerFlags: 0,
       payload: encodeDataPacket(data),
     });
-    const ciphertextLen = inner.length + 16;
-    const aad = encodeFspEstablishedHeader({ flags: 0, counter }, ciphertextLen);
+    const aad = encodeFspEstablishedHeader({ flags: 0, counter }, inner.length);
     const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-    return encodeFspEstablished({ flags: 0, counter, ciphertext });
+    return encodeFspEstablished({ flags: 0, counter, payloadLen: inner.length, ciphertext });
   }
 
   encryptEndpointData(payload: Uint8Array): Uint8Array {
@@ -162,10 +244,9 @@ export class FspSession {
       innerFlags: 0,
       payload,
     });
-    const ciphertextLen = inner.length + 16;
-    const aad = encodeFspEstablishedHeader({ flags: 0, counter }, ciphertextLen);
+    const aad = encodeFspEstablishedHeader({ flags: 0, counter }, inner.length);
     const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-    return encodeFspEstablished({ flags: 0, counter, ciphertext });
+    return encodeFspEstablished({ flags: 0, counter, payloadLen: inner.length, ciphertext });
   }
 
   encryptKeepalive(): Uint8Array {
@@ -177,10 +258,9 @@ export class FspSession {
       innerFlags: 0,
       payload: new Uint8Array(0),
     });
-    const ciphertextLen = inner.length + 16;
-    const aad = encodeFspEstablishedHeader({ flags: 0, counter }, ciphertextLen);
+    const aad = encodeFspEstablishedHeader({ flags: 0, counter }, inner.length);
     const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-    return encodeFspEstablished({ flags: 0, counter, ciphertext });
+    return encodeFspEstablished({ flags: 0, counter, payloadLen: inner.length, ciphertext });
   }
 
   decryptIncoming(
@@ -193,7 +273,7 @@ export class FspSession {
     }
     const aad = encodeFspEstablishedHeader(
       { flags: est.flags, counter: est.counter },
-      est.ciphertext.length,
+      est.payloadLen,
     );
     const plaintext = chacha20poly1305(
       this.rx.getKey(),

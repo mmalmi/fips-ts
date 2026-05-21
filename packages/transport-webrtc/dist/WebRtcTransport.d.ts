@@ -14,7 +14,7 @@ export interface WebRtcTransportConfig {
     iceGatherTimeoutMs?: number;
     dataChannelLabel?: string;
     ordered?: boolean;
-    maxRetransmits?: number;
+    maxRetransmits?: number | null;
     webSocket?: typeof WebSocket;
     rtcPeerConnection?: typeof RTCPeerConnection;
     debug?: boolean;

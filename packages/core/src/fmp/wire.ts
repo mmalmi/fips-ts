@@ -3,13 +3,14 @@
  *
  * Every FMP packet starts with a 4-byte common prefix:
  *
- *   byte 0: (version << 4) | phase  (version=1, phase ∈ {0,1,2})
+ *   byte 0: (version << 4) | phase  (version=0, phase in {0,1,2})
  *   byte 1: flags                   (0 during handshake)
  *   byte 2-3: payload_len (u16 LE)
  *
- * Phase 0x1 (Msg1): 4 prefix + 4 sender_idx (u32 LE) + 106 noise_msg1 = 114
- * Phase 0x2 (Msg2): 4 prefix + 4 sender_idx + 4 receiver_idx + 57 noise_msg2 = 69
- * Phase 0x0 (Established): 4 prefix + 4 receiver_idx + 8 counter (u64 LE) + ciphertext+tag
+ * Phase 0x1 (Msg1): 4 prefix + 4 sender_idx (u32 LE) + 106 noise_msg1 = 114, payload_len=110
+ * Phase 0x2 (Msg2): 4 prefix + 4 sender_idx + 4 receiver_idx + 57 noise_msg2 = 69, payload_len=65
+ * Phase 0x0 (Established): 4 prefix + 4 receiver_idx + 8 counter (u64 LE) + ciphertext+tag,
+ * with payload_len set to the plaintext length used in AEAD AAD.
  *
  * Inner plaintext (after AEAD decrypt):
  *   4 byte timestamp (u32 LE) + 1 byte msg_type + payload
@@ -17,7 +18,7 @@
 
 import { BinaryReader, BinaryWriter } from "../codec/binary.js";
 
-export const FMP_VERSION = 1;
+export const FMP_VERSION = 0;
 
 export const FMP_PHASE_ESTABLISHED = 0x0;
 export const FMP_PHASE_MSG1 = 0x1;
@@ -31,9 +32,9 @@ export const FMP_MSG2_TOTAL_LEN = 4 + 4 + 4 + NOISE_IK_MSG2_LEN; // 69
 export const FMP_ESTABLISHED_HEADER_LEN = 4 + 4 + 8; // 16
 export const FMP_AEAD_TAG_LEN = 16;
 
-/** Inner-plaintext message types after FMP AEAD decryption. */
-export const FMP_INNER_KEEPALIVE = 0x00;
-export const FMP_INNER_DATA = 0x01;
+/** Link-message types after the FMP timestamp header. */
+export const FMP_INNER_DATA = 0x00; // LinkMessageType.SessionDatagram
+export const FMP_INNER_KEEPALIVE = 0x51; // LinkMessageType.Heartbeat
 
 export interface FmpCommonPrefix {
   version: number;
@@ -79,7 +80,7 @@ export function encodeFmpMsg1(m: FmpMsg1): Uint8Array {
       version: FMP_VERSION,
       phase: FMP_PHASE_MSG1,
       flags: 0,
-      payloadLen: NOISE_IK_MSG1_LEN,
+      payloadLen: 4 + NOISE_IK_MSG1_LEN,
     }),
   );
   w.u32le(m.senderIdx);
@@ -96,7 +97,7 @@ export function decodeFmpMsg1(buf: Uint8Array): FmpMsg1 {
   if (prefix.version !== FMP_VERSION) throw new Error("bad FMP version");
   if (prefix.phase !== FMP_PHASE_MSG1) throw new Error("not FMP Msg1");
   if (prefix.flags !== 0) throw new Error("FMP Msg1 flags must be zero");
-  if (prefix.payloadLen !== NOISE_IK_MSG1_LEN) {
+  if (prefix.payloadLen !== 4 + NOISE_IK_MSG1_LEN) {
     throw new Error("bad FMP Msg1 payload_len");
   }
   const senderIdx = r.u32le();
@@ -120,7 +121,7 @@ export function encodeFmpMsg2(m: FmpMsg2): Uint8Array {
       version: FMP_VERSION,
       phase: FMP_PHASE_MSG2,
       flags: 0,
-      payloadLen: NOISE_IK_MSG2_LEN,
+      payloadLen: 4 + 4 + NOISE_IK_MSG2_LEN,
     }),
   );
   w.u32le(m.senderIdx);
@@ -138,7 +139,7 @@ export function decodeFmpMsg2(buf: Uint8Array): FmpMsg2 {
   if (prefix.version !== FMP_VERSION) throw new Error("bad FMP version");
   if (prefix.phase !== FMP_PHASE_MSG2) throw new Error("not FMP Msg2");
   if (prefix.flags !== 0) throw new Error("FMP Msg2 flags must be zero");
-  if (prefix.payloadLen !== NOISE_IK_MSG2_LEN) {
+  if (prefix.payloadLen !== 4 + 4 + NOISE_IK_MSG2_LEN) {
     throw new Error("bad FMP Msg2 payload_len");
   }
   const senderIdx = r.u32le();
@@ -154,6 +155,7 @@ export interface FmpEstablishedHeader {
 }
 
 export interface FmpEstablished extends FmpEstablishedHeader {
+  payloadLen: number;
   ciphertext: Uint8Array; // includes 16-byte AEAD tag at end
 }
 
@@ -176,7 +178,7 @@ export function encodeFmpEstablishedHeader(
 }
 
 export function encodeFmpEstablished(p: FmpEstablished): Uint8Array {
-  const header = encodeFmpEstablishedHeader(p, p.ciphertext.length);
+  const header = encodeFmpEstablishedHeader(p, p.payloadLen);
   const w = new BinaryWriter();
   w.bytes(header);
   w.bytes(p.ciphertext);
@@ -196,12 +198,12 @@ export function decodeFmpEstablished(buf: Uint8Array): FmpEstablished {
   const receiverIdx = r.u32le();
   const counter = r.u64le();
   const ciphertext = r.rest();
-  if (ciphertext.length !== prefix.payloadLen) {
+  if (ciphertext.length !== prefix.payloadLen + FMP_AEAD_TAG_LEN) {
     throw new Error(
-      `payload_len mismatch: header=${prefix.payloadLen} actual=${ciphertext.length}`,
+      `payload_len mismatch: header=${prefix.payloadLen}+tag actual=${ciphertext.length}`,
     );
   }
-  return { flags: prefix.flags, receiverIdx, counter, ciphertext };
+  return { flags: prefix.flags, receiverIdx, counter, payloadLen: prefix.payloadLen, ciphertext };
 }
 
 export interface FmpInnerPacket {
