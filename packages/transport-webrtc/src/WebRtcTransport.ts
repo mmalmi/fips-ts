@@ -216,6 +216,7 @@ export class WebRtcTransport implements Transport {
     const remoteXOnlyHex = remotePubkeyHex.slice(2); // strip 02/03 parity
     const sessionId = randomId();
     this.knownSessionIds.add(sessionId);
+    this.logger.debug("webrtc connect start", remotePubkeyHex, sessionId);
 
     const pc = new this.RTCPC({
       iceServers: (this.cfg.stunServers ?? []).map((u) => ({ urls: u })),
@@ -290,6 +291,7 @@ export class WebRtcTransport implements Transport {
       expiresAtMs: Date.now() + 60_000,
     };
     await this.signaling!.sendSignal(dial.remoteXOnlyHex, signal);
+    this.logger.debug("webrtc offer sent", dial.remotePubkeyHex, dial.sessionId);
     // Wire connection state to dialer promise once data channel opens.
     const conn = new WebRtcConnection({
       remotePubkeyHex: dial.remotePubkeyHex,
@@ -326,6 +328,7 @@ export class WebRtcTransport implements Transport {
     signal: WebRtcSignal,
     senderXOnlyHex: string,
   ): Promise<void> {
+    this.logger.debug("webrtc signal received", signal.kind, signal.sessionId, signal.sender);
     const localPubkeyHex = toHex(this.ctx!.localIdentity.publicKey);
     const valid = validateWebRtcSignal(signal, {
       localPubkeyHex,
@@ -370,6 +373,7 @@ export class WebRtcTransport implements Transport {
         expiresAtMs: Date.now() + 60_000,
       };
       await this.signaling!.sendSignal(senderXOnlyHex, reply);
+      this.logger.debug("webrtc answer sent", valid.sender, valid.sessionId);
       // Now wait for the negotiated channel to arrive and wire it up.
       dcPromise.then((dataChannel) => {
         const conn = new WebRtcConnection({
@@ -399,6 +403,7 @@ export class WebRtcTransport implements Transport {
       const dial = this.pendingDials.get(valid.sessionId);
       if (!dial) return;
       await dial.pc.setRemoteDescription({ type: "answer", sdp: valid.sdp! });
+      this.logger.debug("webrtc answer applied", valid.sender, valid.sessionId);
       return;
     }
     if (valid.kind === "reject") {

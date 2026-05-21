@@ -82,6 +82,7 @@ export class NostrWebRtcSignaling {
           },
         );
         this.cleanups.push(cleanup);
+        this.logger?.debug("signal subscription ready", relay.url, localXOnly);
         return true;
       } catch (err) {
         this.logger?.warn("signal subscription failed", relay.url, err);
@@ -119,6 +120,7 @@ export class NostrWebRtcSignaling {
       JSON.stringify(signal),
     );
     await this.publishToRelays(giftWrap, "signal publish failed");
+    this.logger?.debug("signal published", signal.kind, signal.sessionId, recipientXOnlyHex);
   }
 
   /** Discover adverts (kind 37195) matching the d-tag. */
@@ -180,6 +182,7 @@ export class NostrWebRtcSignaling {
   private handleSignalEvent(ev: NostrEvent): void {
     if (this.seenEventIds.has(ev.id)) return;
     this.seenEventIds.add(ev.id);
+    this.logger?.debug("signal event received", ev.id, ev.pubkey);
     if (!verifyEvent(ev)) {
       this.logger?.warn("signal event sig invalid", ev.id);
       return;
@@ -191,6 +194,7 @@ export class NostrWebRtcSignaling {
       this.logger?.warn("gift wrap decrypt failed", err);
       return;
     }
+    this.logger?.debug("signal event unwrapped", ev.id, unwrapped.senderXOnlyHex, unwrapped.kind);
     if (unwrapped.kind !== FIPS_SIGNAL_RUMOR_KIND) {
       this.logger?.warn("gift wrap rumor kind unexpected", unwrapped.kind);
       return;
@@ -202,6 +206,7 @@ export class NostrWebRtcSignaling {
       this.logger?.warn("signal JSON parse failed");
       return;
     }
+    this.logger?.debug("signal parsed", signal.kind, signal.sessionId, signal.sender);
     this.onSignal(signal, unwrapped.senderXOnlyHex);
   }
 }
