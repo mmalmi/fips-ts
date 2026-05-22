@@ -3,10 +3,10 @@ const DEFAULT_READY_FALLBACK_MS = 250;
 /**
  * A single WebRTC datachannel link to one remote pubkey.
  *
- * Reports `connected` after both pc.connectionState === "connected" and the
- * data channel is open, then waits for the peer's small ready marker or a
- * short compatibility grace period. The grace keeps old peers working while
- * avoiding the common race where FMP Msg1 is sent before the responder's
+ * Reports `connected` after the peer connection or ICE transport is connected
+ * and the data channel is open, then waits for the peer's small ready marker
+ * or a short compatibility grace period. The grace keeps old peers working
+ * while avoiding the common race where FMP Msg1 is sent before the responder's
  * onmessage handler is installed.
  */
 export class WebRtcConnection {
@@ -71,13 +71,23 @@ export class WebRtcConnection {
     }
     evaluateState() {
         const pcState = this.pc.connectionState;
+        const iceState = this.pc.iceConnectionState;
         const dcState = this.dataChannel.readyState;
+        const pcConnected = pcState === "connected"
+            || iceState === "connected"
+            || iceState === "completed";
+        const pcFailed = pcState === "failed"
+            || pcState === "closed"
+            || iceState === "failed"
+            || iceState === "closed";
+        const pcDisconnected = pcState === "disconnected"
+            || iceState === "disconnected";
         let next;
-        if (pcState === "connected" && dcState === "open" && this.remoteReady)
+        if (pcConnected && dcState === "open" && this.remoteReady)
             next = "connected";
-        else if (pcState === "failed" || pcState === "closed")
+        else if (pcFailed)
             next = "failed";
-        else if (pcState === "disconnected")
+        else if (pcDisconnected)
             next = "disconnected";
         else
             next = "connecting";
