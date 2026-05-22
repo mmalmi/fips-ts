@@ -11,6 +11,7 @@ class FakeWebSocket {
   static readonly CLOSED = 3;
   static accepted = true;
   static message = "";
+  static failNextConnect = false;
   static instances: FakeWebSocket[] = [];
 
   readyState = FakeWebSocket.CONNECTING;
@@ -21,6 +22,12 @@ class FakeWebSocket {
   constructor(readonly url: string) {
     FakeWebSocket.instances.push(this);
     queueMicrotask(() => {
+      if (FakeWebSocket.failNextConnect) {
+        FakeWebSocket.failNextConnect = false;
+        this.readyState = FakeWebSocket.CLOSED;
+        this.emit("close", {});
+        return;
+      }
       this.readyState = FakeWebSocket.OPEN;
       this.emit("open", {});
     });
@@ -81,6 +88,23 @@ describe("NostrRelayClient publish acknowledgements", () => {
     await relay.publish(event("ok"));
 
     expect(FakeWebSocket.instances[0]?.sent).toHaveLength(1);
+  });
+
+  it("can reconnect after a relay closes before opening", async () => {
+    FakeWebSocket.accepted = true;
+    FakeWebSocket.message = "";
+    FakeWebSocket.failNextConnect = true;
+    FakeWebSocket.instances = [];
+    const relay = new NostrRelayClient({
+      url: "ws://relay.test",
+      webSocket: FakeWebSocket as unknown as typeof WebSocket,
+    });
+
+    await expect(relay.connect()).rejects.toThrow("relay closed before open");
+    await relay.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(FakeWebSocket.instances[1]?.readyState).toBe(FakeWebSocket.OPEN);
   });
 
   it("rejects relay OK false", async () => {

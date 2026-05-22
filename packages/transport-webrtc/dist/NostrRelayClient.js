@@ -33,10 +33,15 @@ export class NostrRelayClient {
         return this.ws?.readyState === this.WS.OPEN;
     }
     connect() {
+        if (this.ws?.readyState === this.WS.OPEN) {
+            return Promise.resolve();
+        }
         if (this.readyPromise)
             return this.readyPromise;
+        this.closed = false;
         this.readyPromise = new Promise((resolve, reject) => {
             let settled = false;
+            let ws = null;
             const finish = (fn) => {
                 if (settled)
                     return;
@@ -47,11 +52,15 @@ export class NostrRelayClient {
             const fail = (message) => {
                 finish(() => {
                     try {
-                        this.ws?.close();
+                        ws?.close();
                     }
                     catch {
                         /* ignore */
                     }
+                    if (this.ws === ws) {
+                        this.ws = undefined;
+                    }
+                    this.readyPromise = undefined;
                     reject(new Error(message));
                 });
             };
@@ -60,7 +69,7 @@ export class NostrRelayClient {
                 fail("relay connect timeout");
             }, this.connectTimeoutMs);
             try {
-                const ws = new this.WS(this.url);
+                ws = new this.WS(this.url);
                 this.ws = ws;
                 ws.binaryType = "arraybuffer";
                 ws.addEventListener("open", () => {
@@ -74,7 +83,10 @@ export class NostrRelayClient {
                 });
                 ws.addEventListener("close", () => {
                     const wasConnecting = !settled;
-                    this.closed = true;
+                    if (this.ws === ws) {
+                        this.ws = undefined;
+                    }
+                    this.readyPromise = undefined;
                     this.logger?.debug("relay closed", this.url);
                     this.rejectPendingPublishes(new Error("relay closed before publish OK"));
                     if (wasConnecting)

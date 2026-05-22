@@ -79,9 +79,14 @@ export class NostrRelayClient {
   }
 
   connect(): Promise<void> {
+    if (this.ws?.readyState === this.WS.OPEN) {
+      return Promise.resolve();
+    }
     if (this.readyPromise) return this.readyPromise;
+    this.closed = false;
     this.readyPromise = new Promise<void>((resolve, reject) => {
       let settled = false;
+      let ws: WebSocket | null = null;
       const finish = (fn: () => void): void => {
         if (settled) return;
         settled = true;
@@ -91,10 +96,14 @@ export class NostrRelayClient {
       const fail = (message: string): void => {
         finish(() => {
           try {
-            this.ws?.close();
+            ws?.close();
           } catch {
             /* ignore */
           }
+          if (this.ws === ws) {
+            this.ws = undefined;
+          }
+          this.readyPromise = undefined;
           reject(new Error(message));
         });
       };
@@ -103,7 +112,7 @@ export class NostrRelayClient {
         fail("relay connect timeout");
       }, this.connectTimeoutMs);
       try {
-        const ws = new this.WS(this.url);
+        ws = new this.WS(this.url);
         this.ws = ws;
         ws.binaryType = "arraybuffer";
         ws.addEventListener("open", () => {
@@ -116,7 +125,10 @@ export class NostrRelayClient {
         });
         ws.addEventListener("close", () => {
           const wasConnecting = !settled;
-          this.closed = true;
+          if (this.ws === ws) {
+            this.ws = undefined;
+          }
+          this.readyPromise = undefined;
           this.logger?.debug("relay closed", this.url);
           this.rejectPendingPublishes(new Error("relay closed before publish OK"));
           if (wasConnecting) fail("relay closed before open");
