@@ -13,6 +13,8 @@ function nextSessionIdx() {
     return v >>> 0;
 }
 const defaultRandom = { bytes: (n) => randomBytes(n) };
+const FMP_HANDSHAKE_TIMEOUT_MS = 15_000;
+const FMP_HANDSHAKE_RESEND_MS = 1_000;
 export class FipsNode {
     identity;
     forwarding;
@@ -110,17 +112,29 @@ export class FipsNode {
             peer.outgoingHandshake = { resolve, reject };
         });
         const msg1 = link.buildMsg1((n) => this.random.bytes(n));
-        await transport.send(addr, msg1.packet);
-        this.logger.debug("fips msg1 sent", addr.transport, addr.addr, msg1.packet.length);
+        const sendMsg1 = async (resend) => {
+            await transport.send(addr, msg1.packet);
+            this.logger.debug(resend ? "fips msg1 resent" : "fips msg1 sent", addr.transport, addr.addr, msg1.packet.length);
+        };
+        await sendMsg1(false);
+        const resendTimer = setInterval(() => {
+            if (!peer.outgoingHandshake)
+                return;
+            void sendMsg1(true).catch((err) => {
+                this.emit("error", { err: err, where: "resend Msg1" });
+            });
+        }, FMP_HANDSHAKE_RESEND_MS);
         const timer = setTimeout(() => {
             this.logger.warn("fips handshake timeout", addr.transport, addr.addr);
             peer.outgoingHandshake?.reject(new Error("FMP handshake timeout"));
-        }, 15_000);
+        }, FMP_HANDSHAKE_TIMEOUT_MS);
         try {
             await handshakeDone;
         }
         finally {
             clearTimeout(timer);
+            clearInterval(resendTimer);
+            peer.outgoingHandshake = undefined;
         }
     }
     /** Send a service datagram to a target identity (adjacent or routable). */
