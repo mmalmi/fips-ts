@@ -88,6 +88,7 @@ export class FipsNode {
   private peers = new Map<string, AdjacentPeer>();  // by transportAddressKey
   private peersByPubkey = new Map<string, AdjacentPeer>(); // by pubkey hex
   private peersByNodeAddr = new Map<string, AdjacentPeer>(); // by NodeAddr hex
+  private pendingPeerConnects = new Map<string, Promise<void>>(); // by transportAddressKey
   private sessions = new Map<string, Session>();    // by remote NodeAddr hex
   private listeners = new Map<FipsEventName, Set<(event: unknown) => void>>();
   private started = false;
@@ -128,6 +129,7 @@ export class FipsNode {
     this.peers.clear();
     this.peersByPubkey.clear();
     this.peersByNodeAddr.clear();
+    this.pendingPeerConnects.clear();
     this.sessions.clear();
     this.started = false;
   }
@@ -152,6 +154,28 @@ export class FipsNode {
     const remotePubkey = hexBytes(addr.addr);
     const key = transportAddressKey(addr);
     if (this.peers.has(key) && this.peers.get(key)!.link.state === "established") return;
+    const pendingConnect = this.pendingPeerConnects.get(key);
+    if (pendingConnect) {
+      await pendingConnect;
+      return;
+    }
+    const connectPromise = this.connectAdjacentPeer(transport, addr, remotePubkey, key);
+    this.pendingPeerConnects.set(key, connectPromise);
+    try {
+      await connectPromise;
+    } finally {
+      if (this.pendingPeerConnects.get(key) === connectPromise) {
+        this.pendingPeerConnects.delete(key);
+      }
+    }
+  }
+
+  private async connectAdjacentPeer(
+    transport: Transport,
+    addr: TransportAddress,
+    remotePubkey: Uint8Array,
+    key: string,
+  ): Promise<void> {
     this.logger.debug("fips connect transport start", addr.transport, addr.addr);
     await transport.connect(addr);
     this.logger.debug("fips connect transport ready", addr.transport, addr.addr);
@@ -201,6 +225,13 @@ export class FipsNode {
       clearTimeout(timer);
       clearInterval(resendTimer);
       peer.outgoingHandshake = undefined;
+      if (peer.link.state !== "established" && this.peers.get(key) === peer) {
+        this.peers.delete(key);
+        this.peersByPubkey.delete(peer.pubkeyHex);
+        if (peer.pubkey.length > 0) {
+          this.peersByNodeAddr.delete(nodeAddrToHex(deriveNodeAddr(peer.pubkey)));
+        }
+      }
     }
   }
 

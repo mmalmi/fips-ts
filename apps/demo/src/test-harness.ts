@@ -72,6 +72,47 @@ async function makeWebRtcPair(relayUrl: string): Promise<NodePair> {
   return { a, b, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey) };
 }
 
+async function duplicateWebRtcConnect(relayUrl: string): Promise<string> {
+  const logger = {
+    debug: (...a: unknown[]) => console.log("[webrtc-duplicate]", ...a),
+    info: (...a: unknown[]) => console.log("[webrtc-duplicate:info]", ...a),
+    warn: (...a: unknown[]) => console.warn("[webrtc-duplicate:warn]", ...a),
+    error: (...a: unknown[]) => console.error("[webrtc-duplicate:err]", ...a),
+  };
+  const aId = await generateIdentity();
+  const bId = await generateIdentity();
+  const a = new FipsNode({
+    identity: aId,
+    logger,
+    transports: [
+      new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger }),
+    ],
+  });
+  const b = new FipsNode({
+    identity: bId,
+    logger,
+    transports: [
+      new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger }),
+    ],
+  });
+  b.registerService(9000, async ({ payload, reply }) => {
+    await reply(payload);
+  });
+  await a.start();
+  await b.start();
+  try {
+    const addr = { transport: "webrtc" as const, addr: toHex(bId.publicKey) };
+    const first = a.connect(addr);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const second = a.connect(addr);
+    await Promise.all([first, second]);
+    return await echoOverPair({ a, b, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey) }, "duplicate-connect");
+  } finally {
+    await a.stop();
+    await b.stop();
+  }
+}
+
 async function memoryThreeNodes(): Promise<ThreeNodes> {
   const hub = new MemoryHub();
   const aId = await generateIdentity();
@@ -323,6 +364,7 @@ async function echoWithRustWebRtcPeer(
 
 export const harness = {
   makeWebRtcPair,
+  duplicateWebRtcConnect,
   makeWebRtcChain,
   webRtcReconnect,
   memoryThreeNodes,

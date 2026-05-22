@@ -36,3 +36,25 @@ test("Two-node FIPS over WebRTC + local Nostr relay (in-page, native browser RTC
 
   expect(reply).toBe("hello-via-webrtc");
 });
+
+test("duplicate WebRTC dials wait for the same open datachannel", async ({ page }) => {
+  await page.addInitScript((url) => {
+    window.__fipsTestRelayUrl = url;
+  }, relay.url);
+
+  page.on("console", (msg) => {
+    if (msg.type() === "log" || msg.type() === "warning" || msg.type() === "error") {
+      console.log(`browser ${msg.type()}: ${msg.text()}`);
+    }
+  });
+  page.on("pageerror", (err) => console.log("pageerror:", err.message));
+
+  await page.goto("/");
+  await page.waitForFunction(() => !!window.__fipsHarness);
+
+  const reply = await page.evaluate(async () => {
+    return window.__fipsHarness.duplicateWebRtcConnect(window.__fipsTestRelayUrl!);
+  });
+
+  expect(reply).toBe("duplicate-connect");
+});

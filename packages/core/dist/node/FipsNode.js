@@ -25,6 +25,7 @@ export class FipsNode {
     peers = new Map(); // by transportAddressKey
     peersByPubkey = new Map(); // by pubkey hex
     peersByNodeAddr = new Map(); // by NodeAddr hex
+    pendingPeerConnects = new Map(); // by transportAddressKey
     sessions = new Map(); // by remote NodeAddr hex
     listeners = new Map();
     started = false;
@@ -65,6 +66,7 @@ export class FipsNode {
         this.peers.clear();
         this.peersByPubkey.clear();
         this.peersByNodeAddr.clear();
+        this.pendingPeerConnects.clear();
         this.sessions.clear();
         this.started = false;
     }
@@ -90,6 +92,23 @@ export class FipsNode {
         const key = transportAddressKey(addr);
         if (this.peers.has(key) && this.peers.get(key).link.state === "established")
             return;
+        const pendingConnect = this.pendingPeerConnects.get(key);
+        if (pendingConnect) {
+            await pendingConnect;
+            return;
+        }
+        const connectPromise = this.connectAdjacentPeer(transport, addr, remotePubkey, key);
+        this.pendingPeerConnects.set(key, connectPromise);
+        try {
+            await connectPromise;
+        }
+        finally {
+            if (this.pendingPeerConnects.get(key) === connectPromise) {
+                this.pendingPeerConnects.delete(key);
+            }
+        }
+    }
+    async connectAdjacentPeer(transport, addr, remotePubkey, key) {
         this.logger.debug("fips connect transport start", addr.transport, addr.addr);
         await transport.connect(addr);
         this.logger.debug("fips connect transport ready", addr.transport, addr.addr);
@@ -135,6 +154,13 @@ export class FipsNode {
             clearTimeout(timer);
             clearInterval(resendTimer);
             peer.outgoingHandshake = undefined;
+            if (peer.link.state !== "established" && this.peers.get(key) === peer) {
+                this.peers.delete(key);
+                this.peersByPubkey.delete(peer.pubkeyHex);
+                if (peer.pubkey.length > 0) {
+                    this.peersByNodeAddr.delete(nodeAddrToHex(deriveNodeAddr(peer.pubkey)));
+                }
+            }
         }
     }
     /** Send a service datagram to a target identity (adjacent or routable). */

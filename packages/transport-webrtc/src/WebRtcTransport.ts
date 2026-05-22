@@ -91,6 +91,7 @@ export class WebRtcTransport implements Transport {
   private relayClients: NostrRelayClient[] = [];
   private readonly conns = new Map<string, WebRtcConnection>(); // by pubkeyHex
   private readonly pendingDials = new Map<string, PendingDial>(); // by sessionId
+  private readonly pendingConnects = new Map<string, Promise<void>>(); // by pubkeyHex
   private readonly autoConnectPeers = new Set<string>(); // by pubkeyHex
   private readonly knownSessionIds = new Set<string>();
   private readonly seenSessionIds = new Set<string>();
@@ -177,6 +178,7 @@ export class WebRtcTransport implements Transport {
       dial.reject(new Error("transport stopped"));
     }
     this.pendingDials.clear();
+    this.pendingConnects.clear();
   }
 
   private async handleAdvert(advert: { endpoints: Array<{ transport: string; addr: string }> }): Promise<void> {
@@ -211,6 +213,11 @@ export class WebRtcTransport implements Transport {
     }
     const remotePubkeyHex = addr.addr;
     if (this.conns.has(remotePubkeyHex)) return;
+    const pendingConnect = this.pendingConnects.get(remotePubkeyHex);
+    if (pendingConnect) {
+      await pendingConnect;
+      return;
+    }
     const remoteXOnlyHex = remotePubkeyHex.slice(2); // strip 02/03 parity
     const sessionId = randomId();
     this.knownSessionIds.add(sessionId);
@@ -227,7 +234,7 @@ export class WebRtcTransport implements Transport {
     }
     const dataChannel = pc.createDataChannel(this.cfg.dataChannelLabel, dataChannelOptions);
 
-    return new Promise<void>((resolve, reject) => {
+    const connectPromise = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingDials.delete(sessionId);
         pc.close();
@@ -253,6 +260,14 @@ export class WebRtcTransport implements Transport {
         reject(err);
       });
     });
+    this.pendingConnects.set(remotePubkeyHex, connectPromise);
+    try {
+      await connectPromise;
+    } finally {
+      if (this.pendingConnects.get(remotePubkeyHex) === connectPromise) {
+        this.pendingConnects.delete(remotePubkeyHex);
+      }
+    }
   }
 
   async send(addr: TransportAddress, packet: Uint8Array): Promise<void> {
@@ -294,7 +309,8 @@ export class WebRtcTransport implements Transport {
     await this.signaling!.sendSignal(dial.remoteXOnlyHex, signal);
     this.logger.debug("webrtc offer sent", dial.remotePubkeyHex, dial.sessionId);
     // Wire connection state to dialer promise once data channel opens.
-    const conn = new WebRtcConnection({
+    let conn: WebRtcConnection | null = null;
+    conn = new WebRtcConnection({
       remotePubkeyHex: dial.remotePubkeyHex,
       remoteAddr: addr,
       pc: dial.pc,
@@ -309,6 +325,7 @@ export class WebRtcTransport implements Transport {
       onState: (state) => {
         this.ctx!.onConnectionState?.({ remoteAddr: addr, state });
         if (state === "connected") {
+          if (conn) this.conns.set(dial.remotePubkeyHex, conn);
           if (this.pendingDials.delete(dial.sessionId)) {
             clearTimeout(dial.timer);
             dial.resolve();
@@ -323,7 +340,6 @@ export class WebRtcTransport implements Transport {
       },
       logger: this.logger,
     });
-    this.conns.set(dial.remotePubkeyHex, conn);
   }
 
   private async handleIncomingSignal(
@@ -378,7 +394,8 @@ export class WebRtcTransport implements Transport {
       this.logger.debug("webrtc answer sent", valid.sender, valid.sessionId);
       // Now wait for the negotiated channel to arrive and wire it up.
       dcPromise.then((dataChannel) => {
-        const conn = new WebRtcConnection({
+        let conn: WebRtcConnection | null = null;
+        conn = new WebRtcConnection({
           remotePubkeyHex: valid.sender,
           remoteAddr,
           pc,
@@ -392,13 +409,15 @@ export class WebRtcTransport implements Transport {
             }),
           onState: (state) => {
             this.ctx!.onConnectionState?.({ remoteAddr, state });
+            if (state === "connected") {
+              if (conn) this.conns.set(valid.sender, conn);
+            }
             if (state === "failed" || state === "disconnected") {
               this.conns.delete(valid.sender);
             }
           },
           logger: this.logger,
         });
-        this.conns.set(valid.sender, conn);
       }).catch((err) => this.logger.warn("dcPromise", err));
       return;
     }

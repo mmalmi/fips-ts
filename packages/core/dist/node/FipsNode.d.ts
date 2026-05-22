@@ -11,6 +11,7 @@ export declare class FipsNode {
     private peers;
     private peersByPubkey;
     private peersByNodeAddr;
+    private pendingPeerConnects;
     private sessions;
     private listeners;
     private started;
@@ -23,6 +24,7 @@ export declare class FipsNode {
      * must be the remote node's 33-byte compressed pubkey in hex.
      */
     connect(addr: TransportAddress): Promise<void>;
+    private connectAdjacentPeer;
     /** Send a service datagram to a target identity (adjacent or routable). */
     sendDatagram(args: {
         dst: string;

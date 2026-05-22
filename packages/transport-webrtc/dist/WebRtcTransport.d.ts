@@ -31,6 +31,7 @@ export declare class WebRtcTransport implements Transport {
     private relayClients;
     private readonly conns;
     private readonly pendingDials;
+    private readonly pendingConnects;
     private readonly autoConnectPeers;
     private readonly knownSessionIds;
     private readonly seenSessionIds;
