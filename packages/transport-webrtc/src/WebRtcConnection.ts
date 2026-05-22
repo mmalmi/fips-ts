@@ -1,4 +1,4 @@
-import type { TransportAddress } from "@fips/core";
+import type { Logger, TransportAddress } from "@fips/core";
 
 export interface WebRtcConnectionConfig {
   remotePubkeyHex: string;        // 33-byte compressed hex
@@ -8,6 +8,7 @@ export interface WebRtcConnectionConfig {
   onPacket: (data: Uint8Array) => void;
   onState: (state: "connecting" | "connected" | "disconnected" | "failed") => void;
   readyFallbackMs?: number;
+  logger?: Logger;
 }
 
 const READY_FRAME = new Uint8Array([0xff, 0x46, 0x57, 0x52, 0x31]); // FWR1
@@ -31,6 +32,7 @@ export class WebRtcConnection {
   private readonly onPacket: (data: Uint8Array) => void;
   private readonly onState: (state: WebRtcConnection["state"]) => void;
   private readonly readyFallbackMs: number;
+  private readonly logger?: Logger;
   private localReadySent = false;
   private remoteReady = false;
   private fallbackTimer?: ReturnType<typeof setTimeout>;
@@ -43,6 +45,7 @@ export class WebRtcConnection {
     this.onPacket = cfg.onPacket;
     this.onState = cfg.onState;
     this.readyFallbackMs = cfg.readyFallbackMs ?? DEFAULT_READY_FALLBACK_MS;
+    this.logger = cfg.logger;
 
     this.dataChannel.binaryType = "arraybuffer";
     this.dataChannel.addEventListener("message", (ev) => {
@@ -53,6 +56,7 @@ export class WebRtcConnection {
       else return;
       if (isReadyFrame(buf)) {
         this.remoteReady = true;
+        this.logger?.debug("webrtc ready received", this.remotePubkeyHex);
         if (this.fallbackTimer) {
           clearTimeout(this.fallbackTimer);
           this.fallbackTimer = undefined;
@@ -60,6 +64,7 @@ export class WebRtcConnection {
         this.evaluateState();
         return;
       }
+      this.logger?.debug("webrtc packet received", this.remotePubkeyHex, buf.length, buf[0] ?? null);
       this.onPacket(buf);
     });
     this.dataChannel.addEventListener("open", () => {
@@ -70,6 +75,7 @@ export class WebRtcConnection {
     this.dataChannel.addEventListener("close", () => {
       if (this.fallbackTimer) clearTimeout(this.fallbackTimer);
       this.state = "disconnected";
+      this.logger?.debug("webrtc datachannel closed", this.remotePubkeyHex);
       this.onState(this.state);
     });
     this.pc.addEventListener("connectionstatechange", () => this.evaluateState());
@@ -108,6 +114,7 @@ export class WebRtcConnection {
     if (this.localReadySent || this.dataChannel.readyState !== "open") return;
     this.localReadySent = true;
     this.dataChannel.send(READY_FRAME);
+    this.logger?.debug("webrtc ready sent", this.remotePubkeyHex);
   }
 
   private startReadyFallback(): void {
@@ -115,6 +122,7 @@ export class WebRtcConnection {
     this.fallbackTimer = setTimeout(() => {
       this.fallbackTimer = undefined;
       this.remoteReady = true;
+      this.logger?.debug("webrtc ready fallback elapsed", this.remotePubkeyHex);
       this.evaluateState();
     }, this.readyFallbackMs);
   }
@@ -128,6 +136,7 @@ export class WebRtcConnection {
     const copy = new Uint8Array(new ArrayBuffer(data.length));
     copy.set(data);
     this.dataChannel.send(copy);
+    this.logger?.debug("webrtc packet sent", this.remotePubkeyHex, copy.length, copy[0] ?? null);
   }
 
   close(): void {

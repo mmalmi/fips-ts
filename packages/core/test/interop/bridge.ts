@@ -31,7 +31,7 @@ interface PendingRead {
   reject: (err: Error) => void;
 }
 
-export function spawnBridge(mode: "ik" | "xk", responderSkHex: string): BridgeSession {
+export function spawnBridge(mode: "ik" | "xk" | "fmp", responderSkHex: string): BridgeSession {
   if (!bridgeAvailable()) {
     throw new Error(
       `bridge binary not built at ${BRIDGE_BIN}; run \`cargo build --release --manifest-path interop/rust-bridge/Cargo.toml\``,

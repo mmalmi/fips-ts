@@ -150,7 +150,9 @@ export class FipsNode {
     const remotePubkey = hexBytes(addr.addr);
     const key = transportAddressKey(addr);
     if (this.peers.has(key) && this.peers.get(key)!.link.state === "established") return;
+    this.logger.debug("fips connect transport start", addr.transport, addr.addr);
     await transport.connect(addr);
+    this.logger.debug("fips connect transport ready", addr.transport, addr.addr);
     const link = new FmpLink({
       identity: this.identity,
       remotePubkey,
@@ -172,7 +174,9 @@ export class FipsNode {
     });
     const msg1 = link.buildMsg1((n) => this.random.bytes(n));
     await transport.send(addr, msg1.packet);
+    this.logger.debug("fips msg1 sent", addr.transport, addr.addr, msg1.packet.length);
     const timer = setTimeout(() => {
+      this.logger.warn("fips handshake timeout", addr.transport, addr.addr);
       peer.outgoingHandshake?.reject(new Error("FMP handshake timeout"));
     }, 15_000);
     try {
@@ -276,6 +280,13 @@ export class FipsNode {
   ): void {
     try {
       const phase = peekFmpPhase(p.data);
+      this.logger.debug(
+        "fips packet received",
+        p.remoteAddr.transport,
+        p.remoteAddr.addr,
+        p.data.length,
+        phase,
+      );
       const key = transportAddressKey(p.remoteAddr);
       let peer = this.peers.get(key);
       switch (phase) {
@@ -304,6 +315,12 @@ export class FipsNode {
             void transport.send(p.remoteAddr, result.reply).catch((err) => {
               this.emit("error", { err: err as Error, where: "send Msg2" });
             });
+            this.logger.debug(
+              "fips msg2 sent",
+              p.remoteAddr.transport,
+              p.remoteAddr.addr,
+              result.reply.length,
+            );
           }
           this.emit("peer", {
             remotePubkey: peer.pubkeyHex,
@@ -325,6 +342,7 @@ export class FipsNode {
           });
           peer.outgoingHandshake?.resolve();
           peer.outgoingHandshake = undefined;
+          this.logger.debug("fips msg2 handled", p.remoteAddr.transport, p.remoteAddr.addr);
           break;
         }
         case FMP_PHASE_ESTABLISHED: {

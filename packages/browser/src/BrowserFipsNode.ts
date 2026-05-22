@@ -1,6 +1,7 @@
 import {
   FipsNode,
   type FipsServiceHandler,
+  type Logger,
   type ServiceRegistration,
   type Transport,
 } from "@fips/core";
@@ -12,6 +13,7 @@ export interface CreateBrowserFipsNodeConfig {
   forwarding?: boolean;
   transports: Transport[];
   services?: ServiceRegistration[];
+  logger?: Logger;
 }
 
 export async function createBrowserFipsNode(
@@ -24,6 +26,7 @@ export async function createBrowserFipsNode(
     transports: cfg.transports,
     forwarding: cfg.forwarding ?? false,
     services: cfg.services,
+    logger: cfg.logger,
   });
 }
 

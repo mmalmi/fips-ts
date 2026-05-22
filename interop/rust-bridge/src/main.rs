@@ -152,6 +152,145 @@ fn run_xk(static_sk_hex: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn le_u32(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn le_u64(bytes: &[u8]) -> u64 {
+    u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
+}
+
+fn build_fmp_msg2(sender_idx: u32, receiver_idx: u32, noise_msg2: &[u8]) -> Vec<u8> {
+    let payload_len = (4 + 4 + noise_msg2.len()) as u16;
+    let mut packet = Vec::with_capacity(4 + payload_len as usize);
+    packet.push(0x02);
+    packet.push(0x00);
+    packet.extend_from_slice(&payload_len.to_le_bytes());
+    packet.extend_from_slice(&sender_idx.to_le_bytes());
+    packet.extend_from_slice(&receiver_idx.to_le_bytes());
+    packet.extend_from_slice(noise_msg2);
+    packet
+}
+
+fn build_fmp_established(
+    receiver_idx: u32,
+    counter: u64,
+    flags: u8,
+    inner_plaintext: &[u8],
+    ciphertext: &[u8],
+) -> Vec<u8> {
+    let payload_len = inner_plaintext.len() as u16;
+    let mut packet = Vec::with_capacity(16 + ciphertext.len());
+    packet.push(0x00);
+    packet.push(flags);
+    packet.extend_from_slice(&payload_len.to_le_bytes());
+    packet.extend_from_slice(&receiver_idx.to_le_bytes());
+    packet.extend_from_slice(&counter.to_le_bytes());
+    packet.extend_from_slice(ciphertext);
+    packet
+}
+
+/// `fmp <responder-sk-hex>`: run Rust as an FMP responder.
+///
+/// The TypeScript side sends a full FMP Msg1 wire packet, then one encrypted
+/// established packet. The bridge replies with a full Msg2 packet, echoes the
+/// decrypted inner plaintext for inspection, then sends one encrypted Rust
+/// established packet back.
+fn run_fmp(static_sk_hex: &str) -> io::Result<()> {
+    let sk_bytes = hex::decode(static_sk_hex)
+        .map_err(|e| io::Error::other(format!("bad hex: {e}")))?;
+    let sk = SecretKey::from_slice(&sk_bytes)
+        .map_err(|e| io::Error::other(format!("bad sk: {e}")))?;
+    let identity = Identity::from_secret_key(sk);
+    let kp = identity.keypair();
+    let pubkey = kp.public_key();
+
+    let mut stdin = io::stdin().lock();
+    let mut stdout = io::stdout().lock();
+
+    write_frame(&mut stdout, &pubkey.serialize())?;
+
+    let msg1 = read_frame(&mut stdin)?;
+    if msg1.len() != 114 {
+        return Err(io::Error::other(format!(
+            "expected FMP msg1 of 114 bytes, got {}",
+            msg1.len(),
+        )));
+    }
+    if msg1[0] != 0x01 || msg1[1] != 0x00 {
+        return Err(io::Error::other(format!(
+            "bad FMP msg1 prefix {:02x} {:02x}",
+            msg1[0], msg1[1],
+        )));
+    }
+    let payload_len = u16::from_le_bytes([msg1[2], msg1[3]]);
+    if payload_len != 110 {
+        return Err(io::Error::other(format!(
+            "bad FMP msg1 payload_len {payload_len}",
+        )));
+    }
+    let receiver_idx = le_u32(&msg1[4..8]);
+    let noise_msg1 = &msg1[8..];
+
+    let mut hs = HandshakeState::new_responder(kp);
+    hs.set_local_epoch([0u8; 8]);
+    hs.read_message_1(noise_msg1)
+        .map_err(|e| io::Error::other(format!("fmp read_message_1: {e:?}")))?;
+    let noise_msg2 = hs
+        .write_message_2()
+        .map_err(|e| io::Error::other(format!("fmp write_message_2: {e:?}")))?;
+    let rust_sender_idx = 0x1122_3344u32;
+    write_frame(
+        &mut stdout,
+        &build_fmp_msg2(rust_sender_idx, receiver_idx, &noise_msg2),
+    )?;
+
+    let mut session = hs
+        .into_session()
+        .map_err(|e| io::Error::other(format!("fmp into_session: {e:?}")))?;
+
+    let encrypted = read_frame(&mut stdin)?;
+    if encrypted.len() < 32 || encrypted[0] != 0x00 {
+        return Err(io::Error::other(format!(
+            "expected FMP established frame, got {} bytes",
+            encrypted.len(),
+        )));
+    }
+    let counter = le_u64(&encrypted[8..16]);
+    let aad = &encrypted[..16];
+    let ciphertext = &encrypted[16..];
+    let plaintext = session
+        .decrypt_with_replay_check_and_aad(ciphertext, counter, aad)
+        .map_err(|e| io::Error::other(format!("fmp decrypt: {e:?}")))?;
+    write_frame(&mut stdout, &plaintext)?;
+
+    let rust_inner = {
+        let payload = b"pong-from-rust-fmp";
+        let mut out = Vec::with_capacity(5 + payload.len());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.push(0x00);
+        out.extend_from_slice(payload);
+        out
+    };
+    let rust_counter = session.current_send_counter();
+    let mut header = Vec::with_capacity(16);
+    header.push(0x00);
+    header.push(0x00);
+    header.extend_from_slice(&(rust_inner.len() as u16).to_le_bytes());
+    header.extend_from_slice(&receiver_idx.to_le_bytes());
+    header.extend_from_slice(&rust_counter.to_le_bytes());
+    let ciphertext = session
+        .encrypt_with_aad(&rust_inner, &header)
+        .map_err(|e| io::Error::other(format!("fmp encrypt: {e:?}")))?;
+    write_frame(
+        &mut stdout,
+        &build_fmp_established(receiver_idx, rust_counter, 0, &rust_inner, &ciphertext),
+    )?;
+    Ok(())
+}
+
 /// `bloom <numBits> <hashCount> <hex-key>...`: build a BloomFilter with the
 /// given parameters, insert each key, and print the resulting bytes as hex
 /// on a single stdout line (no framing).
@@ -203,7 +342,7 @@ fn run_filter_announce(args: &[String]) -> io::Result<()> {
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: fips-rust-bridge <ik|xk> <responder-sk-hex>");
+        eprintln!("usage: fips-rust-bridge <ik|xk|fmp> <responder-sk-hex>");
         eprintln!("       fips-rust-bridge bloom <numBits> <hashCount> [key-hex ...]");
         process::exit(2);
     }
@@ -223,10 +362,17 @@ fn main() {
             }
             run_xk(&args[2])
         }
+        "fmp" => {
+            if args.len() != 3 {
+                eprintln!("usage: fips-rust-bridge fmp <responder-sk-hex>");
+                process::exit(2);
+            }
+            run_fmp(&args[2])
+        }
         "bloom" => run_bloom(&args[2..]),
         "filter-announce" => run_filter_announce(&args[2..]),
         _ => {
-            eprintln!("unknown mode {mode}; want 'ik' | 'xk' | 'bloom' | 'filter-announce'");
+            eprintln!("unknown mode {mode}; want 'ik' | 'xk' | 'fmp' | 'bloom' | 'filter-announce'");
             process::exit(2);
         }
     };

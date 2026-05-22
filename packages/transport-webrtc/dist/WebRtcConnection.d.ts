@@ -1,4 +1,4 @@
-import type { TransportAddress } from "@fips/core";
+import type { Logger, TransportAddress } from "@fips/core";
 export interface WebRtcConnectionConfig {
     remotePubkeyHex: string;
     remoteAddr: TransportAddress;
@@ -7,6 +7,7 @@ export interface WebRtcConnectionConfig {
     onPacket: (data: Uint8Array) => void;
     onState: (state: "connecting" | "connected" | "disconnected" | "failed") => void;
     readyFallbackMs?: number;
+    logger?: Logger;
 }
 /**
  * A single WebRTC datachannel link to one remote pubkey.
@@ -26,6 +27,7 @@ export declare class WebRtcConnection {
     private readonly onPacket;
     private readonly onState;
     private readonly readyFallbackMs;
+    private readonly logger?;
     private localReadySent;
     private remoteReady;
     private fallbackTimer?;

@@ -8,6 +8,7 @@ export async function createBrowserFipsNode(cfg) {
         transports: cfg.transports,
         forwarding: cfg.forwarding ?? false,
         services: cfg.services,
+        logger: cfg.logger,
     });
 }
 //# sourceMappingURL=BrowserFipsNode.js.map

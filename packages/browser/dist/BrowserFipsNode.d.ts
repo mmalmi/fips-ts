@@ -1,9 +1,10 @@
-import { FipsNode, type FipsServiceHandler, type ServiceRegistration, type Transport } from "@fips/core";
+import { FipsNode, type FipsServiceHandler, type Logger, type ServiceRegistration, type Transport } from "@fips/core";
 export interface CreateBrowserFipsNodeConfig {
     identityStoreName?: string;
     forwarding?: boolean;
     transports: Transport[];
     services?: ServiceRegistration[];
+    logger?: Logger;
 }
 export declare function createBrowserFipsNode(cfg: CreateBrowserFipsNodeConfig): Promise<FipsNode>;
 export type { FipsServiceHandler };

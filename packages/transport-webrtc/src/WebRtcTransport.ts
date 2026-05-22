@@ -321,6 +321,7 @@ export class WebRtcTransport implements Transport {
           }
         }
       },
+      logger: this.logger,
     });
     this.conns.set(dial.remotePubkeyHex, conn);
   }
@@ -395,6 +396,7 @@ export class WebRtcTransport implements Transport {
               this.conns.delete(valid.sender);
             }
           },
+          logger: this.logger,
         });
         this.conns.set(valid.sender, conn);
       }).catch((err) => this.logger.warn("dcPromise", err));

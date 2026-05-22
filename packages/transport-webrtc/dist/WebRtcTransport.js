@@ -246,6 +246,7 @@ export class WebRtcTransport {
                     }
                 }
             },
+            logger: this.logger,
         });
         this.conns.set(dial.remotePubkeyHex, conn);
     }
@@ -315,6 +316,7 @@ export class WebRtcTransport {
                             this.conns.delete(valid.sender);
                         }
                     },
+                    logger: this.logger,
                 });
                 this.conns.set(valid.sender, conn);
             }).catch((err) => this.logger.warn("dcPromise", err));
