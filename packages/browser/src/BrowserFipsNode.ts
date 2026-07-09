@@ -11,6 +11,7 @@ import { IndexedDbIdentityStore } from "./IndexedDbIdentityStore.js";
 export interface CreateBrowserFipsNodeConfig {
   identityStoreName?: string;
   forwarding?: boolean;
+  defaultRoute?: string;
   transports: Transport[];
   services?: ServiceRegistration[];
   logger?: Logger;
@@ -25,6 +26,7 @@ export async function createBrowserFipsNode(
     identity,
     transports: cfg.transports,
     forwarding: cfg.forwarding ?? false,
+    defaultRoute: cfg.defaultRoute,
     services: cfg.services,
     logger: cfg.logger,
   });

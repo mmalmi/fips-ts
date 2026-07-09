@@ -1,0 +1,16 @@
+{
+  "dataFrame": {
+    "destinationMac": "aa:bb:cc:dd:ee:ff",
+    "sourceMac": "02:00:00:00:00:01",
+    "fmpHex": "deadbeef",
+    "frameHex": "aabbccddeeff0200000000012121000400deadbeef"
+  },
+  "scopedBeacon": {
+    "destinationMac": "ff:ff:ff:ff:ff:ff",
+    "sourceMac": "02:00:00:00:00:01",
+    "xOnlyPubkeyHex": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "scope": "webvm",
+    "frameHex": "ffffffffffff0200000000012121010179be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179805776562766d"
+  },
+  "notes": "Full Ethernet frames without FCS. Header is dst[6] + src[6] + EtherType 0x2121 big-endian. Data is 0x00 + u16 little-endian FMP length + FMP. Beacon is 0x01 + version 0x01 + 32-byte x-only pubkey + optional u8 UTF-8 scope length and scope, matching crates/fips-core/src/transport/ethernet."
+}

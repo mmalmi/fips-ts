@@ -20,6 +20,7 @@ export {
 } from "./nodeaddr/index.js";
 
 export {
+  compressedPubkeyFromXOnly,
   ecdh,
   exportIdentity,
   generateIdentity,
@@ -143,6 +144,7 @@ export { FmpLink } from "./fmp/link.js";
 export {
   FSP_ESTABLISHED_HEADER_LEN,
   FSP_FLAG_CP,
+  FSP_FLAG_DIRECT_TRANSPORT,
   FSP_FLAG_K,
   FSP_FLAG_U,
   FSP_INNER_HEADER_LEN,
@@ -165,6 +167,7 @@ export {
   encodeFspEstablishedHeader,
   encodeFspHandshake,
   encodeFspInner,
+  isDirectFspEstablished,
   peekFspPhase,
   type DataPacket,
 } from "./fsp/wire.js";

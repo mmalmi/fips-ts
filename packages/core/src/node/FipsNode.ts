@@ -13,9 +13,13 @@ import {
   FSP_MSG_DATA,
   FSP_MSG_ENDPOINT_DATA,
   FSP_PHASE_ESTABLISHED,
+  isDirectFspEstablished,
   peekFspPhase,
 } from "../fsp/wire.js";
-import type { FipsIdentity } from "../identity/index.js";
+import {
+  compressedPubkeyFromXOnly,
+  type FipsIdentity,
+} from "../identity/index.js";
 import { deriveNodeAddr, nodeAddrToHex, type NodeAddr } from "../nodeaddr/index.js";
 import {
   decodeSessionDatagramPayload,
@@ -83,6 +87,7 @@ export class FipsNode {
   private readonly transports: Transport[];
   private readonly random: RandomSource;
   private readonly logger: Logger;
+  private readonly defaultRoute?: string;
 
   private services = new Map<number, FipsServiceHandler>();
   private peers = new Map<string, AdjacentPeer>();  // by transportAddressKey
@@ -91,12 +96,19 @@ export class FipsNode {
   private pendingPeerConnects = new Map<string, Promise<void>>(); // by transportAddressKey
   private sessions = new Map<string, Session>();    // by remote NodeAddr hex
   private listeners = new Map<FipsEventName, Set<(event: unknown) => void>>();
+  private discoveryTasks = new Set<Promise<void>>();
+  private discoveryConnectTasks = new Set<Promise<void>>();
+  private discoveryGeneration = 0;
   private started = false;
 
   constructor(cfg: FipsNodeConfig) {
     this.identity = cfg.identity;
     this.transports = cfg.transports;
     this.forwarding = cfg.forwarding ?? false;
+    this.defaultRoute = cfg.defaultRoute?.toLowerCase();
+    if (this.defaultRoute && !/^(02|03)[0-9a-f]{64}$/.test(this.defaultRoute)) {
+      throw new Error("defaultRoute must be a 33-byte compressed pubkey hex");
+    }
     this.random = cfg.random ?? defaultRandom;
     this.logger = cfg.logger ?? noopLogger;
     for (const s of cfg.services ?? []) {
@@ -106,19 +118,44 @@ export class FipsNode {
 
   async start(): Promise<void> {
     if (this.started) return;
-    for (const t of this.transports) {
-      await t.start({
-        localIdentity: this.identity,
-        onPacket: (p) => this.onTransportPacket(t, p),
-        onConnectionState: (e) => this.onTransportConn(t, e),
-        logger: this.logger,
-      });
+    const startedTransports: Transport[] = [];
+    try {
+      for (const t of this.transports) {
+        await t.start({
+          localIdentity: this.identity,
+          onPacket: (p) => this.onTransportPacket(t, p),
+          onConnectionState: (e) => this.onTransportConn(t, e),
+          logger: this.logger,
+        });
+        startedTransports.push(t);
+      }
+    } catch (err) {
+      for (const t of startedTransports.reverse()) {
+        try {
+          await t.stop();
+        } catch {
+          // Preserve the original start failure.
+        }
+      }
+      throw err;
     }
     this.started = true;
+    const generation = ++this.discoveryGeneration;
+    for (const transport of this.transports) {
+      if (!transport.discover) continue;
+      const task = this.consumeDiscovery(transport, generation);
+      this.discoveryTasks.add(task);
+      void task.finally(() => this.discoveryTasks.delete(task));
+    }
   }
 
   async stop(): Promise<void> {
     if (!this.started) return;
+    this.started = false;
+    this.discoveryGeneration++;
+    for (const peer of this.peers.values()) {
+      peer.outgoingHandshake?.reject(new Error("FIPS node stopped"));
+    }
     for (const t of this.transports) {
       try {
         await t.stop();
@@ -126,12 +163,49 @@ export class FipsNode {
         this.emit("error", { err: err as Error, where: "transport.stop" });
       }
     }
+    await Promise.allSettled([...this.discoveryTasks]);
+    this.discoveryTasks.clear();
+    await Promise.allSettled([...this.discoveryConnectTasks]);
+    this.discoveryConnectTasks.clear();
     this.peers.clear();
     this.peersByPubkey.clear();
     this.peersByNodeAddr.clear();
     this.pendingPeerConnects.clear();
     this.sessions.clear();
-    this.started = false;
+  }
+
+  private async consumeDiscovery(
+    transport: Transport,
+    generation: number,
+  ): Promise<void> {
+    try {
+      for await (const discovered of transport.discover!()) {
+        if (!this.started || generation !== this.discoveryGeneration) return;
+        const task = this.connectDiscoveredPeer(transport, discovered, generation);
+        this.discoveryConnectTasks.add(task);
+        void task.finally(() => this.discoveryConnectTasks.delete(task));
+      }
+    } catch (err) {
+      if (this.started && generation === this.discoveryGeneration) {
+        this.emit("error", { err: err as Error, where: "transport.discover" });
+      }
+    }
+  }
+
+  private async connectDiscoveredPeer(
+    transport: Transport,
+    discovered: { publicKey?: Uint8Array; remoteAddr: TransportAddress },
+    generation: number,
+  ): Promise<void> {
+    try {
+      const remotePubkey = discoveryPublicKey(discovered);
+      if (bytesEqual(remotePubkey.subarray(1), this.identity.xOnlyPubkey)) return;
+      await this.connectKnownPeer(transport, discovered.remoteAddr, remotePubkey);
+    } catch (err) {
+      if (!this.started || generation !== this.discoveryGeneration) return;
+      this.emit("error", { err: err as Error, where: "transport.discover" });
+      this.logger.warn("transport discovery connect failed", transport.type, err);
+    }
   }
 
   registerService(port: number, handler: FipsServiceHandler): () => void {
@@ -152,6 +226,17 @@ export class FipsNode {
       throw new Error("transport addr must be 33-byte compressed pubkey hex");
     }
     const remotePubkey = hexBytes(addr.addr);
+    await this.connectKnownPeer(transport, addr, remotePubkey);
+  }
+
+  private async connectKnownPeer(
+    transport: Transport,
+    addr: TransportAddress,
+    remotePubkey: Uint8Array,
+  ): Promise<void> {
+    if (remotePubkey.length !== 33 || (remotePubkey[0] !== 0x02 && remotePubkey[0] !== 0x03)) {
+      throw new Error("remote pubkey must be 33-byte compressed secp256k1 key");
+    }
     const key = transportAddressKey(addr);
     if (this.peers.has(key) && this.peers.get(key)!.link.state === "established") return;
     const pendingConnect = this.pendingPeerConnects.get(key);
@@ -187,7 +272,7 @@ export class FipsNode {
     });
     const peer: AdjacentPeer = {
       pubkey: remotePubkey,
-      pubkeyHex: addr.addr,
+      pubkeyHex: toHex(remotePubkey),
       remoteAddr: addr,
       transport,
       link,
@@ -338,6 +423,15 @@ export class FipsNode {
       );
       const key = transportAddressKey(p.remoteAddr);
       let peer = this.peers.get(key);
+      if (isDirectFspEstablished(p.data)) {
+        if (!peer || peer.link.state !== "established" || peer.pubkey.length === 0) {
+          throw new Error("direct FSP before adjacent link handshake complete");
+        }
+        void this.handleFspFromPeer(peer, deriveNodeAddr(peer.pubkey), p.data).catch((err) => {
+          this.emit("error", { err: err as Error, where: "direct-fsp" });
+        });
+        return;
+      }
       switch (phase) {
         case FMP_PHASE_MSG1: {
           // Responder side: create link if absent.
@@ -592,19 +686,38 @@ export class FipsNode {
       return;
     }
 
-    for (const peer of this.peersByPubkey.values()) {
-      if (peer.link.state === "established") {
-        const encoded = encodeSessionDatagram(datagram);
-        const outer = peer.link.encryptOutgoing(
-          encoded.subarray(1),
-          LinkMessageType.SessionDatagram,
-        );
-        await peer.transport.send(peer.remoteAddr, outer);
-        return;
-      }
+    const defaultPeer = this.defaultRoute
+      ? this.peersByPubkey.get(this.defaultRoute)
+      : undefined;
+    if (defaultPeer?.link.state === "established") {
+      const encoded = encodeSessionDatagram(datagram);
+      const outer = defaultPeer.link.encryptOutgoing(
+        encoded.subarray(1),
+        LinkMessageType.SessionDatagram,
+      );
+      await defaultPeer.transport.send(defaultPeer.remoteAddr, outer);
+      return;
     }
     throw new Error(`no route to ${destNodeHex}`);
   }
+}
+
+function discoveryPublicKey(discovered: {
+  publicKey?: Uint8Array;
+  remoteAddr: TransportAddress;
+}): Uint8Array {
+  const hinted = discovered.publicKey;
+  if (hinted?.length === 32) return compressedPubkeyFromXOnly(hinted);
+  if (hinted?.length === 33) {
+    if (hinted[0] !== 0x02 && hinted[0] !== 0x03) {
+      throw new Error("discovered compressed pubkey has invalid prefix");
+    }
+    return new Uint8Array(hinted);
+  }
+  if (!hinted && discovered.remoteAddr.addr.length === 66) {
+    return hexBytes(discovered.remoteAddr.addr);
+  }
+  throw new Error("discovered peer did not include a FIPS public key");
 }
 
 function hexBytes(hex: string): Uint8Array {

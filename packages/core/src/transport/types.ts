@@ -30,6 +30,8 @@ export interface TransportConnectionStateEvent {
 
 export interface DiscoveredPeer {
   remoteAddr: TransportAddress;
+  /** Remote FIPS identity hint. Ethernet beacons may provide the 32-byte x-only form. */
+  publicKey?: Uint8Array;
   meta?: Record<string, unknown>;
 }
 

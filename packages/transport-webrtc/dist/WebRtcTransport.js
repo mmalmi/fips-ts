@@ -1,4 +1,4 @@
-import { toHex, noopLogger, } from "@fips/core";
+import { fromHex, toHex, noopLogger, } from "@fips/core";
 import { NostrRelayClient } from "./NostrRelayClient.js";
 import { FIPS_ADVERT_D_TAG, NostrWebRtcSignaling, } from "./NostrWebRtcSignaling.js";
 import { WebRtcConnection } from "./WebRtcConnection.js";
@@ -29,6 +29,7 @@ export class WebRtcTransport {
     autoConnectPeers = new Set(); // by pubkeyHex
     knownSessionIds = new Set();
     seenSessionIds = new Set();
+    discoveryStream;
     advertCleanup;
     constructor(config) {
         this.cfg = {
@@ -56,6 +57,7 @@ export class WebRtcTransport {
     }
     async start(ctx) {
         this.ctx = ctx;
+        this.discoveryStream = new AsyncEventStream();
         this.relayClients = this.cfg.relays.map((u) => new NostrRelayClient({
             url: u,
             webSocket: this.cfg.webSocket,
@@ -74,8 +76,8 @@ export class WebRtcTransport {
         });
         await this.signaling.start();
         if (this.cfg.autoConnect) {
-            this.advertCleanup = await this.signaling.subscribeAdverts((_event, advert) => {
-                this.handleAdvert(advert).catch((err) => {
+            this.advertCleanup = await this.signaling.subscribeAdverts((event, advert) => {
+                this.handleAdvert(event.pubkey, advert).catch((err) => {
                     this.logger.warn("handleAdvert", err);
                 });
             });
@@ -107,11 +109,19 @@ export class WebRtcTransport {
         }
         this.pendingDials.clear();
         this.pendingConnects.clear();
+        this.knownSessionIds.clear();
+        this.seenSessionIds.clear();
+        this.discoveryStream?.close();
+        this.discoveryStream = undefined;
+        this.signaling = undefined;
+        this.ctx = undefined;
     }
-    async handleAdvert(advert) {
+    async handleAdvert(authorXOnlyHex, advert) {
         const localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : "";
         for (const endpoint of advert.endpoints) {
             if (endpoint.transport !== "webrtc" || endpoint.addr.length !== 66)
+                continue;
+            if (endpoint.addr.slice(2) !== authorXOnlyHex)
                 continue;
             if (endpoint.addr === localPubkeyHex || this.conns.has(endpoint.addr))
                 continue;
@@ -123,20 +133,21 @@ export class WebRtcTransport {
             const shouldDelay = localPubkeyHex.length === 66
                 && localPubkeyHex.slice(2) > endpoint.addr.slice(2);
             this.autoConnectPeers.add(endpoint.addr);
-            try {
-                if (shouldDelay)
-                    await new Promise((resolve) => setTimeout(resolve, 1200));
-                if (this.conns.has(endpoint.addr))
-                    continue;
-                await this.connect({ transport: "webrtc", addr: endpoint.addr });
-            }
-            catch (err) {
-                this.logger.warn("autoConnect failed", endpoint.addr, err);
-            }
-            finally {
+            if (shouldDelay)
+                await new Promise((resolve) => setTimeout(resolve, 1200));
+            if (!this.ctx || this.conns.has(endpoint.addr)) {
                 this.autoConnectPeers.delete(endpoint.addr);
+                continue;
             }
+            this.discoveryStream?.push({
+                remoteAddr: { transport: this.type, addr: endpoint.addr },
+                publicKey: fromHex(endpoint.addr),
+                meta: { source: "nostr-advert" },
+            });
         }
+    }
+    discover() {
+        return this.discoveryStream ?? emptyAsyncIterable();
     }
     async connect(addr) {
         if (addr.transport !== "webrtc")
@@ -198,6 +209,9 @@ export class WebRtcTransport {
             if (this.pendingConnects.get(remotePubkeyHex) === connectPromise) {
                 this.pendingConnects.delete(remotePubkeyHex);
             }
+            if (!this.conns.has(remotePubkeyHex)) {
+                this.autoConnectPeers.delete(remotePubkeyHex);
+            }
         }
     }
     async send(addr, packet) {
@@ -241,14 +255,16 @@ export class WebRtcTransport {
             remoteAddr: addr,
             pc: dial.pc,
             dataChannel: dial.dataChannel,
-            onPacket: (data) => this.ctx.onPacket({
-                transportType: "webrtc",
-                remoteAddr: addr,
-                data,
-                receivedAtMs: Date.now(),
-            }),
+            onPacket: (data) => {
+                this.ctx?.onPacket({
+                    transportType: "webrtc",
+                    remoteAddr: addr,
+                    data,
+                    receivedAtMs: Date.now(),
+                });
+            },
             onState: (state) => {
-                this.ctx.onConnectionState?.({ remoteAddr: addr, state });
+                this.ctx?.onConnectionState?.({ remoteAddr: addr, state });
                 if (state === "connected") {
                     if (conn)
                         this.conns.set(dial.remotePubkeyHex, conn);
@@ -269,6 +285,8 @@ export class WebRtcTransport {
         });
     }
     async handleIncomingSignal(signal, senderXOnlyHex) {
+        if (!this.ctx)
+            return;
         this.logger.debug("webrtc signal received", signal.kind, signal.sessionId, signal.sender);
         const localPubkeyHex = toHex(this.ctx.localIdentity.publicKey);
         const valid = validateWebRtcSignal(signal, {
@@ -323,14 +341,16 @@ export class WebRtcTransport {
                     remoteAddr,
                     pc,
                     dataChannel,
-                    onPacket: (data) => this.ctx.onPacket({
-                        transportType: "webrtc",
-                        remoteAddr,
-                        data,
-                        receivedAtMs: Date.now(),
-                    }),
+                    onPacket: (data) => {
+                        this.ctx?.onPacket({
+                            transportType: "webrtc",
+                            remoteAddr,
+                            data,
+                            receivedAtMs: Date.now(),
+                        });
+                    },
                     onState: (state) => {
-                        this.ctx.onConnectionState?.({ remoteAddr, state });
+                        this.ctx?.onConnectionState?.({ remoteAddr, state });
                         if (state === "connected") {
                             if (conn)
                                 this.conns.set(valid.sender, conn);
@@ -381,5 +401,43 @@ function waitForIceGatheringComplete(pc, timeoutMs) {
         }
         pc.addEventListener("icegatheringstatechange", onChange);
     });
+}
+class AsyncEventStream {
+    values = [];
+    waiters = [];
+    closed = false;
+    push(value) {
+        if (this.closed)
+            return;
+        const waiter = this.waiters.shift();
+        if (waiter)
+            waiter({ done: false, value });
+        else
+            this.values.push(value);
+    }
+    close() {
+        if (this.closed)
+            return;
+        this.closed = true;
+        this.values.length = 0;
+        for (const waiter of this.waiters.splice(0)) {
+            waiter({ done: true, value: undefined });
+        }
+    }
+    [Symbol.asyncIterator]() {
+        return {
+            next: () => {
+                const value = this.values.shift();
+                if (value !== undefined)
+                    return Promise.resolve({ done: false, value });
+                if (this.closed)
+                    return Promise.resolve({ done: true, value: undefined });
+                return new Promise((resolve) => this.waiters.push(resolve));
+            },
+        };
+    }
+}
+async function* emptyAsyncIterable() {
+    return;
 }
 //# sourceMappingURL=WebRtcTransport.js.map

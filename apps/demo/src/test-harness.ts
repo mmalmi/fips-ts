@@ -72,6 +72,50 @@ async function makeWebRtcPair(relayUrl: string): Promise<NodePair> {
   return { a, b, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey) };
 }
 
+async function autoConnectWebRtcPair(relayUrl: string): Promise<NodePair> {
+  const aId = await generateIdentity();
+  const bId = await generateIdentity();
+  const a = new FipsNode({
+    identity: aId,
+    transports: [
+      new WebRtcTransport({
+        relays: [relayUrl],
+        advertiseOnNostr: true,
+        autoConnect: true,
+      }),
+    ],
+  });
+  const b = new FipsNode({
+    identity: bId,
+    transports: [
+      new WebRtcTransport({
+        relays: [relayUrl],
+        advertiseOnNostr: true,
+        autoConnect: true,
+      }),
+    ],
+  });
+  b.registerService(9000, async ({ payload, reply }) => {
+    await reply(payload);
+  });
+
+  const connected = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("advert FMP connect timeout")), 20_000);
+    const off = a.on("peer", (event) => {
+      const peer = event as { remotePubkey: string; state: string };
+      if (peer.remotePubkey !== toHex(bId.publicKey) || peer.state !== "connected") return;
+      clearTimeout(timer);
+      off();
+      resolve();
+    });
+  });
+
+  await a.start();
+  await b.start();
+  await connected;
+  return { a, b, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey) };
+}
+
 async function duplicateWebRtcConnect(relayUrl: string): Promise<string> {
   const logger = {
     debug: (...a: unknown[]) => console.log("[webrtc-duplicate]", ...a),
@@ -118,9 +162,17 @@ async function memoryThreeNodes(): Promise<ThreeNodes> {
   const aId = await generateIdentity();
   const bId = await generateIdentity();
   const cId = await generateIdentity();
-  const a = new FipsNode({ identity: aId, transports: [new MemoryTransport({ hub })] });
+  const a = new FipsNode({
+    identity: aId,
+    transports: [new MemoryTransport({ hub })],
+    defaultRoute: toHex(bId.publicKey),
+  });
   const b = new FipsNode({ identity: bId, transports: [new MemoryTransport({ hub })], forwarding: true });
-  const c = new FipsNode({ identity: cId, transports: [new MemoryTransport({ hub })] });
+  const c = new FipsNode({
+    identity: cId,
+    transports: [new MemoryTransport({ hub })],
+    defaultRoute: toHex(bId.publicKey),
+  });
   c.registerService(9000, async ({ payload, reply }) => {
     await reply(payload);
   });
@@ -185,6 +237,7 @@ async function makeWebRtcChain(relayUrl: string): Promise<ThreeNodes> {
   const a = new FipsNode({
     identity: aId,
     logger,
+    defaultRoute: toHex(bId.publicKey),
     transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
   });
   const b = new FipsNode({
@@ -196,6 +249,7 @@ async function makeWebRtcChain(relayUrl: string): Promise<ThreeNodes> {
   const c = new FipsNode({
     identity: cId,
     logger,
+    defaultRoute: toHex(bId.publicKey),
     transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
   });
   c.registerService(9000, async ({ payload, reply }) => {
@@ -364,6 +418,7 @@ async function echoWithRustWebRtcPeer(
 
 export const harness = {
   makeWebRtcPair,
+  autoConnectWebRtcPair,
   duplicateWebRtcConnect,
   makeWebRtcChain,
   webRtcReconnect,

@@ -31,7 +31,12 @@ test("Two-node FIPS over WebRTC + local Nostr relay (in-page, native browser RTC
   const reply = await page.evaluate(async () => {
     const h = window.__fipsHarness;
     const pair = await h.makeWebRtcPair(window.__fipsTestRelayUrl!);
-    return h.echoOverPair(pair, "hello-via-webrtc");
+    try {
+      return await h.echoOverPair(pair, "hello-via-webrtc");
+    } finally {
+      await pair.a.stop();
+      await pair.b.stop();
+    }
   });
 
   expect(reply).toBe("hello-via-webrtc");
@@ -57,4 +62,26 @@ test("duplicate WebRTC dials wait for the same open datachannel", async ({ page 
   });
 
   expect(reply).toBe("duplicate-connect");
+});
+
+test("Nostr advert auto-connect establishes FMP, not only a data channel", async ({ page }) => {
+  await page.addInitScript((url) => {
+    window.__fipsTestRelayUrl = url;
+  }, relay.url);
+
+  await page.goto("/");
+  await page.waitForFunction(() => !!window.__fipsHarness);
+
+  const reply = await page.evaluate(async () => {
+    const h = window.__fipsHarness;
+    const pair = await h.autoConnectWebRtcPair(window.__fipsTestRelayUrl!);
+    try {
+      return await h.echoOverPair(pair, "advert-fmp-connect");
+    } finally {
+      await pair.a.stop();
+      await pair.b.stop();
+    }
+  });
+
+  expect(reply).toBe("advert-fmp-connect");
 });

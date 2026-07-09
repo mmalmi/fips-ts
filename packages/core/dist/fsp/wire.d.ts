@@ -27,6 +27,7 @@ export declare const FSP_INNER_HEADER_LEN: number;
 export declare const FSP_FLAG_CP = 1;
 export declare const FSP_FLAG_K = 2;
 export declare const FSP_FLAG_U = 4;
+export declare const FSP_FLAG_DIRECT_TRANSPORT = 8;
 /** FSP inner msg types. */
 export declare const FSP_MSG_KEEPALIVE = 0;
 export declare const FSP_MSG_DATA = 16;
@@ -39,6 +40,8 @@ export interface FspCommonPrefix {
 }
 export declare function encodeFspCommonPrefix(p: FspCommonPrefix): Uint8Array;
 export declare function decodeFspCommonPrefix(r: BinaryReader): FspCommonPrefix;
+/** Rust carries adjacent established FSP records directly when this flag is set. */
+export declare function isDirectFspEstablished(buf: Uint8Array): boolean;
 export interface FspHandshakeFrame {
     phase: 1 | 2 | 3;
     noiseMsg: Uint8Array;

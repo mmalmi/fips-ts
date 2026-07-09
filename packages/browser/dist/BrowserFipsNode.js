@@ -7,6 +7,7 @@ export async function createBrowserFipsNode(cfg) {
         identity,
         transports: cfg.transports,
         forwarding: cfg.forwarding ?? false,
+        defaultRoute: cfg.defaultRoute,
         services: cfg.services,
         logger: cfg.logger,
     });

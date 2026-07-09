@@ -5,6 +5,8 @@ export interface FipsIdentity {
     readonly xOnlyPubkey: Uint8Array;
     readonly nodeAddr: NodeAddr;
 }
+/** Reconstruct and validate the canonical even-parity compressed key for an x-only key. */
+export declare function compressedPubkeyFromXOnly(xOnlyPubkey: Uint8Array): Uint8Array;
 export declare function generateIdentity(): Promise<FipsIdentity>;
 export declare function identityFromSecretKey(secretKey: Uint8Array): Promise<FipsIdentity>;
 export interface SerializedIdentity {

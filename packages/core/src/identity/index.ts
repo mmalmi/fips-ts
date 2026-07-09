@@ -12,6 +12,18 @@ export interface FipsIdentity {
   readonly nodeAddr: NodeAddr;      // 16 bytes
 }
 
+/** Reconstruct and validate the canonical even-parity compressed key for an x-only key. */
+export function compressedPubkeyFromXOnly(xOnlyPubkey: Uint8Array): Uint8Array {
+  if (xOnlyPubkey.length !== 32) {
+    throw new Error("x-only pubkey must be 32 bytes");
+  }
+  const publicKey = new Uint8Array(33);
+  publicKey[0] = 0x02;
+  publicKey.set(xOnlyPubkey, 1);
+  secp256k1.ProjectivePoint.fromHex(publicKey);
+  return publicKey;
+}
+
 export async function generateIdentity(): Promise<FipsIdentity> {
   const secretKey = randomBytes(32);
   return identityFromSecretKey(secretKey);

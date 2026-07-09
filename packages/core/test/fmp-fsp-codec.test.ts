@@ -7,6 +7,7 @@ import {
   FMP_PHASE_MSG1,
   FMP_PHASE_MSG2,
   FSP_FLAG_CP,
+  FSP_FLAG_DIRECT_TRANSPORT,
   FSP_PHASE_ESTABLISHED,
   NOISE_IK_MSG1_LEN,
   NOISE_IK_MSG2_LEN,
@@ -25,6 +26,7 @@ import {
   encodeFmpMsg2,
   encodeFspEstablished,
   encodeFspHandshake,
+  isDirectFspEstablished,
   peekFmpPhase,
   peekFspPhase,
 } from "../src/index.js";
@@ -87,6 +89,24 @@ describe("FMP wire codec", () => {
 });
 
 describe("FSP wire codec", () => {
+  it("classifies Rust direct-transport established records before FMP", () => {
+    const payloadLen = 21;
+    const packet = encodeFspEstablished({
+      flags: FSP_FLAG_DIRECT_TRANSPORT,
+      counter: 7n,
+      payloadLen,
+      ciphertext: randBytes(payloadLen + 16),
+    });
+
+    expect(packet.length).toBe(12 + payloadLen + 16);
+    expect([...packet.subarray(0, 12)]).toEqual([
+      0x00, 0x08, 0x15, 0x00,
+      0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    expect(isDirectFspEstablished(packet)).toBe(true);
+    expect(() => decodeFmpEstablished(packet)).toThrow("payload_len mismatch");
+  });
+
   it("XK Msg1 round-trip is 4+33 bytes", () => {
     const p = encodeFspHandshake({ phase: 1, noiseMsg: randBytes(NOISE_XK_MSG1_LEN) });
     expect(p.length).toBe(4 + NOISE_XK_MSG1_LEN);

@@ -27,6 +27,7 @@ export const FSP_INNER_HEADER_LEN = 4 + 1 + 1; // 6
 export const FSP_FLAG_CP = 0x01;
 export const FSP_FLAG_K = 0x02;
 export const FSP_FLAG_U = 0x04;
+export const FSP_FLAG_DIRECT_TRANSPORT = 0x08;
 /** FSP inner msg types. */
 export const FSP_MSG_KEEPALIVE = 0x00;
 export const FSP_MSG_DATA = 0x10; // DataPacket: src_port + dst_port + payload
@@ -52,6 +53,14 @@ export function decodeFspCommonPrefix(r) {
         flags,
         payloadLen,
     };
+}
+/** Rust carries adjacent established FSP records directly when this flag is set. */
+export function isDirectFspEstablished(buf) {
+    if (buf.length < FSP_ESTABLISHED_HEADER_LEN)
+        return false;
+    return (buf[0] >>> 4) === FSP_VERSION
+        && (buf[0] & 0x0f) === FSP_PHASE_ESTABLISHED
+        && (buf[1] & FSP_FLAG_DIRECT_TRANSPORT) !== 0;
 }
 const XK_MSG_LEN = {
     1: NOISE_XK_MSG1_LEN,

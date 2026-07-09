@@ -22,6 +22,8 @@ export interface FipsNodeConfig {
     identity: FipsIdentity;
     transports: Transport[];
     forwarding?: boolean;
+    /** Explicit next-hop peer pubkey for destinations without a direct link. */
+    defaultRoute?: string;
     services?: ServiceRegistration[];
     clock?: Clock;
     random?: RandomSource;

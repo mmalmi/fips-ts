@@ -10,6 +10,9 @@ Vectors to produce (planned):
 - `fsp-codec.json` — FSP Msg1/Msg2/Msg3/Established
 - `session-datagram.json` — DataPacket (src_port/dst_port/payload) bytes
 
+`ethernet-frames.json` already pins the full Ethernet header, data record,
+scoped discovery beacon, endianness, and EtherType used by the Rust transport.
+
 The Rust repo does not ship a vector exporter yet. When it does (or when we
 add one), wire it as:
 

@@ -1,4 +1,4 @@
-import type { FipsIdentity } from "../identity/index.js";
+import { type FipsIdentity } from "../identity/index.js";
 import { type TransportAddress } from "../transport/types.js";
 import type { FipsEventName, FipsNodeConfig, FipsServiceHandler } from "./types.js";
 export declare class FipsNode {
@@ -7,6 +7,7 @@ export declare class FipsNode {
     private readonly transports;
     private readonly random;
     private readonly logger;
+    private readonly defaultRoute?;
     private services;
     private peers;
     private peersByPubkey;
@@ -14,16 +15,22 @@ export declare class FipsNode {
     private pendingPeerConnects;
     private sessions;
     private listeners;
+    private discoveryTasks;
+    private discoveryConnectTasks;
+    private discoveryGeneration;
     private started;
     constructor(cfg: FipsNodeConfig);
     start(): Promise<void>;
     stop(): Promise<void>;
+    private consumeDiscovery;
+    private connectDiscoveredPeer;
     registerService(port: number, handler: FipsServiceHandler): () => void;
     /**
      * Connect to an adjacent peer over a chosen transport. The address's `addr`
      * must be the remote node's 33-byte compressed pubkey in hex.
      */
     connect(addr: TransportAddress): Promise<void>;
+    private connectKnownPeer;
     private connectAdjacentPeer;
     /** Send a service datagram to a target identity (adjacent or routable). */
     sendDatagram(args: {

@@ -44,6 +44,26 @@ payload  : bytes
 
 Port 256 is the IPv6 shim (not used in browser). Apps should use 1024–65535. Hashtree uses 7001.
 
+### Ethernet transport
+
+The browser virtual-Ethernet boundary carries full frames without an FCS:
+
+```
+destination MAC : 6 bytes
+source MAC      : 6 bytes
+EtherType       : 0x2121 (u16 BE)
+payload         : FIPS Ethernet record
+```
+
+Data records are `0x00 || fmp_length:u16-LE || FMP`. The explicit length trims
+minimum-frame padding before FMP authentication. Discovery records are
+`0x01 || 0x01 || x-only-pubkey[32]` with an optional
+`scope_length:u8 || scope:utf8` trailer. The FMP MTU is at most the interface
+payload MTU minus the three-byte data-record header.
+
+Source: `crates/fips-core/src/transport/ethernet/`. Exact full-frame fixtures
+are at `fixtures/rust-vectors/ethernet-frames.json`.
+
 ## Crypto
 
 - DH: secp256k1 ECDH followed by `SHA-256(x-coordinate)`. Both sides hash

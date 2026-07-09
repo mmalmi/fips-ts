@@ -1,4 +1,4 @@
-import { type Logger, type Transport, type TransportAddress, type TransportContext } from "@fips/core";
+import { type DiscoveredPeer, type Logger, type Transport, type TransportAddress, type TransportContext } from "@fips/core";
 export interface WebRtcTransportConfig {
     relays: string[];
     stunServers?: string[];
@@ -35,11 +35,13 @@ export declare class WebRtcTransport implements Transport {
     private readonly autoConnectPeers;
     private readonly knownSessionIds;
     private readonly seenSessionIds;
+    private discoveryStream?;
     private advertCleanup?;
     constructor(config: WebRtcTransportConfig);
     start(ctx: TransportContext): Promise<void>;
     stop(): Promise<void>;
     private handleAdvert;
+    discover(): AsyncIterable<DiscoveredPeer>;
     connect(addr: TransportAddress): Promise<void>;
     send(addr: TransportAddress, packet: Uint8Array): Promise<void>;
     close(addr: TransportAddress): Promise<void>;

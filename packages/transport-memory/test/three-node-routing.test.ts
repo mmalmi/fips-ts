@@ -15,6 +15,7 @@ describe("Three-node FIPS routing (A - B - C) over MemoryTransport", () => {
       identity: a,
       transports: [new MemoryTransport({ hub })],
       forwarding: false,
+      defaultRoute: toHex(b.publicKey),
     });
     const bNode = new FipsNode({
       identity: b,
@@ -25,6 +26,7 @@ describe("Three-node FIPS routing (A - B - C) over MemoryTransport", () => {
       identity: c,
       transports: [new MemoryTransport({ hub })],
       forwarding: false,
+      defaultRoute: toHex(b.publicKey),
     });
 
     let bSawAppPayload = false;

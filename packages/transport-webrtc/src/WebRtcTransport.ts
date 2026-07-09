@@ -1,5 +1,7 @@
 import {
+  fromHex,
   toHex,
+  type DiscoveredPeer,
   type Logger,
   type Transport,
   type TransportAddress,
@@ -95,6 +97,7 @@ export class WebRtcTransport implements Transport {
   private readonly autoConnectPeers = new Set<string>(); // by pubkeyHex
   private readonly knownSessionIds = new Set<string>();
   private readonly seenSessionIds = new Set<string>();
+  private discoveryStream?: AsyncEventStream<DiscoveredPeer>;
   private advertCleanup?: () => void;
 
   constructor(config: WebRtcTransportConfig) {
@@ -124,6 +127,7 @@ export class WebRtcTransport implements Transport {
 
   async start(ctx: TransportContext): Promise<void> {
     this.ctx = ctx;
+    this.discoveryStream = new AsyncEventStream<DiscoveredPeer>();
     this.relayClients = this.cfg.relays.map(
       (u) => new NostrRelayClient({
         url: u,
@@ -146,8 +150,8 @@ export class WebRtcTransport implements Transport {
     await this.signaling.start();
 
     if (this.cfg.autoConnect) {
-      this.advertCleanup = await this.signaling.subscribeAdverts((_event, advert) => {
-        this.handleAdvert(advert).catch((err) => {
+      this.advertCleanup = await this.signaling.subscribeAdverts((event, advert) => {
+        this.handleAdvert(event.pubkey, advert).catch((err) => {
           this.logger.warn("handleAdvert", err);
         });
       });
@@ -179,12 +183,22 @@ export class WebRtcTransport implements Transport {
     }
     this.pendingDials.clear();
     this.pendingConnects.clear();
+    this.knownSessionIds.clear();
+    this.seenSessionIds.clear();
+    this.discoveryStream?.close();
+    this.discoveryStream = undefined;
+    this.signaling = undefined;
+    this.ctx = undefined;
   }
 
-  private async handleAdvert(advert: { endpoints: Array<{ transport: string; addr: string }> }): Promise<void> {
+  private async handleAdvert(
+    authorXOnlyHex: string,
+    advert: { endpoints: Array<{ transport: string; addr: string }> },
+  ): Promise<void> {
     const localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : "";
     for (const endpoint of advert.endpoints) {
       if (endpoint.transport !== "webrtc" || endpoint.addr.length !== 66) continue;
+      if (endpoint.addr.slice(2) !== authorXOnlyHex) continue;
       if (endpoint.addr === localPubkeyHex || this.conns.has(endpoint.addr)) continue;
       if (this.autoConnectPeers.has(endpoint.addr)) continue;
       if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections) {
@@ -194,16 +208,21 @@ export class WebRtcTransport implements Transport {
       const shouldDelay = localPubkeyHex.length === 66
         && localPubkeyHex.slice(2) > endpoint.addr.slice(2);
       this.autoConnectPeers.add(endpoint.addr);
-      try {
-        if (shouldDelay) await new Promise((resolve) => setTimeout(resolve, 1200));
-        if (this.conns.has(endpoint.addr)) continue;
-        await this.connect({ transport: "webrtc", addr: endpoint.addr });
-      } catch (err) {
-        this.logger.warn("autoConnect failed", endpoint.addr, err);
-      } finally {
+      if (shouldDelay) await new Promise((resolve) => setTimeout(resolve, 1200));
+      if (!this.ctx || this.conns.has(endpoint.addr)) {
         this.autoConnectPeers.delete(endpoint.addr);
+        continue;
       }
+      this.discoveryStream?.push({
+        remoteAddr: { transport: this.type, addr: endpoint.addr },
+        publicKey: fromHex(endpoint.addr),
+        meta: { source: "nostr-advert" },
+      });
     }
+  }
+
+  discover(): AsyncIterable<DiscoveredPeer> {
+    return this.discoveryStream ?? emptyAsyncIterable();
   }
 
   async connect(addr: TransportAddress): Promise<void> {
@@ -267,6 +286,9 @@ export class WebRtcTransport implements Transport {
       if (this.pendingConnects.get(remotePubkeyHex) === connectPromise) {
         this.pendingConnects.delete(remotePubkeyHex);
       }
+      if (!this.conns.has(remotePubkeyHex)) {
+        this.autoConnectPeers.delete(remotePubkeyHex);
+      }
     }
   }
 
@@ -315,15 +337,16 @@ export class WebRtcTransport implements Transport {
       remoteAddr: addr,
       pc: dial.pc,
       dataChannel: dial.dataChannel,
-      onPacket: (data) =>
-        this.ctx!.onPacket({
+      onPacket: (data) => {
+        this.ctx?.onPacket({
           transportType: "webrtc",
           remoteAddr: addr,
           data,
           receivedAtMs: Date.now(),
-        }),
+        });
+      },
       onState: (state) => {
-        this.ctx!.onConnectionState?.({ remoteAddr: addr, state });
+        this.ctx?.onConnectionState?.({ remoteAddr: addr, state });
         if (state === "connected") {
           if (conn) this.conns.set(dial.remotePubkeyHex, conn);
           if (this.pendingDials.delete(dial.sessionId)) {
@@ -346,8 +369,9 @@ export class WebRtcTransport implements Transport {
     signal: WebRtcSignal,
     senderXOnlyHex: string,
   ): Promise<void> {
+    if (!this.ctx) return;
     this.logger.debug("webrtc signal received", signal.kind, signal.sessionId, signal.sender);
-    const localPubkeyHex = toHex(this.ctx!.localIdentity.publicKey);
+    const localPubkeyHex = toHex(this.ctx.localIdentity.publicKey);
     const valid = validateWebRtcSignal(signal, {
       localPubkeyHex,
       outerSenderPubkeyHex: signal.sender,
@@ -400,15 +424,16 @@ export class WebRtcTransport implements Transport {
           remoteAddr,
           pc,
           dataChannel,
-          onPacket: (data) =>
-            this.ctx!.onPacket({
+          onPacket: (data) => {
+            this.ctx?.onPacket({
               transportType: "webrtc",
               remoteAddr,
               data,
               receivedAtMs: Date.now(),
-            }),
+            });
+          },
           onState: (state) => {
-            this.ctx!.onConnectionState?.({ remoteAddr, state });
+            this.ctx?.onConnectionState?.({ remoteAddr, state });
             if (state === "connected") {
               if (conn) this.conns.set(valid.sender, conn);
             }
@@ -460,4 +485,41 @@ function waitForIceGatheringComplete(
     }
     pc.addEventListener("icegatheringstatechange", onChange);
   });
+}
+
+class AsyncEventStream<T> implements AsyncIterable<T> {
+  private readonly values: T[] = [];
+  private readonly waiters: Array<(result: IteratorResult<T>) => void> = [];
+  private closed = false;
+
+  push(value: T): void {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) waiter({ done: false, value });
+    else this.values.push(value);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.values.length = 0;
+    for (const waiter of this.waiters.splice(0)) {
+      waiter({ done: true, value: undefined });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next: () => {
+        const value = this.values.shift();
+        if (value !== undefined) return Promise.resolve({ done: false, value });
+        if (this.closed) return Promise.resolve({ done: true, value: undefined });
+        return new Promise<IteratorResult<T>>((resolve) => this.waiters.push(resolve));
+      },
+    };
+  }
+}
+
+async function* emptyAsyncIterable<T>(): AsyncIterable<T> {
+  return;
 }
