@@ -22,6 +22,7 @@ import {
 
 export interface WebRtcTransportConfig {
   relays: string[];
+  relayClients?: NostrRelayClient[];
   stunServers?: string[];
   advertiseOnNostr?: boolean;
   acceptConnections?: boolean;
@@ -91,6 +92,7 @@ export class WebRtcTransport implements Transport {
   private readonly RTCPC: typeof RTCPeerConnection;
   private signaling?: NostrWebRtcSignaling;
   private relayClients: NostrRelayClient[] = [];
+  private ownsRelayClients = false;
   private readonly conns = new Map<string, WebRtcConnection>(); // by pubkeyHex
   private readonly pendingDials = new Map<string, PendingDial>(); // by sessionId
   private readonly pendingConnects = new Map<string, Promise<void>>(); // by pubkeyHex
@@ -128,14 +130,30 @@ export class WebRtcTransport implements Transport {
   async start(ctx: TransportContext): Promise<void> {
     this.ctx = ctx;
     this.discoveryStream = new AsyncEventStream<DiscoveredPeer>();
-    this.relayClients = this.cfg.relays.map(
-      (u) => new NostrRelayClient({
-        url: u,
-        webSocket: this.cfg.webSocket,
-        connectTimeoutMs: this.cfg.relayConnectTimeoutMs,
-        logger: this.logger,
-      }),
-    );
+    const sharedRelayClients = this.cfg.relayClients;
+    if (sharedRelayClients !== undefined) {
+      const configuredUrls = this.cfg.relays.map((url) => new URL(url).toString());
+      const sharedUrls = sharedRelayClients.map((client) => new URL(client.url).toString());
+      if (
+        sharedUrls.length === 0
+        || sharedUrls.length !== configuredUrls.length
+        || sharedUrls.some((url, index) => url !== configuredUrls[index])
+      ) {
+        throw new Error("shared relay clients must match configured relays in order");
+      }
+      this.relayClients = sharedRelayClients;
+      this.ownsRelayClients = false;
+    } else {
+      this.relayClients = this.cfg.relays.map(
+        (u) => new NostrRelayClient({
+          url: u,
+          webSocket: this.cfg.webSocket,
+          connectTimeoutMs: this.cfg.relayConnectTimeoutMs,
+          logger: this.logger,
+        }),
+      );
+      this.ownsRelayClients = true;
+    }
     this.signaling = new NostrWebRtcSignaling({
       identity: ctx.localIdentity,
       relays: this.relayClients,
@@ -175,8 +193,11 @@ export class WebRtcTransport implements Transport {
     for (const c of this.conns.values()) c.close();
     this.conns.clear();
     this.autoConnectPeers.clear();
-    for (const r of this.relayClients) r.close();
+    if (this.ownsRelayClients) {
+      for (const r of this.relayClients) r.close();
+    }
     this.relayClients = [];
+    this.ownsRelayClients = false;
     for (const dial of this.pendingDials.values()) {
       clearTimeout(dial.timer);
       dial.reject(new Error("transport stopped"));

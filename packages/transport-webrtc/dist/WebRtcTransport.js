@@ -23,6 +23,7 @@ export class WebRtcTransport {
     RTCPC;
     signaling;
     relayClients = [];
+    ownsRelayClients = false;
     conns = new Map(); // by pubkeyHex
     pendingDials = new Map(); // by sessionId
     pendingConnects = new Map(); // by pubkeyHex
@@ -58,12 +59,27 @@ export class WebRtcTransport {
     async start(ctx) {
         this.ctx = ctx;
         this.discoveryStream = new AsyncEventStream();
-        this.relayClients = this.cfg.relays.map((u) => new NostrRelayClient({
-            url: u,
-            webSocket: this.cfg.webSocket,
-            connectTimeoutMs: this.cfg.relayConnectTimeoutMs,
-            logger: this.logger,
-        }));
+        const sharedRelayClients = this.cfg.relayClients;
+        if (sharedRelayClients !== undefined) {
+            const configuredUrls = this.cfg.relays.map((url) => new URL(url).toString());
+            const sharedUrls = sharedRelayClients.map((client) => new URL(client.url).toString());
+            if (sharedUrls.length === 0
+                || sharedUrls.length !== configuredUrls.length
+                || sharedUrls.some((url, index) => url !== configuredUrls[index])) {
+                throw new Error("shared relay clients must match configured relays in order");
+            }
+            this.relayClients = sharedRelayClients;
+            this.ownsRelayClients = false;
+        }
+        else {
+            this.relayClients = this.cfg.relays.map((u) => new NostrRelayClient({
+                url: u,
+                webSocket: this.cfg.webSocket,
+                connectTimeoutMs: this.cfg.relayConnectTimeoutMs,
+                logger: this.logger,
+            }));
+            this.ownsRelayClients = true;
+        }
         this.signaling = new NostrWebRtcSignaling({
             identity: ctx.localIdentity,
             relays: this.relayClients,
@@ -100,9 +116,12 @@ export class WebRtcTransport {
             c.close();
         this.conns.clear();
         this.autoConnectPeers.clear();
-        for (const r of this.relayClients)
-            r.close();
+        if (this.ownsRelayClients) {
+            for (const r of this.relayClients)
+                r.close();
+        }
         this.relayClients = [];
+        this.ownsRelayClients = false;
         for (const dial of this.pendingDials.values()) {
             clearTimeout(dial.timer);
             dial.reject(new Error("transport stopped"));

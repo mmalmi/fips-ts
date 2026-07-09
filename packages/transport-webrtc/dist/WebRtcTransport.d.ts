@@ -1,6 +1,8 @@
 import { type DiscoveredPeer, type Logger, type Transport, type TransportAddress, type TransportContext } from "@fips/core";
+import { NostrRelayClient } from "./NostrRelayClient.js";
 export interface WebRtcTransportConfig {
     relays: string[];
+    relayClients?: NostrRelayClient[];
     stunServers?: string[];
     advertiseOnNostr?: boolean;
     acceptConnections?: boolean;
@@ -29,6 +31,7 @@ export declare class WebRtcTransport implements Transport {
     private readonly RTCPC;
     private signaling?;
     private relayClients;
+    private ownsRelayClients;
     private readonly conns;
     private readonly pendingDials;
     private readonly pendingConnects;
