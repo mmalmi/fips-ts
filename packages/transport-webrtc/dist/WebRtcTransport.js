@@ -314,13 +314,22 @@ export class WebRtcTransport {
         const connectPromise = new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pendingDials.delete(sessionId);
+                const detail = [
+                    `phase=${dial.phase}`,
+                    `connection=${pc.connectionState}`,
+                    `ice=${pc.iceConnectionState}`,
+                    `signaling=${pc.signalingState}`,
+                    `local=${pc.localDescription ? "set" : "missing"}`,
+                    `remote=${pc.remoteDescription ? "set" : "missing"}`,
+                ].join(",");
                 pc.close();
-                reject(new Error("WebRTC connect timeout"));
+                reject(new Error(`WebRTC connect timeout (${detail})`));
             }, this.cfg.connectTimeoutMs);
             const dial = {
                 sessionId,
                 remotePubkeyHex,
                 remoteXOnlyHex,
+                phase: "starting",
                 pc,
                 dataChannel,
                 resolve,
@@ -365,7 +374,9 @@ export class WebRtcTransport {
         }
     }
     async startInitiatorHandshake(dial, addr) {
+        dial.phase = "creating-offer";
         const offer = await dial.pc.createOffer();
+        dial.phase = "gathering-ice";
         await dial.pc.setLocalDescription(offer);
         await waitForIceGatheringComplete(dial.pc, this.cfg.iceGatherTimeoutMs);
         const localPubkeyHex = toHex(this.ctx.localIdentity.publicKey);
@@ -380,7 +391,9 @@ export class WebRtcTransport {
             createdAtMs: Date.now(),
             expiresAtMs: Date.now() + 60_000,
         };
+        dial.phase = "publishing-offer";
         await this.signaling.sendSignal(dial.remoteXOnlyHex, signal);
+        dial.phase = "awaiting-answer";
         this.logger.debug("webrtc offer sent", dial.remotePubkeyHex, dial.sessionId);
         // Wire connection state to dialer promise once data channel opens.
         let conn = null;
@@ -502,7 +515,9 @@ export class WebRtcTransport {
             const dial = this.pendingDials.get(valid.sessionId);
             if (!dial)
                 return;
+            dial.phase = "applying-answer";
             await dial.pc.setRemoteDescription({ type: "answer", sdp: valid.sdp });
+            dial.phase = "opening-data-channel";
             this.logger.debug("webrtc answer applied", valid.sender, valid.sessionId);
             return;
         }

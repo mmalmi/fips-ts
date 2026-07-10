@@ -1,4 +1,5 @@
 import { randomBytes } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha256";
 
 import { bytesEqual, toHex } from "../codec/hex.js";
 import { FmpLink, type FmpHandshakeResult } from "../fmp/link.js";
@@ -10,6 +11,7 @@ import {
 import { FspSession } from "../fsp/session.js";
 import {
   decodeFmpMsg2,
+  decodeFmpEstablished,
   FMP_PHASE_ESTABLISHED,
   FMP_PHASE_MSG1,
   FMP_PHASE_MSG2,
@@ -25,6 +27,7 @@ import {
 } from "../fsp/wire.js";
 import {
   compressedPubkeyFromXOnly,
+  signSchnorr,
   type FipsIdentity,
 } from "../identity/index.js";
 import {
@@ -44,6 +47,7 @@ import {
   decodeLookupResponse,
   encodeLookupRequestPayload,
   encodeLookupResponsePayload,
+  lookupResponseProofBytes,
 } from "../protocol/discovery.js";
 import {
   noopLogger,
@@ -74,6 +78,8 @@ interface AdjacentPeer {
   remoteAddr: TransportAddress;
   transport: Transport;
   link: FmpLink;
+  pendingResponderLink?: FmpLink;
+  drainingResponderLinks?: Map<number, { link: FmpLink; expiresAtMs: number }>;
   abandonedInitiatorSessionIdx?: number;
   outgoingHandshake?: {
     resolve: () => void;
@@ -116,6 +122,7 @@ const defaultRandom: RandomSource = { bytes: (n) => randomBytes(n) };
 const FMP_HANDSHAKE_TIMEOUT_MS = 15_000;
 const FMP_HANDSHAKE_RESEND_MS = 1_000;
 const FMP_HEARTBEAT_INTERVAL_MS = 5_000;
+const FMP_REPLACED_LINK_DRAIN_MS = 10_000;
 const FSP_DEFAULT_PATH_MTU = 1_200;
 const ROUTE_RESOLUTION_TIMEOUT_MS = 5_000;
 const MAX_PENDING_ROUTE_RESOLUTIONS = 64;
@@ -129,6 +136,7 @@ export class FipsNode {
   private readonly random: RandomSource;
   private readonly logger: Logger;
   private readonly defaultRoute?: string;
+  private readonly heartbeatIntervalMs: number;
 
   private services = new Map<number, FipsServiceHandler>();
   private peers = new Map<string, AdjacentPeer>();  // by transportAddressKey
@@ -156,6 +164,10 @@ export class FipsNode {
     }
     this.random = cfg.random ?? defaultRandom;
     this.logger = cfg.logger ?? noopLogger;
+    this.heartbeatIntervalMs = cfg.heartbeatIntervalMs ?? FMP_HEARTBEAT_INTERVAL_MS;
+    if (!Number.isSafeInteger(this.heartbeatIntervalMs) || this.heartbeatIntervalMs <= 0) {
+      throw new Error("heartbeatIntervalMs must be a positive safe integer");
+    }
     for (const s of cfg.services ?? []) {
       this.services.set(s.port, s.handler);
     }
@@ -187,7 +199,7 @@ export class FipsNode {
     this.started = true;
     this.heartbeatTimer = setInterval(() => {
       void this.sendHeartbeats();
-    }, FMP_HEARTBEAT_INTERVAL_MS);
+    }, this.heartbeatIntervalMs);
     const generation = ++this.discoveryGeneration;
     for (const transport of this.transports) {
       if (!transport.discover) continue;
@@ -205,6 +217,11 @@ export class FipsNode {
     this.discoveryGeneration++;
     for (const peer of this.peers.values()) {
       peer.outgoingHandshake?.reject(new Error("FIPS node stopped"));
+      peer.link.close();
+      peer.pendingResponderLink?.close();
+      for (const draining of peer.drainingResponderLinks?.values() ?? []) {
+        draining.link.close();
+      }
     }
     for (const pending of this.pendingRouteResolutions.values()) {
       pending.abort.abort();
@@ -448,6 +465,10 @@ export class FipsNode {
       const peer = this.peers.get(key);
       if (peer) {
         peer.link.close();
+        peer.pendingResponderLink?.close();
+        for (const draining of peer.drainingResponderLinks?.values() ?? []) {
+          draining.link.close();
+        }
         this.peers.delete(key);
         this.peersByPubkey.delete(peer.pubkeyHex);
         if (peer.pubkey.length > 0) {
@@ -571,25 +592,9 @@ export class FipsNode {
                 || error.message !== "unexpected FMP Msg1 after establishment") {
                 throw error;
               }
-              const replacement = new FmpLink({
-                identity: this.identity,
-                role: "responder",
-                sessionIdx: nextSessionIdx(),
-              });
-              const replacementResult = replacement.handleMsg1(
-                packet,
-                (n) => this.random.bytes(n),
-              );
-              if (peer.pubkey.length > 0
-                && !bytesEqual(peer.pubkey, replacementResult.remotePubkey)) {
-                replacement.close();
-                throw new Error("fresh FMP Msg1 changed the authenticated peer identity");
-              }
-              peer.link.close();
-              peer.link = replacement;
-              result = replacementResult;
+              result = this.stageResponderReplacement(peer, packet);
               this.logger.debug(
-                "replaced stale responder link after fresh authenticated Msg1",
+                "staged responder link after fresh authenticated Msg1",
                 p.remoteAddr.transport,
                 p.remoteAddr.addr,
               );
@@ -659,7 +664,44 @@ export class FipsNode {
           if (!peer || peer.link.state !== "established") {
             throw new Error("FMP Established before handshake complete");
           }
-          const { msgType, payload } = peer.link.decryptIncoming(packet);
+          this.pruneDrainingResponderLinks(peer, Date.now());
+          const receiverIdx = decodeFmpEstablished(packet).receiverIdx;
+          let link = peer.link;
+          let promotePending = false;
+          if (receiverIdx !== link.localSessionIdx) {
+            if (peer.pendingResponderLink?.localSessionIdx === receiverIdx) {
+              link = peer.pendingResponderLink;
+              promotePending = true;
+            } else {
+              const draining = peer.drainingResponderLinks?.get(receiverIdx);
+              if (!draining) {
+                const pendingIdx = peer.pendingResponderLink?.localSessionIdx;
+                throw new Error(
+                  `FMP Established receiver_idx mismatch: received=${receiverIdx} active=${peer.link.localSessionIdx}`
+                  + (pendingIdx === undefined ? "" : ` pending=${pendingIdx}`),
+                );
+              }
+              link = draining.link;
+            }
+          }
+          const { msgType, payload } = link.decryptIncoming(packet);
+          if (promotePending) {
+            const previous = peer.link;
+            peer.link = link;
+            peer.pendingResponderLink = undefined;
+            const draining = peer.drainingResponderLinks ?? new Map();
+            draining.set(previous.localSessionIdx, {
+              link: previous,
+              expiresAtMs: Date.now() + FMP_REPLACED_LINK_DRAIN_MS,
+            });
+            peer.drainingResponderLinks = draining;
+            this.logger.debug(
+              "promoted authenticated responder link",
+              p.remoteAddr.transport,
+              p.remoteAddr.addr,
+              receiverIdx,
+            );
+          }
           this.routeIncomingLinkMessage(peer, msgType, payload).catch((err) => {
             this.emit("error", { err: err as Error, where: "link-message" });
           });
@@ -680,7 +722,7 @@ export class FipsNode {
     payload: Uint8Array,
   ): Promise<void> {
     if (msgType === LinkMessageType.LookupRequest) {
-      if (this.forwarding) await this.forwardLookupRequest(peer, payload);
+      await this.handleLookupRequest(peer, payload);
       return;
     }
     if (msgType === LinkMessageType.LookupResponse) {
@@ -713,12 +755,31 @@ export class FipsNode {
     });
   }
 
-  private async forwardLookupRequest(
+  private async handleLookupRequest(
     sourcePeer: AdjacentPeer,
     payload: Uint8Array,
   ): Promise<void> {
     const request = decodeLookupRequest(payload);
-    if (request.ttl === 0) return;
+    if (bytesEqual(request.target, this.identity.nodeAddr)) {
+      const targetCoords = [this.identity.nodeAddr];
+      const proof = signSchnorr(
+        this.identity,
+        sha256(lookupResponseProofBytes(request.requestId, request.target, targetCoords)),
+      );
+      await this.sendLinkMessage(
+        sourcePeer,
+        LinkMessageType.LookupResponse,
+        encodeLookupResponsePayload({
+          requestId: request.requestId,
+          target: request.target,
+          pathMtu: Math.min(0xffff, sourcePeer.transport.mtu),
+          targetCoords,
+          proof,
+        }),
+      );
+      return;
+    }
+    if (!this.forwarding || request.ttl === 0) return;
     const targetHex = nodeAddrToHex(request.target);
     const reverseKey = lookupReverseKey(request.requestId, request.target);
     this.pruneLookupReversePaths(Date.now());
@@ -786,6 +847,10 @@ export class FipsNode {
   }
 
   private async sendHeartbeats(): Promise<void> {
+    const nowMs = Date.now();
+    for (const peer of this.peers.values()) {
+      this.pruneDrainingResponderLinks(peer, nowMs);
+    }
     const peers = [...this.peers.values()].filter(
       (peer) => peer.link.state === "established",
     );
@@ -800,6 +865,49 @@ export class FipsNode {
         this.emit("error", { err: err as Error, where: "send Heartbeat" });
       }
     }));
+  }
+
+  private stageResponderReplacement(
+    peer: AdjacentPeer,
+    packet: Uint8Array,
+  ): FmpHandshakeResult {
+    let replacement = peer.pendingResponderLink;
+    if (replacement) {
+      try {
+        return replacement.handleMsg1(packet, (n) => this.random.bytes(n));
+      } catch (error) {
+        if (!(error instanceof Error)
+          || error.message !== "unexpected FMP Msg1 after establishment") {
+          throw error;
+        }
+        replacement.close();
+        peer.pendingResponderLink = undefined;
+      }
+    }
+    replacement = new FmpLink({
+      identity: this.identity,
+      role: "responder",
+      sessionIdx: nextSessionIdx(),
+    });
+    const result = replacement.handleMsg1(packet, (n) => this.random.bytes(n));
+    if (peer.pubkey.length > 0 && !bytesEqual(peer.pubkey, result.remotePubkey)) {
+      replacement.close();
+      throw new Error("fresh FMP Msg1 changed the authenticated peer identity");
+    }
+    peer.pendingResponderLink = replacement;
+    return result;
+  }
+
+  private pruneDrainingResponderLinks(peer: AdjacentPeer, nowMs: number): void {
+    if (!peer.drainingResponderLinks) return;
+    for (const [receiverIdx, draining] of peer.drainingResponderLinks) {
+      if (draining.expiresAtMs > nowMs) continue;
+      draining.link.close();
+      peer.drainingResponderLinks.delete(receiverIdx);
+    }
+    if (peer.drainingResponderLinks.size === 0) {
+      peer.drainingResponderLinks = undefined;
+    }
   }
 
   private async handleFspFromPeer(

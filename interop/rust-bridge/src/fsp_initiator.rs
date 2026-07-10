@@ -1,7 +1,9 @@
 use std::io::{self, Read};
 
 use fips_core::noise::{HandshakeState, NoiseSession};
-use fips_identity::Identity;
+use fips_core::protocol::SessionMsg3;
+use fips_core::{SessionAck, SessionSetup, TreeCoordinate};
+use fips_identity::{Identity, PeerIdentity};
 use secp256k1::{PublicKey, SecretKey};
 
 use super::{le_u32, le_u64, read_frame, write_frame};
@@ -221,6 +223,16 @@ fn decrypt_fsp_direct_service_record(
 /// service record as out-of-order DFP1 fragments. Rust reassembles and decrypts
 /// that reply before echoing its service body.
 pub(super) fn run(static_sk_hex: &str) -> io::Result<()> {
+    run_with_envelope(static_sk_hex, false)
+}
+
+/// `fsp-session-initiator <initiator-sk-hex>`: use the routed SessionSetup,
+/// SessionAck, and SessionMsg3 envelopes around the same Rust/TS XK exchange.
+pub(super) fn run_session(static_sk_hex: &str) -> io::Result<()> {
+    run_with_envelope(static_sk_hex, true)
+}
+
+fn run_with_envelope(static_sk_hex: &str, session_envelope: bool) -> io::Result<()> {
     let sk_bytes =
         hex::decode(static_sk_hex).map_err(|e| io::Error::other(format!("bad hex: {e}")))?;
     let sk =
@@ -235,28 +247,51 @@ pub(super) fn run(static_sk_hex: &str) -> io::Result<()> {
     let responder_static_bytes = read_frame(&mut stdin)?;
     let responder_static = PublicKey::from_slice(&responder_static_bytes)
         .map_err(|e| io::Error::other(format!("bad responder pubkey: {e}")))?;
+    let responder = PeerIdentity::from_pubkey_full(responder_static);
 
     let mut hs = HandshakeState::new_xk_initiator(kp, responder_static);
     hs.set_local_epoch([0u8; 8]);
     let noise_msg1 = hs
         .write_xk_message_1()
         .map_err(|e| io::Error::other(format!("write_xk_message_1: {e:?}")))?;
-    write_frame(
-        &mut stdout,
-        &build_fsp_handshake(FSP_PHASE_MSG1, &noise_msg1)?,
-    )?;
+    if session_envelope {
+        let setup = SessionSetup::new(
+            TreeCoordinate::root(*identity.node_addr()),
+            TreeCoordinate::root(*responder.node_addr()),
+        )
+        .with_handshake(noise_msg1);
+        write_frame(&mut stdout, &setup.encode())?;
+    } else {
+        write_frame(
+            &mut stdout,
+            &build_fsp_handshake(FSP_PHASE_MSG1, &noise_msg1)?,
+        )?;
+    }
 
     let msg2 = read_frame(&mut stdin)?;
-    let noise_msg2 = parse_fsp_handshake(&msg2, FSP_PHASE_MSG2, 57)?;
-    hs.read_xk_message_2(noise_msg2)
+    let noise_msg2 = if session_envelope {
+        if msg2.len() < 4 || msg2[0] != FSP_PHASE_MSG2 || msg2[1] != 0 {
+            return Err(io::Error::other("bad SessionAck FSP prefix"));
+        }
+        let ack = SessionAck::decode(&msg2[4..])
+            .map_err(|e| io::Error::other(format!("decode SessionAck: {e}")))?;
+        ack.handshake_payload
+    } else {
+        parse_fsp_handshake(&msg2, FSP_PHASE_MSG2, 57)?.to_vec()
+    };
+    hs.read_xk_message_2(&noise_msg2)
         .map_err(|e| io::Error::other(format!("read_xk_message_2: {e:?}")))?;
     let noise_msg3 = hs
         .write_xk_message_3()
         .map_err(|e| io::Error::other(format!("write_xk_message_3: {e:?}")))?;
-    write_frame(
-        &mut stdout,
-        &build_fsp_handshake(FSP_PHASE_MSG3, &noise_msg3)?,
-    )?;
+    if session_envelope {
+        write_frame(&mut stdout, &SessionMsg3::new(noise_msg3).encode())?;
+    } else {
+        write_frame(
+            &mut stdout,
+            &build_fsp_handshake(FSP_PHASE_MSG3, &noise_msg3)?,
+        )?;
+    }
 
     let mut session = hs
         .into_session()

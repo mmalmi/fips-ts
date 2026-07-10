@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  FMP_PHASE_MSG2,
   FipsNode,
+  FmpLink,
   FMP_PHASE_MSG1,
+  LinkMessageType,
   identityFromSecretKey,
   isDirectFspTransportFragment,
   toHex,
@@ -24,6 +27,8 @@ class FlakyMemoryTransport implements Transport {
   droppedMsg1 = 0;
   sentPackets = 0;
   directFragments = 0;
+  dropNextMsg2 = false;
+  capturedMsg2?: Uint8Array;
 
   constructor(mtu = 1200) {
     this.mtu = mtu;
@@ -57,6 +62,11 @@ class FlakyMemoryTransport implements Transport {
         this.droppedMsg1 += 1;
         return;
       }
+    }
+    if (packet[0] === FMP_PHASE_MSG2 && this.dropNextMsg2) {
+      this.dropNextMsg2 = false;
+      this.capturedMsg2 = new Uint8Array(packet);
+      return;
     }
     const remote = memoryRegistry.get(addr.addr);
     if (!remote?.ctx) {
@@ -199,10 +209,9 @@ describe("FipsNode FMP handshake", () => {
     }
   }, 10_000);
 
-  it("sends authenticated heartbeats after the adjacent link is established", async () => {
-    vi.useFakeTimers();
-    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xc1));
-    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xd2));
+  it("drains the old receiver index until a replacement sends authenticated traffic", async () => {
+    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x91));
+    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xa2));
     const initiatorTransport = new FlakyMemoryTransport();
     const responderTransport = new FlakyMemoryTransport();
     const initiator = new FipsNode({
@@ -212,6 +221,76 @@ describe("FipsNode FMP handshake", () => {
     const responder = new FipsNode({
       identity: responderIdentity,
       transports: [responderTransport],
+    });
+    const errors: Error[] = [];
+    responder.on("error", (event) => errors.push((event as { err: Error }).err));
+
+    await responder.start();
+    await initiator.start();
+    try {
+      const responderAddr = {
+        transport: "memory",
+        addr: toHex(responderIdentity.publicKey),
+      };
+      await initiator.connect(responderAddr);
+      const initiatorPeer = [...(initiator as any).peers.values()][0];
+      const responderPeer = [...(responder as any).peers.values()][0];
+      const oldResponderIndex = responderPeer.link.localSessionIdx;
+      const oldFrame = initiatorPeer.link.encryptOutgoing(
+        new Uint8Array(0),
+        LinkMessageType.Heartbeat,
+      );
+
+      const replacement = new FmpLink({
+        identity: initiatorIdentity,
+        remotePubkey: responderIdentity.publicKey,
+        role: "initiator",
+        sessionIdx: 0x5151,
+      });
+      responderTransport.dropNextMsg2 = true;
+      (responder as any).onTransportPacket(responderTransport, {
+        transportType: "memory",
+        remoteAddr: { transport: "memory", addr: toHex(initiatorIdentity.publicKey) },
+        data: replacement.buildMsg1((length) => new Uint8Array(length)).packet,
+        receivedAtMs: Date.now(),
+      });
+      await Promise.resolve();
+
+      expect(responderPeer.link.localSessionIdx).toBe(oldResponderIndex);
+      expect(responderPeer.pendingResponderLink).toBeDefined();
+      await initiatorTransport.send(responderAddr, oldFrame);
+      expect(errors).toEqual([]);
+      expect(responderPeer.link.localSessionIdx).toBe(oldResponderIndex);
+
+      replacement.handleMsg2(responderTransport.capturedMsg2!);
+      await initiatorTransport.send(
+        responderAddr,
+        replacement.encryptOutgoing(new Uint8Array(0), LinkMessageType.Heartbeat),
+      );
+      expect(errors).toEqual([]);
+      expect(responderPeer.link.localSessionIdx).not.toBe(oldResponderIndex);
+      expect(responderPeer.pendingResponderLink).toBeUndefined();
+    } finally {
+      await initiator.stop();
+      await responder.stop();
+    }
+  }, 10_000);
+
+  it("sends authenticated heartbeats after the adjacent link is established", async () => {
+    vi.useFakeTimers();
+    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xc1));
+    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xd2));
+    const initiatorTransport = new FlakyMemoryTransport();
+    const responderTransport = new FlakyMemoryTransport();
+    const initiator = new FipsNode({
+      identity: initiatorIdentity,
+      transports: [initiatorTransport],
+    heartbeatIntervalMs: 1_000,
+    });
+    const responder = new FipsNode({
+      identity: responderIdentity,
+      transports: [responderTransport],
+    heartbeatIntervalMs: 1_000,
     });
 
     await responder.start();
@@ -224,7 +303,7 @@ describe("FipsNode FMP handshake", () => {
       const initiatorBaseline = initiatorTransport.sentPackets;
       const responderBaseline = responderTransport.sentPackets;
 
-      await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1_000);
 
       expect(initiatorTransport.sentPackets).toBeGreaterThan(initiatorBaseline);
       expect(responderTransport.sentPackets).toBeGreaterThan(responderBaseline);

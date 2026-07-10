@@ -12,11 +12,12 @@ use std::env;
 use std::io::{self, Read, Write};
 use std::process;
 
+use fips_core::TreeCoordinate;
 use fips_core::bloom::BloomFilter;
 use fips_core::noise::HandshakeState;
-use fips_core::protocol::FilterAnnounce;
-use fips_identity::Identity;
-use secp256k1::SecretKey;
+use fips_core::protocol::{FilterAnnounce, LookupRequest, LookupResponse};
+use fips_identity::{Identity, PeerIdentity};
+use secp256k1::{PublicKey, SecretKey};
 
 mod fsp_initiator;
 
@@ -343,11 +344,74 @@ fn run_filter_announce(args: &[String]) -> io::Result<()> {
     Ok(())
 }
 
+/// `lookup-self <origin-sk-hex>`: emit a Rust-encoded self-targeted lookup
+/// request, then verify the TypeScript node's response using Rust codecs and
+/// BIP-340 verification.
+fn run_lookup_self(origin_sk_hex: &str) -> io::Result<()> {
+    let sk_bytes =
+        hex::decode(origin_sk_hex).map_err(|e| io::Error::other(format!("bad hex: {e}")))?;
+    let sk =
+        SecretKey::from_slice(&sk_bytes).map_err(|e| io::Error::other(format!("bad sk: {e}")))?;
+    let origin = Identity::from_secret_key(sk);
+    let mut stdin = io::stdin().lock();
+    let mut stdout = io::stdout().lock();
+
+    let target_public_key = PublicKey::from_slice(&read_frame(&mut stdin)?)
+        .map_err(|e| io::Error::other(format!("bad target public key: {e}")))?;
+    let target = PeerIdentity::from_pubkey_full(target_public_key);
+    let request = LookupRequest::new(
+        0x0102_0304_0506_0708,
+        *target.node_addr(),
+        *origin.node_addr(),
+        TreeCoordinate::root(*origin.node_addr()),
+        63,
+        0,
+    );
+    let encoded = request.encode();
+    write_frame(&mut stdout, &encoded[1..])?;
+
+    let response_payload = read_frame(&mut stdin)?;
+    let response = LookupResponse::decode(&response_payload)
+        .map_err(|e| io::Error::other(format!("decode LookupResponse: {e}")))?;
+    if response.request_id != request.request_id || response.target != request.target {
+        return Err(io::Error::other("LookupResponse does not match request"));
+    }
+    if response.path_mtu != 1200 {
+        return Err(io::Error::other(format!(
+            "expected path MTU 1200, got {}",
+            response.path_mtu,
+        )));
+    }
+    if response
+        .target_coords
+        .node_addrs()
+        .copied()
+        .collect::<Vec<_>>()
+        != vec![request.target]
+    {
+        return Err(io::Error::other(
+            "LookupResponse did not contain root target coordinates",
+        ));
+    }
+    let proof_data = LookupResponse::proof_bytes(
+        response.request_id,
+        &response.target,
+        &response.target_coords,
+    );
+    if !target.verify(&proof_data, &response.proof) {
+        return Err(io::Error::other("LookupResponse proof verification failed"));
+    }
+    write_frame(&mut stdout, b"verified")?;
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("usage: fips-rust-bridge <ik|xk|fmp> <responder-sk-hex>");
         eprintln!("       fips-rust-bridge fsp-initiator <initiator-sk-hex>");
+        eprintln!("       fips-rust-bridge fsp-session-initiator <initiator-sk-hex>");
+        eprintln!("       fips-rust-bridge lookup-self <origin-sk-hex>");
         eprintln!("       fips-rust-bridge bloom <numBits> <hashCount> [key-hex ...]");
         process::exit(2);
     }
@@ -381,11 +445,25 @@ fn main() {
             }
             fsp_initiator::run(&args[2])
         }
+        "fsp-session-initiator" => {
+            if args.len() != 3 {
+                eprintln!("usage: fips-rust-bridge fsp-session-initiator <initiator-sk-hex>");
+                process::exit(2);
+            }
+            fsp_initiator::run_session(&args[2])
+        }
+        "lookup-self" => {
+            if args.len() != 3 {
+                eprintln!("usage: fips-rust-bridge lookup-self <origin-sk-hex>");
+                process::exit(2);
+            }
+            run_lookup_self(&args[2])
+        }
         "bloom" => run_bloom(&args[2..]),
         "filter-announce" => run_filter_announce(&args[2..]),
         _ => {
             eprintln!(
-                "unknown mode {mode}; want 'ik' | 'xk' | 'fmp' | 'fsp-initiator' | 'bloom' | 'filter-announce'"
+                "unknown mode {mode}; want 'ik' | 'xk' | 'fmp' | 'fsp-initiator' | 'fsp-session-initiator' | 'lookup-self' | 'bloom' | 'filter-announce'"
             );
             process::exit(2);
         }

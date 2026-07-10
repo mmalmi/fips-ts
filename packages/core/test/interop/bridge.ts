@@ -38,7 +38,7 @@ interface PendingRead {
 }
 
 export function spawnBridge(
-  mode: "ik" | "xk" | "fmp" | "fsp-initiator",
+  mode: "ik" | "xk" | "fmp" | "fsp-initiator" | "fsp-session-initiator" | "lookup-self",
   staticSkHex: string,
 ): BridgeSession {
   if (!bridgeAvailable()) {

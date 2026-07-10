@@ -1,5 +1,5 @@
 export { DisconnectReason, HandshakeMessageType, LinkMessageType, SESSION_DATAGRAM_HEADER_SIZE, decodeDisconnect, decodeSessionDatagram, decodeSessionDatagramPayload, decrementTtl, disconnectReasonFromByte, encodeDisconnect, encodeSessionDatagram, handshakeMessageTypeFromByte, isHandshakeMessageType, linkMessageTypeFromByte, } from "./link.js";
 export { FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE, V1_SIZE_CLASS, buildFilterAnnounce, decodeFilterAnnounce, encodeFilterAnnounce, } from "./filter.js";
 export { decodeSessionAck, decodeSessionMsg3, decodeSessionSetup, encodeSessionAck, encodeSessionMsg3, encodeSessionSetup, } from "./session.js";
-export { decodeLookupRequest, decodeLookupResponse, encodeLookupRequestPayload, encodeLookupResponsePayload, } from "./discovery.js";
+export { decodeLookupRequest, decodeLookupResponse, encodeLookupRequestPayload, encodeLookupResponsePayload, lookupResponseProofBytes, } from "./discovery.js";
 //# sourceMappingURL=index.js.map

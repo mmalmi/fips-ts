@@ -34,6 +34,8 @@ export interface FipsNodeConfig {
   clock?: Clock;
   random?: RandomSource;
   logger?: Logger;
+  /** Authenticated adjacent-link heartbeat cadence. Defaults to 5 seconds. */
+  heartbeatIntervalMs?: number;
 }
 
 export type FipsEventName = "peer" | "route" | "session" | "datagram" | "endpointData" | "error";

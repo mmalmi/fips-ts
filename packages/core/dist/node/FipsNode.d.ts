@@ -8,6 +8,7 @@ export declare class FipsNode {
     private readonly random;
     private readonly logger;
     private readonly defaultRoute?;
+    private readonly heartbeatIntervalMs;
     private services;
     private peers;
     private peersByPubkey;
@@ -54,12 +55,14 @@ export declare class FipsNode {
     private rememberPeer;
     private onTransportPacket;
     private routeIncomingLinkMessage;
-    private forwardLookupRequest;
+    private handleLookupRequest;
     private forwardLookupResponse;
     private sendLinkMessage;
     private pruneLookupReversePaths;
     private reserveLookupReversePath;
     private sendHeartbeats;
+    private stageResponderReplacement;
+    private pruneDrainingResponderLinks;
     private handleFspFromPeer;
     private ensureSession;
     /**

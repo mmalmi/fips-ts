@@ -43,6 +43,7 @@ export {
   decodeLookupResponse,
   encodeLookupRequestPayload,
   encodeLookupResponsePayload,
+  lookupResponseProofBytes,
   type LookupRequest,
   type LookupResponse,
 } from "./discovery.js";

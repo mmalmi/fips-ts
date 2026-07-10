@@ -67,6 +67,19 @@ export function encodeLookupResponsePayload(response: LookupResponse): Uint8Arra
   return writer.toBytes();
 }
 
+/** Bytes signed by a lookup target, matching Rust LookupResponse::proof_bytes. */
+export function lookupResponseProofBytes(
+  requestId: bigint,
+  target: NodeAddr,
+  targetCoords: NodeAddr[],
+): Uint8Array {
+  const writer = new BinaryWriter();
+  writer.u64le(requestId);
+  writer.bytes(target);
+  encodeCoords(writer, targetCoords);
+  return writer.toBytes();
+}
+
 function decodeCoords(reader: BinaryReader): NodeAddr[] {
   const count = reader.u16le();
   if (count === 0) throw new Error("lookup coordinates must not be empty");

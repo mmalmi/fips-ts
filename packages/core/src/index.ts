@@ -92,6 +92,7 @@ export {
   encodeFilterAnnounce,
   encodeLookupRequestPayload,
   encodeLookupResponsePayload,
+  lookupResponseProofBytes,
   encodeSessionAck,
   encodeSessionDatagram,
   encodeSessionMsg3,
