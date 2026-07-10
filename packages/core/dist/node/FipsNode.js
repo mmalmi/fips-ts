@@ -560,6 +560,7 @@ export class FipsNode {
         }
         const datagram = decodeSessionDatagramPayload(payload);
         if (bytesEqual(datagram.destAddr, this.identity.nodeAddr)) {
+            this.logger.debug("session datagram delivered locally", nodeAddrToHex(datagram.srcAddr), "phase", datagram.payload[0] & 0x0f, "bytes", datagram.payload.length);
             await this.handleFspFromPeer(peer, datagram.srcAddr, datagram.payload);
             return;
         }
@@ -571,6 +572,7 @@ export class FipsNode {
             this.logger.warn("dropping SessionDatagram; ttl exhausted");
             return;
         }
+        this.logger.debug("session datagram forwarded", nodeAddrToHex(datagram.srcAddr), nodeAddrToHex(datagram.destAddr), "phase", datagram.payload[0] & 0x0f, "bytes", datagram.payload.length, "ttl", datagram.ttl);
         await this.sendSessionDatagram({
             ...datagram,
             ttl: datagram.ttl - 1,
@@ -578,6 +580,7 @@ export class FipsNode {
     }
     async handleLookupRequest(sourcePeer, payload) {
         const request = decodeLookupRequest(payload);
+        const targetHex = nodeAddrToHex(request.target);
         if (bytesEqual(request.target, this.identity.nodeAddr)) {
             const targetCoords = [this.identity.nodeAddr];
             const proof = signSchnorr(this.identity, sha256(lookupResponseProofBytes(request.requestId, request.target, targetCoords)));
@@ -588,11 +591,13 @@ export class FipsNode {
                 targetCoords,
                 proof,
             }));
+            this.logger.debug("lookup request answered locally", targetHex);
             return;
         }
-        if (!this.forwarding || request.ttl === 0)
+        if (!this.forwarding || request.ttl === 0) {
+            this.logger.debug("lookup request not forwarded", targetHex, "disabled-or-expired");
             return;
-        const targetHex = nodeAddrToHex(request.target);
+        }
         const reverseKey = lookupReverseKey(request.requestId, request.target);
         this.pruneLookupReversePaths(Date.now());
         if (this.lookupReversePaths.has(reverseKey))
@@ -602,10 +607,14 @@ export class FipsNode {
             await this.resolveRoute(request.target, targetHex);
             nextHop = this.nextHopFor(targetHex);
         }
-        if (!nextHop || nextHop === sourcePeer)
+        if (!nextHop || nextHop === sourcePeer) {
+            this.logger.debug("lookup request not forwarded", targetHex, "no-next-hop");
             return;
-        if (request.minMtu !== 0 && nextHop.transport.mtu < request.minMtu)
+        }
+        if (request.minMtu !== 0 && nextHop.transport.mtu < request.minMtu) {
+            this.logger.debug("lookup request not forwarded", targetHex, "mtu");
             return;
+        }
         if (this.lookupReversePaths.has(reverseKey))
             return;
         this.reserveLookupReversePath();
@@ -615,17 +624,21 @@ export class FipsNode {
         });
         request.ttl -= 1;
         await this.sendLinkMessage(nextHop, LinkMessageType.LookupRequest, encodeLookupRequestPayload(request));
+        this.logger.debug("lookup request forwarded", targetHex, nextHop.remoteAddr.transport, nextHop.remoteAddr.addr);
     }
     async forwardLookupResponse(sourcePeer, payload) {
         const response = decodeLookupResponse(payload);
         const reverseKey = lookupReverseKey(response.requestId, response.target);
         this.pruneLookupReversePaths(Date.now());
         const reverse = this.lookupReversePaths.get(reverseKey);
-        if (!reverse || reverse.peer === sourcePeer)
+        if (!reverse || reverse.peer === sourcePeer) {
+            this.logger.debug("lookup response not forwarded", nodeAddrToHex(response.target));
             return;
+        }
         this.lookupReversePaths.delete(reverseKey);
         response.pathMtu = Math.min(response.pathMtu, reverse.peer.transport.mtu);
         await this.sendLinkMessage(reverse.peer, LinkMessageType.LookupResponse, encodeLookupResponsePayload(response));
+        this.logger.debug("lookup response forwarded", nodeAddrToHex(response.target), reverse.peer.remoteAddr.transport, reverse.peer.remoteAddr.addr);
     }
     async sendLinkMessage(peer, msgType, payload) {
         const frame = peer.link.encryptOutgoing(payload, msgType);
@@ -850,6 +863,7 @@ export class FipsNode {
         }
         if (!nextHop)
             throw new Error(`no route to ${destNodeHex}`);
+        this.logger.debug("session datagram routed", nodeAddrToHex(datagram.srcAddr), destNodeHex, "phase", datagram.payload[0] & 0x0f, "bytes", datagram.payload.length, nextHop.remoteAddr.transport, nextHop.remoteAddr.addr);
         const encoded = encodeSessionDatagram(datagram);
         const outer = nextHop.link.encryptOutgoing(encoded.subarray(1), LinkMessageType.SessionDatagram);
         await nextHop.transport.send(nextHop.remoteAddr, outer);

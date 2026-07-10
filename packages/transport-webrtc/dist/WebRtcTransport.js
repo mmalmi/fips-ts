@@ -33,6 +33,7 @@ export class WebRtcTransport {
     knownSessionIds = new Set();
     seenSessionIds = new Set();
     advertCache = new Map(); // by NodeAddr hex
+    peerSignalRelays = new Map(); // by compressed pubkey hex
     advertWaiters = new Map(); // by NodeAddr hex
     discoveryStream;
     advertCleanup;
@@ -87,10 +88,16 @@ export class WebRtcTransport {
         this.signaling = new NostrWebRtcSignaling({
             identity: ctx.localIdentity,
             relays: this.relayClients,
+            relayFactory: (url) => new NostrRelayClient({
+                url,
+                webSocket: this.cfg.webSocket,
+                connectTimeoutMs: this.cfg.relayConnectTimeoutMs,
+                logger: this.logger,
+            }),
             discoveryApp: this.cfg.discoveryApp,
             advertTtlMs: this.cfg.advertTtlMs,
             logger: this.logger,
-            onSignal: (signal, senderXOnly) => this.handleIncomingSignal(signal, senderXOnly).catch((err) => {
+            onSignal: (signal, senderXOnly, sourceRelayUrl) => this.handleIncomingSignal(signal, senderXOnly, sourceRelayUrl).catch((err) => {
                 this.logger.warn("handleIncomingSignal", err);
             }),
         });
@@ -133,6 +140,7 @@ export class WebRtcTransport {
         this.knownSessionIds.clear();
         this.seenSessionIds.clear();
         this.advertCache.clear();
+        this.peerSignalRelays.clear();
         for (const [nodeAddrHex, waiters] of this.advertWaiters) {
             for (const waiter of [...waiters]) {
                 this.settleAdvertWaiter(nodeAddrHex, waiter, undefined);
@@ -145,6 +153,9 @@ export class WebRtcTransport {
         this.ctx = undefined;
     }
     async handleAdvert(event, advert) {
+        const signalRelays = normalizeSignalRelays(advert.signalRelays);
+        if (signalRelays.length === 0)
+            return;
         const localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : "";
         for (const endpoint of advert.endpoints) {
             if (endpoint.transport !== "webrtc" || !/^(02|03)[0-9a-fA-F]{64}$/.test(endpoint.addr)) {
@@ -158,12 +169,13 @@ export class WebRtcTransport {
             const peer = {
                 remoteAddr: { transport: this.type, addr: remotePubkeyHex },
                 publicKey: fromHex(remotePubkeyHex),
-                meta: { source: "nostr-advert" },
+                meta: { source: "nostr-advert", signalRelays: [...signalRelays] },
             };
             const nodeAddrHex = nodeAddrToHex(deriveNodeAddr(peer.publicKey));
             const cached = this.cacheAdvert(nodeAddrHex, peer, event);
             if (!cached)
                 continue;
+            this.peerSignalRelays.set(remotePubkeyHex, [...signalRelays]);
             const requested = this.resolveAdvertWaiters(nodeAddrHex, cached);
             if (!this.cfg.autoConnect || requested)
                 continue;
@@ -298,6 +310,7 @@ export class WebRtcTransport {
             return;
         }
         const remoteXOnlyHex = remotePubkeyHex.slice(2); // strip 02/03 parity
+        const signalRelays = this.peerSignalRelays.get(remotePubkeyHex) ?? this.cfg.relays;
         const sessionId = randomId();
         this.knownSessionIds.add(sessionId);
         this.logger.debug("webrtc connect start", remotePubkeyHex, sessionId);
@@ -337,7 +350,7 @@ export class WebRtcTransport {
                 timer,
             };
             this.pendingDials.set(sessionId, dial);
-            this.startInitiatorHandshake(dial, addr).catch((err) => {
+            this.startInitiatorHandshake(dial, addr, signalRelays).catch((err) => {
                 clearTimeout(timer);
                 this.pendingDials.delete(sessionId);
                 pc.close();
@@ -373,7 +386,7 @@ export class WebRtcTransport {
             this.conns.delete(addr.addr);
         }
     }
-    async startInitiatorHandshake(dial, addr) {
+    async startInitiatorHandshake(dial, addr, signalRelays) {
         dial.phase = "creating-offer";
         const offer = await dial.pc.createOffer();
         dial.phase = "gathering-ice";
@@ -392,7 +405,7 @@ export class WebRtcTransport {
             expiresAtMs: Date.now() + 60_000,
         };
         dial.phase = "publishing-offer";
-        await this.signaling.sendSignal(dial.remoteXOnlyHex, signal);
+        await this.signaling.sendSignal(dial.remoteXOnlyHex, signal, signalRelays);
         dial.phase = "awaiting-answer";
         this.logger.debug("webrtc offer sent", dial.remotePubkeyHex, dial.sessionId);
         // Wire connection state to dialer promise once data channel opens.
@@ -431,7 +444,7 @@ export class WebRtcTransport {
             logger: this.logger,
         });
     }
-    async handleIncomingSignal(signal, senderXOnlyHex) {
+    async handleIncomingSignal(signal, senderXOnlyHex, sourceRelayUrl) {
         if (!this.ctx)
             return;
         this.logger.debug("webrtc signal received", signal.kind, signal.sessionId, signal.sender);
@@ -478,7 +491,7 @@ export class WebRtcTransport {
                 createdAtMs: Date.now(),
                 expiresAtMs: Date.now() + 60_000,
             };
-            await this.signaling.sendSignal(senderXOnlyHex, reply);
+            await this.signaling.sendSignal(senderXOnlyHex, reply, [sourceRelayUrl]);
             this.logger.debug("webrtc answer sent", valid.sender, valid.sessionId);
             // Now wait for the negotiated channel to arrive and wire it up.
             dcPromise.then((dataChannel) => {
@@ -589,11 +602,37 @@ class AsyncEventStream {
 async function* emptyAsyncIterable() {
     return;
 }
+function normalizeSignalRelays(value) {
+    if (!Array.isArray(value))
+        return [];
+    const relays = [];
+    for (const candidate of value.slice(0, 8)) {
+        if (typeof candidate !== "string")
+            continue;
+        try {
+            const parsed = new URL(candidate);
+            if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:")
+                continue;
+            const normalized = parsed.toString();
+            if (!relays.includes(normalized))
+                relays.push(normalized);
+        }
+        catch {
+            /* Invalid advertised relay URL. */
+        }
+    }
+    return relays;
+}
 function cloneDiscoveredPeer(peer) {
     return {
         remoteAddr: { ...peer.remoteAddr },
         publicKey: peer.publicKey ? new Uint8Array(peer.publicKey) : undefined,
-        meta: peer.meta ? { ...peer.meta } : undefined,
+        meta: peer.meta
+            ? Object.fromEntries(Object.entries(peer.meta).map(([key, value]) => [
+                key,
+                Array.isArray(value) ? [...value] : value,
+            ]))
+            : undefined,
     };
 }
 function advertExpiryMs(event, ttlMs, nowMs) {

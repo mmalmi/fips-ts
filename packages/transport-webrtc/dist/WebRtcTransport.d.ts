@@ -39,6 +39,7 @@ export declare class WebRtcTransport implements Transport {
     private readonly knownSessionIds;
     private readonly seenSessionIds;
     private readonly advertCache;
+    private readonly peerSignalRelays;
     private readonly advertWaiters;
     private discoveryStream?;
     private advertCleanup?;

@@ -104,7 +104,10 @@ describe("WebRtcTransport NodeAddr resolution", () => {
       expect(resolved).toEqual({
         remoteAddr: { transport: "webrtc", addr: toHex(remote.publicKey) },
         publicKey: remote.publicKey,
-        meta: { source: "nostr-advert" },
+        meta: {
+          source: "nostr-advert",
+          signalRelays: ["ws://resolver.test/"],
+        },
       });
     } finally {
       await transport.stop();

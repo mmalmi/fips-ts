@@ -737,6 +737,14 @@ export class FipsNode {
 
     const datagram = decodeSessionDatagramPayload(payload);
     if (bytesEqual(datagram.destAddr, this.identity.nodeAddr)) {
+      this.logger.debug(
+        "session datagram delivered locally",
+        nodeAddrToHex(datagram.srcAddr),
+        "phase",
+        datagram.payload[0]! & 0x0f,
+        "bytes",
+        datagram.payload.length,
+      );
       await this.handleFspFromPeer(peer, datagram.srcAddr, datagram.payload);
       return;
     }
@@ -749,6 +757,17 @@ export class FipsNode {
       this.logger.warn("dropping SessionDatagram; ttl exhausted");
       return;
     }
+    this.logger.debug(
+      "session datagram forwarded",
+      nodeAddrToHex(datagram.srcAddr),
+      nodeAddrToHex(datagram.destAddr),
+      "phase",
+      datagram.payload[0]! & 0x0f,
+      "bytes",
+      datagram.payload.length,
+      "ttl",
+      datagram.ttl,
+    );
     await this.sendSessionDatagram({
       ...datagram,
       ttl: datagram.ttl - 1,
@@ -760,6 +779,7 @@ export class FipsNode {
     payload: Uint8Array,
   ): Promise<void> {
     const request = decodeLookupRequest(payload);
+    const targetHex = nodeAddrToHex(request.target);
     if (bytesEqual(request.target, this.identity.nodeAddr)) {
       const targetCoords = [this.identity.nodeAddr];
       const proof = signSchnorr(
@@ -777,10 +797,13 @@ export class FipsNode {
           proof,
         }),
       );
+      this.logger.debug("lookup request answered locally", targetHex);
       return;
     }
-    if (!this.forwarding || request.ttl === 0) return;
-    const targetHex = nodeAddrToHex(request.target);
+    if (!this.forwarding || request.ttl === 0) {
+      this.logger.debug("lookup request not forwarded", targetHex, "disabled-or-expired");
+      return;
+    }
     const reverseKey = lookupReverseKey(request.requestId, request.target);
     this.pruneLookupReversePaths(Date.now());
     if (this.lookupReversePaths.has(reverseKey)) return;
@@ -790,8 +813,14 @@ export class FipsNode {
       await this.resolveRoute(request.target, targetHex);
       nextHop = this.nextHopFor(targetHex);
     }
-    if (!nextHop || nextHop === sourcePeer) return;
-    if (request.minMtu !== 0 && nextHop.transport.mtu < request.minMtu) return;
+    if (!nextHop || nextHop === sourcePeer) {
+      this.logger.debug("lookup request not forwarded", targetHex, "no-next-hop");
+      return;
+    }
+    if (request.minMtu !== 0 && nextHop.transport.mtu < request.minMtu) {
+      this.logger.debug("lookup request not forwarded", targetHex, "mtu");
+      return;
+    }
     if (this.lookupReversePaths.has(reverseKey)) return;
 
     this.reserveLookupReversePath();
@@ -805,6 +834,12 @@ export class FipsNode {
       LinkMessageType.LookupRequest,
       encodeLookupRequestPayload(request),
     );
+    this.logger.debug(
+      "lookup request forwarded",
+      targetHex,
+      nextHop.remoteAddr.transport,
+      nextHop.remoteAddr.addr,
+    );
   }
 
   private async forwardLookupResponse(
@@ -815,13 +850,22 @@ export class FipsNode {
     const reverseKey = lookupReverseKey(response.requestId, response.target);
     this.pruneLookupReversePaths(Date.now());
     const reverse = this.lookupReversePaths.get(reverseKey);
-    if (!reverse || reverse.peer === sourcePeer) return;
+    if (!reverse || reverse.peer === sourcePeer) {
+      this.logger.debug("lookup response not forwarded", nodeAddrToHex(response.target));
+      return;
+    }
     this.lookupReversePaths.delete(reverseKey);
     response.pathMtu = Math.min(response.pathMtu, reverse.peer.transport.mtu);
     await this.sendLinkMessage(
       reverse.peer,
       LinkMessageType.LookupResponse,
       encodeLookupResponsePayload(response),
+    );
+    this.logger.debug(
+      "lookup response forwarded",
+      nodeAddrToHex(response.target),
+      reverse.peer.remoteAddr.transport,
+      reverse.peer.remoteAddr.addr,
     );
   }
 
@@ -1072,6 +1116,18 @@ export class FipsNode {
       nextHop = this.nextHopFor(destNodeHex);
     }
     if (!nextHop) throw new Error(`no route to ${destNodeHex}`);
+
+    this.logger.debug(
+      "session datagram routed",
+      nodeAddrToHex(datagram.srcAddr),
+      destNodeHex,
+      "phase",
+      datagram.payload[0]! & 0x0f,
+      "bytes",
+      datagram.payload.length,
+      nextHop.remoteAddr.transport,
+      nextHop.remoteAddr.addr,
+    );
 
     const encoded = encodeSessionDatagram(datagram);
     const outer = nextHop.link.encryptOutgoing(

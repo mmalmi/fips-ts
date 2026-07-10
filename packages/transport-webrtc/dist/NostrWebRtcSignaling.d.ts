@@ -33,16 +33,21 @@ export interface FipsAdvertContent {
 export interface NostrWebRtcSignalingOptions {
     identity: FipsIdentity;
     relays: NostrRelayClient[];
+    relayFactory?: (url: string) => NostrRelayClient;
     discoveryApp?: string;
     advertTtlMs?: number;
     logger?: Logger;
     /** Called with the parsed inner signal and the outer event sender. */
-    onSignal: (signal: WebRtcSignal, senderXOnlyHex: string) => void;
+    onSignal: (signal: WebRtcSignal, senderXOnlyHex: string, sourceRelayUrl: string) => void;
     signalReplayWindowMs?: number;
 }
 export declare class NostrWebRtcSignaling {
     private readonly identity;
     private readonly relays;
+    private readonly relayFactory?;
+    private readonly relayByUrl;
+    private readonly dynamicRelays;
+    private readonly signalSubscriptions;
     private readonly discoveryApp;
     private readonly advertTtlMs;
     private readonly logger?;
@@ -54,12 +59,14 @@ export declare class NostrWebRtcSignaling {
     start(): Promise<void>;
     stop(): void;
     publishAdvert(advert: FipsAdvertContent): Promise<void>;
-    sendSignal(recipientXOnlyHex: string, signal: WebRtcSignal): Promise<void>;
+    sendSignal(recipientXOnlyHex: string, signal: WebRtcSignal, relayUrls?: string[]): Promise<void>;
     /** Discover adverts (kind 37195) matching the d-tag. */
     subscribeAdverts(cb: (ev: NostrEvent, advert: FipsAdvertContent) => void, extraFilter?: {
         authors?: string[];
     }): Promise<() => void>;
     private publishToRelays;
+    private ensureSignalRelays;
+    private ensureSignalSubscription;
     private handleSignalEvent;
 }
 //# sourceMappingURL=NostrWebRtcSignaling.d.ts.map

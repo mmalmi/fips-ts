@@ -20,10 +20,14 @@ import { signEvent } from "../src/nostrEvent.js";
 import type { WebRtcSignal } from "../src/WebRtcSignal.js";
 
 class FakeRelay {
-  readonly url = "ws://relay.test";
+  readonly url: string;
   readonly published: NostrEvent[] = [];
   readonly filters: NostrFilter[] = [];
   private handlers: Array<(event: NostrEvent) => void> = [];
+
+  constructor(url = "ws://relay.test") {
+    this.url = new URL(url).toString();
+  }
 
   async connect(): Promise<void> {
     return undefined;
@@ -67,6 +71,12 @@ class FailingRelay {
 
   close(): void {
     /* ignore */
+  }
+}
+
+class PublishFailingRelay extends FakeRelay {
+  override async publish(): Promise<void> {
+    throw new Error("publish failed");
   }
 }
 
@@ -189,6 +199,84 @@ describe("NostrWebRtcSignaling adverts", () => {
     const unwrapped = unwrapGiftWrap(recipient, event);
     expect(unwrapped.kind).toBe(FIPS_SIGNAL_RUMOR_KIND);
     expect(JSON.parse(unwrapped.content)).toEqual(signal);
+  });
+
+  it("subscribes and publishes on the recipient's advertised signal relay only", async () => {
+    const sender = await identityFromSecretKey(new Uint8Array(32).fill(0x45));
+    const recipient = await identityFromSecretKey(new Uint8Array(32).fill(0x56));
+    const discoveryRelay = new FakeRelay("ws://discovery.test");
+    const targetRelay = new FakeRelay("ws://target.test");
+    const relays = new Map([
+      [discoveryRelay.url, discoveryRelay],
+      [targetRelay.url, targetRelay],
+    ]);
+    const signaling = new NostrWebRtcSignaling({
+      identity: sender,
+      relays: [relayClient(discoveryRelay)],
+      relayFactory: (url) => relayClient(relays.get(url)!),
+      onSignal: () => undefined,
+    });
+    const signal: WebRtcSignal = {
+      protocol: "fips-webrtc-v1",
+      version: 1,
+      sessionId: "target-session",
+      kind: "offer",
+      sender: toHex(sender.publicKey),
+      recipient: toHex(recipient.publicKey),
+      sdp: "v=0",
+      createdAtMs: Date.now(),
+      expiresAtMs: Date.now() + 60_000,
+    };
+
+    await signaling.start();
+    await signaling.sendSignal(
+      toHex(recipient.xOnlyPubkey),
+      signal,
+      [targetRelay.url],
+    );
+
+    expect(discoveryRelay.published).toEqual([]);
+    expect(targetRelay.filters).toContainEqual({
+      kinds: [FIPS_SIGNAL_KIND],
+      "#p": [toHex(sender.xOnlyPubkey)],
+      limit: 100,
+    });
+    expect(targetRelay.published).toHaveLength(1);
+  });
+
+  it("fails a signal send when every selected relay rejects it", async () => {
+    const sender = await identityFromSecretKey(new Uint8Array(32).fill(0x46));
+    const recipient = await identityFromSecretKey(new Uint8Array(32).fill(0x57));
+    const failedRelay = new PublishFailingRelay("ws://relay.failed");
+    const signaling = new NostrWebRtcSignaling({
+      identity: sender,
+      relays: [relayClient(failedRelay)],
+      relayFactory: () => relayClient(failedRelay),
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+      onSignal: () => undefined,
+    });
+    const signal: WebRtcSignal = {
+      protocol: "fips-webrtc-v1",
+      version: 1,
+      sessionId: "failed-session",
+      kind: "offer",
+      sender: toHex(sender.publicKey),
+      recipient: toHex(recipient.publicKey),
+      sdp: "v=0",
+      createdAtMs: Date.now(),
+      expiresAtMs: Date.now() + 60_000,
+    };
+
+    await expect(signaling.sendSignal(
+      toHex(recipient.xOnlyPubkey),
+      signal,
+      [failedRelay.url],
+    )).rejects.toThrow("no signal relay accepted event");
   });
 
   it("ignores pre-release signal wraps with non-current inner rumor kinds", async () => {

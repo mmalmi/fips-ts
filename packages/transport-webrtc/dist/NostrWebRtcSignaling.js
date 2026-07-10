@@ -24,6 +24,10 @@ const RELAY_OPERATION_WARMUP_MS = 1_500;
 export class NostrWebRtcSignaling {
     identity;
     relays;
+    relayFactory;
+    relayByUrl = new Map();
+    dynamicRelays = new Set();
+    signalSubscriptions = new Map();
     discoveryApp;
     advertTtlMs;
     logger;
@@ -33,6 +37,10 @@ export class NostrWebRtcSignaling {
     constructor(opts) {
         this.identity = opts.identity;
         this.relays = opts.relays;
+        this.relayFactory = opts.relayFactory;
+        for (const relay of this.relays) {
+            this.relayByUrl.set(normalizeRelayUrl(relay.url), relay);
+        }
         this.discoveryApp = normalizeDiscoveryApp(opts.discoveryApp);
         this.advertTtlMs = opts.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS;
         this.logger = opts.logger;
@@ -40,28 +48,20 @@ export class NostrWebRtcSignaling {
     }
     /** Subscribe to incoming signals for the local pubkey. */
     async start() {
-        const localXOnly = toHex(this.identity.xOnlyPubkey);
-        const operations = this.relays.map(async (relay) => {
-            try {
-                await relay.connect();
-                const cleanup = await relay.subscribe({ kinds: [FIPS_SIGNAL_KIND], "#p": [localXOnly], limit: 100 }, {
-                    onEvent: (ev) => this.handleSignalEvent(ev),
-                });
-                this.cleanups.push(cleanup);
-                this.logger?.debug("signal subscription ready", relay.url, localXOnly);
-                return true;
-            }
-            catch (err) {
-                this.logger?.warn("signal subscription failed", relay.url, err);
-                return false;
-            }
-        });
-        await waitForRelayWarmup(operations);
+        await Promise.all(this.relays.map((relay) => this.ensureSignalSubscription(relay)));
     }
     stop() {
         for (const c of this.cleanups)
             c();
         this.cleanups.length = 0;
+        this.signalSubscriptions.clear();
+        for (const relay of this.dynamicRelays)
+            relay.close();
+        this.dynamicRelays.clear();
+        for (const [url, relay] of this.relayByUrl) {
+            if (!this.relays.includes(relay))
+                this.relayByUrl.delete(url);
+        }
     }
     async publishAdvert(advert) {
         const expiresAt = Math.floor((Date.now() + this.advertTtlMs) / 1000);
@@ -76,15 +76,18 @@ export class NostrWebRtcSignaling {
             ],
             content: JSON.stringify(advert),
         });
-        await this.publishToRelays(ev, "advert publish failed");
+        await this.publishToRelays(this.relays, ev, "advert publish failed");
     }
-    async sendSignal(recipientXOnlyHex, signal) {
+    async sendSignal(recipientXOnlyHex, signal, relayUrls) {
         const now = Math.floor(Date.now() / 1000);
         const giftWrap = buildGiftWrap(this.identity, recipientXOnlyHex, JSON.stringify(signal), FIPS_SIGNAL_RUMOR_KIND, {
             outerCreatedAt: now,
             expiration: Math.max(now + 1, Math.floor(signal.expiresAtMs / 1000)),
         });
-        await this.publishToRelays(giftWrap, "signal publish failed");
+        const relays = relayUrls === undefined
+            ? this.relays
+            : await this.ensureSignalRelays(relayUrls);
+        await this.publishToRelays(relays, giftWrap, "signal publish failed");
         this.logger?.debug("signal published", signal.kind, signal.sessionId, recipientXOnlyHex);
     }
     /** Discover adverts (kind 37195) matching the d-tag. */
@@ -130,8 +133,8 @@ export class NostrWebRtcSignaling {
         await waitForRelayWarmup(operations);
         return () => localCleanups.forEach((c) => c());
     }
-    async publishToRelays(event, failureMessage) {
-        const operations = this.relays.map(async (relay) => {
+    async publishToRelays(relays, event, failureMessage) {
+        const operations = relays.map(async (relay) => {
             try {
                 await relay.publish(event);
                 return true;
@@ -141,9 +144,55 @@ export class NostrWebRtcSignaling {
                 return false;
             }
         });
-        await waitForRelayWarmup(operations);
+        const results = await Promise.all(operations);
+        if (!results.some(Boolean))
+            throw new Error("no signal relay accepted event");
     }
-    handleSignalEvent(ev) {
+    async ensureSignalRelays(urls) {
+        const normalized = [...new Set(urls.map(normalizeRelayUrl))];
+        if (normalized.length === 0)
+            throw new Error("signal relay list is empty");
+        const relays = normalized.map((url) => {
+            const existing = this.relayByUrl.get(url);
+            if (existing)
+                return existing;
+            if (!this.relayFactory)
+                throw new Error(`signal relay is unavailable: ${url}`);
+            const relay = this.relayFactory(url);
+            this.relayByUrl.set(url, relay);
+            this.dynamicRelays.add(relay);
+            return relay;
+        });
+        const ready = await Promise.all(relays.map((relay) => this.ensureSignalSubscription(relay)));
+        const usable = relays.filter((_, index) => ready[index]);
+        if (usable.length === 0)
+            throw new Error("no signal relay subscription available");
+        return usable;
+    }
+    ensureSignalSubscription(relay) {
+        const relayUrl = normalizeRelayUrl(relay.url);
+        const existing = this.signalSubscriptions.get(relayUrl);
+        if (existing)
+            return existing;
+        const localXOnly = toHex(this.identity.xOnlyPubkey);
+        const operation = (async () => {
+            try {
+                await relay.connect();
+                const cleanup = await relay.subscribe({ kinds: [FIPS_SIGNAL_KIND], "#p": [localXOnly], limit: 100 }, { onEvent: (ev) => this.handleSignalEvent(ev, relayUrl) });
+                this.cleanups.push(cleanup);
+                this.logger?.debug("signal subscription ready", relayUrl, localXOnly);
+                return true;
+            }
+            catch (err) {
+                this.logger?.warn("signal subscription failed", relayUrl, err);
+                this.signalSubscriptions.delete(relayUrl);
+                return false;
+            }
+        })();
+        this.signalSubscriptions.set(relayUrl, operation);
+        return operation;
+    }
+    handleSignalEvent(ev, sourceRelayUrl) {
         if (this.seenEventIds.has(ev.id))
             return;
         this.seenEventIds.add(ev.id);
@@ -174,7 +223,7 @@ export class NostrWebRtcSignaling {
             return;
         }
         this.logger?.debug("signal parsed", signal.kind, signal.sessionId, signal.sender);
-        this.onSignal(signal, unwrapped.senderXOnlyHex);
+        this.onSignal(signal, unwrapped.senderXOnlyHex, sourceRelayUrl);
     }
 }
 function sleep(ms) {
@@ -192,6 +241,13 @@ async function waitForRelayWarmup(operations) {
         Promise.all(operations).catch(() => []),
         sleep(RELAY_OPERATION_WARMUP_MS),
     ]);
+}
+function normalizeRelayUrl(url) {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+        throw new Error(`unsupported signal relay protocol: ${parsed.protocol}`);
+    }
+    return parsed.toString();
 }
 function normalizeDiscoveryApp(app) {
     const normalized = app?.trim();
