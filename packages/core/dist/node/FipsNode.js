@@ -3,11 +3,12 @@ import { bytesEqual, toHex } from "../codec/hex.js";
 import { FmpLink } from "../fmp/link.js";
 import { DirectFspTransportReassembler, isDirectFspTransportFragment, segmentDirectFspTransportRecord, } from "../fsp/directTransport.js";
 import { FspSession } from "../fsp/session.js";
-import { FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
+import { decodeFmpMsg2, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
 import { FSP_FLAG_DIRECT_TRANSPORT, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_PHASE_ESTABLISHED, isDirectFspEstablished, peekFspPhase, } from "../fsp/wire.js";
 import { compressedPubkeyFromXOnly, } from "../identity/index.js";
-import { deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
+import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
 import { decodeSessionDatagramPayload, encodeSessionDatagram, LinkMessageType, } from "../protocol/link.js";
+import { decodeLookupRequest, decodeLookupResponse, encodeLookupRequestPayload, encodeLookupResponsePayload, } from "../protocol/discovery.js";
 import { noopLogger, transportAddressKey, } from "../transport/types.js";
 let sessionIdxCounter = 1;
 function nextSessionIdx() {
@@ -21,6 +22,8 @@ const FMP_HEARTBEAT_INTERVAL_MS = 5_000;
 const FSP_DEFAULT_PATH_MTU = 1_200;
 const ROUTE_RESOLUTION_TIMEOUT_MS = 5_000;
 const MAX_PENDING_ROUTE_RESOLUTIONS = 64;
+const LOOKUP_REVERSE_PATH_TTL_MS = 30_000;
+const MAX_LOOKUP_REVERSE_PATHS = 256;
 export class FipsNode {
     identity;
     forwarding;
@@ -34,6 +37,7 @@ export class FipsNode {
     peersByNodeAddr = new Map(); // by NodeAddr hex
     pendingPeerConnects = new Map(); // by transportAddressKey
     pendingRouteResolutions = new Map(); // by NodeAddr hex
+    lookupReversePaths = new Map();
     sessions = new Map(); // by remote NodeAddr hex
     listeners = new Map();
     discoveryTasks = new Set();
@@ -126,6 +130,7 @@ export class FipsNode {
         this.peersByNodeAddr.clear();
         this.pendingPeerConnects.clear();
         this.pendingRouteResolutions.clear();
+        this.lookupReversePaths.clear();
         this.sessions.clear();
         this.directFspReassembler.clear();
     }
@@ -362,6 +367,30 @@ export class FipsNode {
             this.logger.debug("fips packet received", p.remoteAddr.transport, p.remoteAddr.addr, packet.length, phase);
             switch (phase) {
                 case FMP_PHASE_MSG1: {
+                    let replacedEstablishedInitiator = false;
+                    let replacedHandshake;
+                    if (peer?.link.role === "initiator") {
+                        if (peer.pubkey.length === 0) {
+                            throw new Error("outbound FMP peer is missing its expected identity");
+                        }
+                        const order = compareNodeAddr(this.identity.nodeAddr, deriveNodeAddr(peer.pubkey));
+                        if (order < 0) {
+                            this.logger.debug("simultaneous FMP handshake: local initiator wins", p.remoteAddr.transport, p.remoteAddr.addr);
+                            break;
+                        }
+                        if (order === 0)
+                            throw new Error("simultaneous FMP handshake with local identity");
+                        replacedEstablishedInitiator = peer.link.state === "established";
+                        peer.abandonedInitiatorSessionIdx = peer.link.localSessionIdx;
+                        replacedHandshake = peer.outgoingHandshake;
+                        peer.link.close();
+                        peer.link = new FmpLink({
+                            identity: this.identity,
+                            role: "responder",
+                            sessionIdx: nextSessionIdx(),
+                        });
+                        this.logger.debug("simultaneous FMP handshake: remote initiator wins", p.remoteAddr.transport, p.remoteAddr.addr);
+                    }
                     // Responder side: create link if absent.
                     if (!peer) {
                         const link = new FmpLink({
@@ -378,8 +407,38 @@ export class FipsNode {
                         };
                         this.peers.set(key, peer);
                     }
-                    const wasEstablished = peer.link.state === "established";
-                    const result = peer.link.handleMsg1(packet, (n) => this.random.bytes(n));
+                    const wasEstablished = replacedEstablishedInitiator
+                        || peer.link.state === "established";
+                    let result;
+                    if (peer.link.role === "responder" && peer.link.state === "established") {
+                        try {
+                            result = peer.link.handleMsg1(packet, (n) => this.random.bytes(n));
+                        }
+                        catch (error) {
+                            if (!(error instanceof Error)
+                                || error.message !== "unexpected FMP Msg1 after establishment") {
+                                throw error;
+                            }
+                            const replacement = new FmpLink({
+                                identity: this.identity,
+                                role: "responder",
+                                sessionIdx: nextSessionIdx(),
+                            });
+                            const replacementResult = replacement.handleMsg1(packet, (n) => this.random.bytes(n));
+                            if (peer.pubkey.length > 0
+                                && !bytesEqual(peer.pubkey, replacementResult.remotePubkey)) {
+                                replacement.close();
+                                throw new Error("fresh FMP Msg1 changed the authenticated peer identity");
+                            }
+                            peer.link.close();
+                            peer.link = replacement;
+                            result = replacementResult;
+                            this.logger.debug("replaced stale responder link after fresh authenticated Msg1", p.remoteAddr.transport, p.remoteAddr.addr);
+                        }
+                    }
+                    else {
+                        result = peer.link.handleMsg1(packet, (n) => this.random.bytes(n));
+                    }
                     peer.pubkey = result.remotePubkey;
                     peer.pubkeyHex = toHex(result.remotePubkey);
                     this.rememberPeer(peer);
@@ -388,6 +447,10 @@ export class FipsNode {
                             this.emit("error", { err: err, where: "send Msg2" });
                         });
                         this.logger.debug("fips msg2 sent", p.remoteAddr.transport, p.remoteAddr.addr, result.reply.length);
+                    }
+                    if (replacedHandshake) {
+                        peer.outgoingHandshake = undefined;
+                        replacedHandshake.resolve();
                     }
                     if (!wasEstablished) {
                         this.emit("peer", {
@@ -401,6 +464,14 @@ export class FipsNode {
                 case FMP_PHASE_MSG2: {
                     if (!peer)
                         throw new Error("FMP Msg2 with no peer state");
+                    if (peer.link.role === "responder" && peer.abandonedInitiatorSessionIdx !== undefined) {
+                        const msg2 = decodeFmpMsg2(packet);
+                        if (msg2.receiverIdx === peer.abandonedInitiatorSessionIdx) {
+                            peer.abandonedInitiatorSessionIdx = undefined;
+                            this.logger.debug("ignored Msg2 for abandoned simultaneous FMP initiator", p.remoteAddr.transport, p.remoteAddr.addr);
+                            break;
+                        }
+                    }
                     const wasEstablished = peer.link.state === "established";
                     peer.link.handleMsg2(packet);
                     peer.pubkey = peer.link.remotePubkey;
@@ -438,6 +509,16 @@ export class FipsNode {
         }
     }
     async routeIncomingLinkMessage(peer, msgType, payload) {
+        if (msgType === LinkMessageType.LookupRequest) {
+            if (this.forwarding)
+                await this.forwardLookupRequest(peer, payload);
+            return;
+        }
+        if (msgType === LinkMessageType.LookupResponse) {
+            if (this.forwarding)
+                await this.forwardLookupResponse(peer, payload);
+            return;
+        }
         if (msgType !== LinkMessageType.SessionDatagram) {
             if (isKnownUnhandledLinkMessage(msgType))
                 return;
@@ -461,6 +542,62 @@ export class FipsNode {
             ...datagram,
             ttl: datagram.ttl - 1,
         });
+    }
+    async forwardLookupRequest(sourcePeer, payload) {
+        const request = decodeLookupRequest(payload);
+        if (request.ttl === 0)
+            return;
+        const targetHex = nodeAddrToHex(request.target);
+        const reverseKey = lookupReverseKey(request.requestId, request.target);
+        this.pruneLookupReversePaths(Date.now());
+        if (this.lookupReversePaths.has(reverseKey))
+            return;
+        let nextHop = this.nextHopFor(targetHex);
+        if (!nextHop) {
+            await this.resolveRoute(request.target, targetHex);
+            nextHop = this.nextHopFor(targetHex);
+        }
+        if (!nextHop || nextHop === sourcePeer)
+            return;
+        if (request.minMtu !== 0 && nextHop.transport.mtu < request.minMtu)
+            return;
+        if (this.lookupReversePaths.has(reverseKey))
+            return;
+        this.reserveLookupReversePath();
+        this.lookupReversePaths.set(reverseKey, {
+            peer: sourcePeer,
+            expiresAtMs: Date.now() + LOOKUP_REVERSE_PATH_TTL_MS,
+        });
+        request.ttl -= 1;
+        await this.sendLinkMessage(nextHop, LinkMessageType.LookupRequest, encodeLookupRequestPayload(request));
+    }
+    async forwardLookupResponse(sourcePeer, payload) {
+        const response = decodeLookupResponse(payload);
+        const reverseKey = lookupReverseKey(response.requestId, response.target);
+        this.pruneLookupReversePaths(Date.now());
+        const reverse = this.lookupReversePaths.get(reverseKey);
+        if (!reverse || reverse.peer === sourcePeer)
+            return;
+        this.lookupReversePaths.delete(reverseKey);
+        response.pathMtu = Math.min(response.pathMtu, reverse.peer.transport.mtu);
+        await this.sendLinkMessage(reverse.peer, LinkMessageType.LookupResponse, encodeLookupResponsePayload(response));
+    }
+    async sendLinkMessage(peer, msgType, payload) {
+        const frame = peer.link.encryptOutgoing(payload, msgType);
+        await peer.transport.send(peer.remoteAddr, frame);
+    }
+    pruneLookupReversePaths(nowMs) {
+        for (const [key, reverse] of this.lookupReversePaths) {
+            if (reverse.expiresAtMs <= nowMs)
+                this.lookupReversePaths.delete(key);
+        }
+    }
+    reserveLookupReversePath() {
+        if (this.lookupReversePaths.size < MAX_LOOKUP_REVERSE_PATHS)
+            return;
+        const oldest = this.lookupReversePaths.keys().next().value;
+        if (oldest !== undefined)
+            this.lookupReversePaths.delete(oldest);
     }
     async sendHeartbeats() {
         const peers = [...this.peers.values()].filter((peer) => peer.link.state === "established");
@@ -724,14 +861,15 @@ function hexBytes(hex) {
     }
     return out;
 }
+function lookupReverseKey(requestId, target) {
+    return `${requestId.toString(16)}:${nodeAddrToHex(target)}`;
+}
 function isKnownUnhandledLinkMessage(msgType) {
     return (msgType === LinkMessageType.Heartbeat ||
         msgType === LinkMessageType.Disconnect ||
         msgType === LinkMessageType.SenderReport ||
         msgType === LinkMessageType.ReceiverReport ||
         msgType === LinkMessageType.TreeAnnounce ||
-        msgType === LinkMessageType.FilterAnnounce ||
-        msgType === LinkMessageType.LookupRequest ||
-        msgType === LinkMessageType.LookupResponse);
+        msgType === LinkMessageType.FilterAnnounce);
 }
 //# sourceMappingURL=FipsNode.js.map

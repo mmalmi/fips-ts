@@ -134,4 +134,28 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
     expect(result.endpointData).toEqual(payload);
     expect(result.data).toBeUndefined();
   });
+
+  it("FspSession accepts only an exact SessionMsg3 replay after establishment", async () => {
+    const { FspSession } = await import("../src/fsp/session.js");
+    const a = await identityFromSecretKey(new Uint8Array(32).fill(0x61));
+    const b = await identityFromSecretKey(new Uint8Array(32).fill(0x83));
+    const init = new FspSession({
+      identity: a,
+      role: "initiator",
+      remotePubkey: b.publicKey,
+    });
+    const resp = new FspSession({ identity: b, role: "responder" });
+
+    const msg1 = init.buildSessionSetup(() => new Uint8Array(0), a.nodeAddr, b.nodeAddr);
+    const msg2 = resp.handleSessionSetup(msg1, () => new Uint8Array(0), b.nodeAddr);
+    const msg3 = init.handleSessionAck(msg2, () => new Uint8Array(0));
+    resp.handleSessionMsg3(msg3);
+    expect(() => resp.handleSessionMsg3(msg3)).not.toThrow();
+
+    const changed = new Uint8Array(msg3);
+    changed[changed.length - 1] ^= 1;
+    expect(() => resp.handleSessionMsg3(changed)).toThrow(
+      "unexpected FSP Msg3 after establishment",
+    );
+  });
 });

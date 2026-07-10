@@ -37,3 +37,12 @@ export {
   type SessionMsg3,
   type SessionSetup,
 } from "./session.js";
+
+export {
+  decodeLookupRequest,
+  decodeLookupResponse,
+  encodeLookupRequestPayload,
+  encodeLookupResponsePayload,
+  type LookupRequest,
+  type LookupResponse,
+} from "./discovery.js";

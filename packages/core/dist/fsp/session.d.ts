@@ -21,6 +21,7 @@ export declare class FspSession {
     private hs?;
     private tx?;
     private rx?;
+    private establishedMsg3?;
     private txCounter;
     private replay;
     state: "init" | "handshaking" | "established" | "closed";

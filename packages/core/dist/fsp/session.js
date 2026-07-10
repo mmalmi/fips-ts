@@ -7,6 +7,7 @@
 import { chacha20poly1305 } from "@noble/ciphers/chacha";
 import { noiseNonce } from "../crypto/aead.js";
 import { ReplayWindow } from "../crypto/replay.js";
+import { bytesEqual } from "../codec/hex.js";
 import { NoiseHandshake } from "../noise/index.js";
 import { decodeSessionAck, decodeSessionMsg3, decodeSessionSetup, encodeSessionAck, encodeSessionMsg3, encodeSessionSetup, } from "../protocol/session.js";
 import { decodeDataPacket, decodeFspEstablished, decodeFspHandshake, decodeFspInner, encodeDataPacket, encodeFspEstablished, encodeFspEstablishedHeader, encodeFspHandshake, encodeFspInner, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_KEEPALIVE, FSP_FLAG_DIRECT_TRANSPORT, NOISE_XK_MSG1_LEN, NOISE_XK_MSG2_LEN, NOISE_XK_MSG3_LEN, } from "./wire.js";
@@ -21,6 +22,7 @@ export class FspSession {
     hs;
     tx;
     rx;
+    establishedMsg3;
     txCounter = 0n;
     replay = new ReplayWindow();
     state = "init";
@@ -152,6 +154,11 @@ export class FspSession {
     handleMsg3(packet) {
         if (this.role !== "responder")
             throw new Error("only responder handles XK msg3");
+        if (this.state === "established") {
+            if (this.establishedMsg3 && bytesEqual(packet, this.establishedMsg3))
+                return;
+            throw new Error("unexpected FSP Msg3 after establishment");
+        }
         if (!this.hs)
             throw new Error("noise handshake state missing");
         const frame = decodeFspHandshake(packet);
@@ -166,11 +173,17 @@ export class FspSession {
         if (!rs)
             throw new Error("XK responder did not capture remote static");
         this.remotePubkey = rs;
+        this.establishedMsg3 = new Uint8Array(packet);
         this.finalize();
     }
     handleSessionMsg3(packet) {
         if (this.role !== "responder")
             throw new Error("only responder handles SessionMsg3");
+        if (this.state === "established") {
+            if (this.establishedMsg3 && bytesEqual(packet, this.establishedMsg3))
+                return;
+            throw new Error("unexpected FSP Msg3 after establishment");
+        }
         if (!this.hs)
             throw new Error("noise handshake state missing");
         const msg3 = decodeSessionMsg3(packet);
@@ -183,6 +196,7 @@ export class FspSession {
         if (!rs)
             throw new Error("XK responder did not capture remote static");
         this.remotePubkey = rs;
+        this.establishedMsg3 = new Uint8Array(packet);
         this.finalize();
     }
     finalize() {

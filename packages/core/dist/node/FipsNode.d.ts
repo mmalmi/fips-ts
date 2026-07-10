@@ -14,6 +14,7 @@ export declare class FipsNode {
     private peersByNodeAddr;
     private pendingPeerConnects;
     private pendingRouteResolutions;
+    private lookupReversePaths;
     private sessions;
     private listeners;
     private discoveryTasks;
@@ -53,6 +54,11 @@ export declare class FipsNode {
     private rememberPeer;
     private onTransportPacket;
     private routeIncomingLinkMessage;
+    private forwardLookupRequest;
+    private forwardLookupResponse;
+    private sendLinkMessage;
+    private pruneLookupReversePaths;
+    private reserveLookupReversePath;
     private sendHeartbeats;
     private handleFspFromPeer;
     private ensureSession;

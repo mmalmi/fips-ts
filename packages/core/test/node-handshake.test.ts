@@ -72,6 +72,48 @@ class FlakyMemoryTransport implements Transport {
 }
 
 describe("FipsNode FMP handshake", () => {
+  it("resolves simultaneous adjacent handshakes and keeps bidirectional service traffic", async () => {
+    const identityA = await identityFromSecretKey(new Uint8Array(32).fill(0x21));
+    const identityB = await identityFromSecretKey(new Uint8Array(32).fill(0x42));
+    const transportA = new FlakyMemoryTransport();
+    const transportB = new FlakyMemoryTransport();
+    const nodeA = new FipsNode({ identity: identityA, transports: [transportA] });
+    const nodeB = new FipsNode({ identity: identityB, transports: [transportB] });
+    const errors: Error[] = [];
+    const received: number[] = [];
+    nodeA.on("error", (event) => errors.push((event as { err: Error }).err));
+    nodeB.on("error", (event) => errors.push((event as { err: Error }).err));
+    nodeA.registerService(7_301, ({ payload }) => received.push(payload[0]));
+    nodeB.registerService(7_302, ({ payload }) => received.push(payload[0]));
+
+    await nodeA.start();
+    await nodeB.start();
+    try {
+      await Promise.all([
+        nodeA.connect({ transport: "memory", addr: toHex(identityB.publicKey) }),
+        nodeB.connect({ transport: "memory", addr: toHex(identityA.publicKey) }),
+      ]);
+      await Promise.all([
+        nodeA.sendDatagram({
+          dst: toHex(identityB.publicKey),
+          dstPort: 7_302,
+          payload: new Uint8Array([0xa2]),
+        }),
+        nodeB.sendDatagram({
+          dst: toHex(identityA.publicKey),
+          dstPort: 7_301,
+          payload: new Uint8Array([0xb1]),
+        }),
+      ]);
+
+      expect(errors).toEqual([]);
+      expect(received.sort((a, b) => a - b)).toEqual([0xa2, 0xb1]);
+    } finally {
+      await nodeA.stop();
+      await nodeB.stop();
+    }
+  }, 10_000);
+
   it("resends Msg1 so a dropped first WebRTC-style packet does not stall connect", async () => {
     const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xa1));
     const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xb2));
@@ -101,6 +143,61 @@ describe("FipsNode FMP handshake", () => {
       await responder.stop();
     }
   });
+
+  it("accepts a fresh authenticated Msg1 when an established initiator restarts", async () => {
+    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x71));
+    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x82));
+    const firstTransport = new FlakyMemoryTransport();
+    const responderTransport = new FlakyMemoryTransport();
+    const firstNode = new FipsNode({
+      identity: initiatorIdentity,
+      transports: [firstTransport],
+    });
+    const responder = new FipsNode({
+      identity: responderIdentity,
+      transports: [responderTransport],
+    });
+    const errors: Error[] = [];
+    responder.on("error", (event) => errors.push((event as { err: Error }).err));
+    let received: Uint8Array | undefined;
+    responder.registerService(7_171, ({ payload }) => {
+      received = payload;
+    });
+
+    await responder.start();
+    await firstNode.start();
+    try {
+      const responderAddr = {
+        transport: "memory",
+        addr: toHex(responderIdentity.publicKey),
+      };
+      await firstNode.connect(responderAddr);
+      await firstNode.stop();
+
+      const restartedTransport = new FlakyMemoryTransport();
+      const restartedNode = new FipsNode({
+        identity: initiatorIdentity,
+        transports: [restartedTransport],
+      });
+      await restartedNode.start();
+      try {
+        await restartedNode.connect(responderAddr);
+        await restartedNode.sendDatagram({
+          dst: toHex(responderIdentity.publicKey),
+          dstPort: 7_171,
+          payload: new Uint8Array([7, 1, 7, 1]),
+        });
+
+        expect(errors).toEqual([]);
+        expect(received).toEqual(new Uint8Array([7, 1, 7, 1]));
+      } finally {
+        await restartedNode.stop();
+      }
+    } finally {
+      await firstNode.stop();
+      await responder.stop();
+    }
+  }, 10_000);
 
   it("sends authenticated heartbeats after the adjacent link is established", async () => {
     vi.useFakeTimers();

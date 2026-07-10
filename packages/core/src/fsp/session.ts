@@ -9,6 +9,7 @@ import { chacha20poly1305 } from "@noble/ciphers/chacha";
 
 import { noiseNonce } from "../crypto/aead.js";
 import { ReplayWindow } from "../crypto/replay.js";
+import { bytesEqual } from "../codec/hex.js";
 import type { FipsIdentity } from "../identity/index.js";
 import { CipherState, NoiseHandshake } from "../noise/index.js";
 import type { NodeAddr } from "../nodeaddr/index.js";
@@ -64,6 +65,7 @@ export class FspSession {
   private hs?: NoiseHandshake;
   private tx?: CipherState;
   private rx?: CipherState;
+  private establishedMsg3?: Uint8Array;
   private txCounter = 0n;
   private replay = new ReplayWindow();
 
@@ -188,6 +190,10 @@ export class FspSession {
 
   handleMsg3(packet: Uint8Array): void {
     if (this.role !== "responder") throw new Error("only responder handles XK msg3");
+    if (this.state === "established") {
+      if (this.establishedMsg3 && bytesEqual(packet, this.establishedMsg3)) return;
+      throw new Error("unexpected FSP Msg3 after establishment");
+    }
     if (!this.hs) throw new Error("noise handshake state missing");
     const frame = decodeFspHandshake(packet);
     if (frame.phase !== 3) throw new Error("expected XK msg3");
@@ -197,11 +203,16 @@ export class FspSession {
     const rs = this.hs.getRemoteStatic();
     if (!rs) throw new Error("XK responder did not capture remote static");
     this.remotePubkey = rs;
+    this.establishedMsg3 = new Uint8Array(packet);
     this.finalize();
   }
 
   handleSessionMsg3(packet: Uint8Array): void {
     if (this.role !== "responder") throw new Error("only responder handles SessionMsg3");
+    if (this.state === "established") {
+      if (this.establishedMsg3 && bytesEqual(packet, this.establishedMsg3)) return;
+      throw new Error("unexpected FSP Msg3 after establishment");
+    }
     if (!this.hs) throw new Error("noise handshake state missing");
     const msg3 = decodeSessionMsg3(packet);
     if (msg3.handshakePayload.length !== NOISE_XK_MSG3_LEN) throw new Error("bad XK msg3 length");
@@ -210,6 +221,7 @@ export class FspSession {
     const rs = this.hs.getRemoteStatic();
     if (!rs) throw new Error("XK responder did not capture remote static");
     this.remotePubkey = rs;
+    this.establishedMsg3 = new Uint8Array(packet);
     this.finalize();
   }
 
