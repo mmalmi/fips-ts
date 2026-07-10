@@ -130,6 +130,25 @@ describe("NostrRelayClient publish acknowledgements", () => {
 });
 
 describe("NostrRelayClient subscription lifecycle", () => {
+  it("replays a subscription registered before an initial connection failure", async () => {
+    FakeWebSocket.failNextConnect = true;
+    const relay = new NostrRelayClient({
+      url: "ws://relay.test",
+      webSocket: FakeWebSocket as unknown as typeof WebSocket,
+    });
+    const filter = { kinds: [37195], "#d": ["fips-overlay-v1"] };
+
+    await expect(relay.subscribe(filter, {
+      onEvent: () => undefined,
+    })).rejects.toThrow("relay closed before open");
+    await relay.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(FakeWebSocket.instances[1]!.sent.map((message) => JSON.parse(message))).toEqual([
+      ["REQ", "s1", filter],
+    ]);
+  });
+
   it("replays active subscriptions once in insertion order after reconnect", async () => {
     const relay = new NostrRelayClient({
       url: "ws://relay.test",

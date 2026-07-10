@@ -176,11 +176,12 @@ export class NostrRelayClient {
     filter: NostrFilter,
     cb: SubCallbacks,
   ): Promise<() => void> {
-    await this.connect();
     const subId = `s${++this.subCounter}`;
     const request = JSON.stringify(["REQ", subId, filter]);
+    const wasConnected = this.isConnected();
     this.subs.set(subId, { ...cb, request });
-    this.ws!.send(request);
+    await this.connect();
+    if (wasConnected) this.ws!.send(request);
     return () => {
       if (!this.subs.delete(subId)) return;
       try {
