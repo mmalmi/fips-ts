@@ -74,6 +74,16 @@ export class NostrRelayClient {
                 ws.binaryType = "arraybuffer";
                 ws.addEventListener("open", () => {
                     this.logger?.debug("relay open", this.url);
+                    try {
+                        for (const sub of this.subs.values()) {
+                            ws.send(sub.request);
+                        }
+                    }
+                    catch (err) {
+                        this.logger?.warn("relay subscription replay failed", this.url, err);
+                        fail("relay subscription replay failed");
+                        return;
+                    }
                     finish(resolve);
                 });
                 ws.addEventListener("error", (e) => {
@@ -92,7 +102,10 @@ export class NostrRelayClient {
                     if (wasConnecting)
                         fail("relay closed before open");
                 });
-                ws.addEventListener("message", (m) => this.onMessage(m));
+                ws.addEventListener("message", (m) => {
+                    if (this.ws === ws)
+                        this.onMessage(m);
+                });
             }
             catch (err) {
                 this.logger?.warn("relay constructor failed", this.url, err);
@@ -121,10 +134,12 @@ export class NostrRelayClient {
     async subscribe(filter, cb) {
         await this.connect();
         const subId = `s${++this.subCounter}`;
-        this.subs.set(subId, cb);
-        this.ws.send(JSON.stringify(["REQ", subId, filter]));
+        const request = JSON.stringify(["REQ", subId, filter]);
+        this.subs.set(subId, { ...cb, request });
+        this.ws.send(request);
         return () => {
-            this.subs.delete(subId);
+            if (!this.subs.delete(subId))
+                return;
             try {
                 this.ws?.send(JSON.stringify(["CLOSE", subId]));
             }
@@ -135,6 +150,7 @@ export class NostrRelayClient {
     }
     close() {
         this.closed = true;
+        this.subs.clear();
         this.rejectPendingPublishes(new Error("relay closed"));
         try {
             this.ws?.close();
@@ -162,6 +178,9 @@ export class NostrRelayClient {
         else if (tag === "EOSE" && typeof arr[1] === "string") {
             const sub = this.subs.get(arr[1]);
             sub?.onEose?.();
+        }
+        else if (tag === "CLOSED" && typeof arr[1] === "string") {
+            this.subs.delete(arr[1]);
         }
         else if (tag === "OK") {
             this.onPublishOk(arr);

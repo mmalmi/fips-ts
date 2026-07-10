@@ -39,6 +39,8 @@ export declare class FmpLink {
     private hs?;
     private tx?;
     private rx?;
+    private establishedMsg1?;
+    private establishedMsg2?;
     private txCounter;
     private rxReplay;
     state: "init" | "handshaking" | "established" | "closed";

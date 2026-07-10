@@ -1,4 +1,5 @@
 import type { FipsIdentity } from "../identity/index.js";
+import type { NodeAddr } from "../nodeaddr/index.js";
 
 /**
  * Transport address — identifies an adjacent peer at the transport layer.
@@ -53,6 +54,8 @@ export interface Transport {
   send(addr: TransportAddress, packet: Uint8Array): Promise<void>;
   close?(addr: TransportAddress): Promise<void>;
   discover?(): AsyncIterable<DiscoveredPeer>;
+  /** Resolve a FIPS NodeAddr to an authenticated transport identity hint. */
+  resolve?(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined>;
 }
 
 export interface Logger {

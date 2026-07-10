@@ -1,8 +1,11 @@
 import {
   fromHex,
+  deriveNodeAddr,
+  nodeAddrToHex,
   toHex,
   type DiscoveredPeer,
   type Logger,
+  type NodeAddr,
   type Transport,
   type TransportAddress,
   type TransportContext,
@@ -11,9 +14,11 @@ import {
 
 import { NostrRelayClient } from "./NostrRelayClient.js";
 import {
+  DEFAULT_FIPS_ADVERT_TTL_MS,
   FIPS_ADVERT_D_TAG,
   NostrWebRtcSignaling,
 } from "./NostrWebRtcSignaling.js";
+import type { NostrEvent } from "./NostrRelayClient.js";
 import { WebRtcConnection } from "./WebRtcConnection.js";
 import {
   validateWebRtcSignal,
@@ -58,6 +63,22 @@ interface PendingDial {
   timer: ReturnType<typeof setTimeout>;
 }
 
+interface CachedAdvert {
+  peer: DiscoveredPeer;
+  createdAtSeconds: number;
+  expiresAtMs: number;
+}
+
+interface AdvertWaiter {
+  resolve: (peer: DiscoveredPeer | undefined) => void;
+  timer: ReturnType<typeof setTimeout>;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}
+
+const MAX_ADVERT_CACHE_ENTRIES = 256;
+const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
+
 function randomId(): string {
   const a = new Uint8Array(16);
   if (typeof crypto !== "undefined" && crypto.getRandomValues) {
@@ -99,6 +120,8 @@ export class WebRtcTransport implements Transport {
   private readonly autoConnectPeers = new Set<string>(); // by pubkeyHex
   private readonly knownSessionIds = new Set<string>();
   private readonly seenSessionIds = new Set<string>();
+  private readonly advertCache = new Map<string, CachedAdvert>(); // by NodeAddr hex
+  private readonly advertWaiters = new Map<string, Set<AdvertWaiter>>(); // by NodeAddr hex
   private discoveryStream?: AsyncEventStream<DiscoveredPeer>;
   private advertCleanup?: () => void;
 
@@ -167,13 +190,11 @@ export class WebRtcTransport implements Transport {
     });
     await this.signaling.start();
 
-    if (this.cfg.autoConnect) {
-      this.advertCleanup = await this.signaling.subscribeAdverts((event, advert) => {
-        this.handleAdvert(event.pubkey, advert).catch((err) => {
-          this.logger.warn("handleAdvert", err);
-        });
+    this.advertCleanup = await this.signaling.subscribeAdverts((event, advert) => {
+      this.handleAdvert(event, advert).catch((err) => {
+        this.logger.warn("handleAdvert", err);
       });
-    }
+    });
 
     if (this.cfg.advertiseOnNostr) {
       await this.signaling.publishAdvert({
@@ -206,6 +227,13 @@ export class WebRtcTransport implements Transport {
     this.pendingConnects.clear();
     this.knownSessionIds.clear();
     this.seenSessionIds.clear();
+    this.advertCache.clear();
+    for (const [nodeAddrHex, waiters] of this.advertWaiters) {
+      for (const waiter of [...waiters]) {
+        this.settleAdvertWaiter(nodeAddrHex, waiter, undefined);
+      }
+    }
+    this.advertWaiters.clear();
     this.discoveryStream?.close();
     this.discoveryStream = undefined;
     this.signaling = undefined;
@@ -213,33 +241,148 @@ export class WebRtcTransport implements Transport {
   }
 
   private async handleAdvert(
-    authorXOnlyHex: string,
+    event: NostrEvent,
     advert: { endpoints: Array<{ transport: string; addr: string }> },
   ): Promise<void> {
     const localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : "";
     for (const endpoint of advert.endpoints) {
-      if (endpoint.transport !== "webrtc" || endpoint.addr.length !== 66) continue;
-      if (endpoint.addr.slice(2) !== authorXOnlyHex) continue;
-      if (endpoint.addr === localPubkeyHex || this.conns.has(endpoint.addr)) continue;
-      if (this.autoConnectPeers.has(endpoint.addr)) continue;
+      if (endpoint.transport !== "webrtc" || !/^(02|03)[0-9a-fA-F]{64}$/.test(endpoint.addr)) {
+        continue;
+      }
+      const remotePubkeyHex = endpoint.addr.toLowerCase();
+      if (remotePubkeyHex.slice(2) !== event.pubkey.toLowerCase()) continue;
+      if (remotePubkeyHex === localPubkeyHex) continue;
+      const peer: DiscoveredPeer = {
+        remoteAddr: { transport: this.type, addr: remotePubkeyHex },
+        publicKey: fromHex(remotePubkeyHex),
+        meta: { source: "nostr-advert" },
+      };
+      const nodeAddrHex = nodeAddrToHex(deriveNodeAddr(peer.publicKey!));
+      const cached = this.cacheAdvert(nodeAddrHex, peer, event);
+      if (!cached) continue;
+      const requested = this.resolveAdvertWaiters(nodeAddrHex, cached);
+      if (!this.cfg.autoConnect || requested) continue;
+      if (this.conns.has(remotePubkeyHex)) continue;
+      if (this.autoConnectPeers.has(remotePubkeyHex)) continue;
       if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections) {
         return;
       }
 
       const shouldDelay = localPubkeyHex.length === 66
-        && localPubkeyHex.slice(2) > endpoint.addr.slice(2);
-      this.autoConnectPeers.add(endpoint.addr);
+        && localPubkeyHex.slice(2) > remotePubkeyHex.slice(2);
+      this.autoConnectPeers.add(remotePubkeyHex);
       if (shouldDelay) await new Promise((resolve) => setTimeout(resolve, 1200));
-      if (!this.ctx || this.conns.has(endpoint.addr)) {
-        this.autoConnectPeers.delete(endpoint.addr);
+      if (!this.ctx || this.conns.has(remotePubkeyHex)) {
+        this.autoConnectPeers.delete(remotePubkeyHex);
         continue;
       }
-      this.discoveryStream?.push({
-        remoteAddr: { transport: this.type, addr: endpoint.addr },
-        publicKey: fromHex(endpoint.addr),
-        meta: { source: "nostr-advert" },
-      });
+      this.discoveryStream?.push(cloneDiscoveredPeer(cached));
     }
+  }
+
+  async resolve(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined> {
+    const nodeAddrHex = nodeAddrToHex(nodeAddr);
+    const cached = this.getCachedAdvert(nodeAddrHex);
+    if (cached) {
+      this.autoConnectPeers.delete(cached.remoteAddr.addr);
+      return cached;
+    }
+    if (!this.ctx || signal?.aborted) return undefined;
+
+    return new Promise<DiscoveredPeer | undefined>((resolve) => {
+      const waiter: AdvertWaiter = {
+        resolve,
+        timer: setTimeout(() => {
+          this.settleAdvertWaiter(nodeAddrHex, waiter, undefined);
+        }, ADVERT_RESOLUTION_TIMEOUT_MS),
+        signal,
+      };
+      if (signal) {
+        waiter.onAbort = () => this.settleAdvertWaiter(nodeAddrHex, waiter, undefined);
+        signal.addEventListener("abort", waiter.onAbort, { once: true });
+      }
+      let waiters = this.advertWaiters.get(nodeAddrHex);
+      if (!waiters) {
+        waiters = new Set();
+        this.advertWaiters.set(nodeAddrHex, waiters);
+      }
+      waiters.add(waiter);
+    });
+  }
+
+  private cacheAdvert(
+    nodeAddrHex: string,
+    peer: DiscoveredPeer,
+    event: NostrEvent,
+  ): DiscoveredPeer | undefined {
+    const nowMs = Date.now();
+    this.pruneAdvertCache(nowMs);
+    const expiresAtMs = advertExpiryMs(
+      event,
+      this.cfg.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS,
+      nowMs,
+    );
+    if (expiresAtMs === undefined || expiresAtMs <= nowMs) return undefined;
+
+    const existing = this.advertCache.get(nodeAddrHex);
+    if (existing && existing.createdAtSeconds > event.created_at) {
+      return cloneDiscoveredPeer(existing.peer);
+    }
+    if (existing) this.advertCache.delete(nodeAddrHex);
+    while (this.advertCache.size >= MAX_ADVERT_CACHE_ENTRIES) {
+      const oldest = this.advertCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.advertCache.delete(oldest);
+    }
+    this.advertCache.set(nodeAddrHex, {
+      peer: cloneDiscoveredPeer(peer),
+      createdAtSeconds: event.created_at,
+      expiresAtMs,
+    });
+    return cloneDiscoveredPeer(peer);
+  }
+
+  private getCachedAdvert(nodeAddrHex: string): DiscoveredPeer | undefined {
+    const cached = this.advertCache.get(nodeAddrHex);
+    if (!cached) return undefined;
+    if (cached.expiresAtMs <= Date.now()) {
+      this.advertCache.delete(nodeAddrHex);
+      return undefined;
+    }
+    this.advertCache.delete(nodeAddrHex);
+    this.advertCache.set(nodeAddrHex, cached);
+    return cloneDiscoveredPeer(cached.peer);
+  }
+
+  private pruneAdvertCache(nowMs: number): void {
+    for (const [nodeAddrHex, cached] of this.advertCache) {
+      if (cached.expiresAtMs <= nowMs) this.advertCache.delete(nodeAddrHex);
+    }
+  }
+
+  private resolveAdvertWaiters(nodeAddrHex: string, peer: DiscoveredPeer): boolean {
+    const waiters = this.advertWaiters.get(nodeAddrHex);
+    if (!waiters || waiters.size === 0) return false;
+    this.autoConnectPeers.delete(peer.remoteAddr.addr);
+    for (const waiter of [...waiters]) {
+      this.settleAdvertWaiter(nodeAddrHex, waiter, cloneDiscoveredPeer(peer));
+    }
+    return true;
+  }
+
+  private settleAdvertWaiter(
+    nodeAddrHex: string,
+    waiter: AdvertWaiter,
+    peer: DiscoveredPeer | undefined,
+  ): void {
+    const waiters = this.advertWaiters.get(nodeAddrHex);
+    if (!waiters?.delete(waiter)) return;
+    if (waiters.size === 0) this.advertWaiters.delete(nodeAddrHex);
+    clearTimeout(waiter.timer);
+    if (waiter.signal && waiter.onAbort) {
+      waiter.signal.removeEventListener("abort", waiter.onAbort);
+    }
+    waiter.resolve(peer);
   }
 
   discover(): AsyncIterable<DiscoveredPeer> {
@@ -543,4 +686,25 @@ class AsyncEventStream<T> implements AsyncIterable<T> {
 
 async function* emptyAsyncIterable<T>(): AsyncIterable<T> {
   return;
+}
+
+function cloneDiscoveredPeer(peer: DiscoveredPeer): DiscoveredPeer {
+  return {
+    remoteAddr: { ...peer.remoteAddr },
+    publicKey: peer.publicKey ? new Uint8Array(peer.publicKey) : undefined,
+    meta: peer.meta ? { ...peer.meta } : undefined,
+  };
+}
+
+function advertExpiryMs(event: NostrEvent, ttlMs: number, nowMs: number): number | undefined {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return undefined;
+  const createdAtMs = event.created_at * 1_000;
+  if (!Number.isSafeInteger(createdAtMs) || createdAtMs < 0) return undefined;
+  const localExpiryMs = Math.min(createdAtMs + ttlMs, nowMs + ttlMs);
+  const expiration = event.tags.find((tag) => tag[0] === "expiration")?.[1];
+  if (expiration === undefined) return localExpiryMs;
+  if (!/^\d+$/.test(expiration)) return undefined;
+  const advertisedExpiryMs = Number(expiration) * 1_000;
+  if (!Number.isSafeInteger(advertisedExpiryMs)) return undefined;
+  return Math.min(localExpiryMs, advertisedExpiryMs);
 }

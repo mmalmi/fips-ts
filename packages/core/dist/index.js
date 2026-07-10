@@ -12,6 +12,7 @@ export { FMP_ESTABLISHED_HEADER_LEN, FMP_INNER_DATA, FMP_INNER_KEEPALIVE, FMP_MS
 export { FmpLink } from "./fmp/link.js";
 export { FSP_ESTABLISHED_HEADER_LEN, FSP_FLAG_CP, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, FSP_FLAG_U, FSP_INNER_HEADER_LEN, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_KEEPALIVE, FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, NOISE_XK_MSG1_LEN, NOISE_XK_MSG2_LEN, NOISE_XK_MSG3_LEN, decodeDataPacket, decodeFspEstablished, decodeFspHandshake, decodeFspInner, encodeDataPacket, encodeFspEstablished, encodeFspEstablishedHeader, encodeFspHandshake, encodeFspInner, isDirectFspEstablished, peekFspPhase, } from "./fsp/wire.js";
 export { FspSession } from "./fsp/session.js";
+export { DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN, DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS, DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN, DirectFspTransportReassembler, isDirectFspTransportFragment, segmentDirectFspTransportRecord, } from "./fsp/directTransport.js";
 export { FORWARD_VERSION, decodeForwardEnvelope, encodeForwardEnvelope, } from "./node/forward.js";
 export { FipsNode } from "./node/FipsNode.js";
 export { noopLogger, transportAddressKey, } from "./transport/types.js";

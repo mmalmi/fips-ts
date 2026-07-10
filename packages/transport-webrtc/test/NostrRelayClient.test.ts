@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { NostrRelayClient, type NostrEvent } from "../src/NostrRelayClient.js";
 
@@ -52,8 +52,17 @@ class FakeWebSocket {
   }
 
   close(): void {
+    if (this.readyState === FakeWebSocket.CLOSED) return;
     this.readyState = FakeWebSocket.CLOSED;
     this.emit("close", {});
+  }
+
+  serverClose(): void {
+    this.close();
+  }
+
+  serverMessage(message: unknown[]): void {
+    this.emit("message", { data: JSON.stringify(message) });
   }
 
   private emit(type: string, event: { data?: string }): void {
@@ -62,6 +71,13 @@ class FakeWebSocket {
     }
   }
 }
+
+beforeEach(() => {
+  FakeWebSocket.accepted = true;
+  FakeWebSocket.message = "";
+  FakeWebSocket.failNextConnect = false;
+  FakeWebSocket.instances = [];
+});
 
 function event(id: string): NostrEvent {
   return {
@@ -77,9 +93,6 @@ function event(id: string): NostrEvent {
 
 describe("NostrRelayClient publish acknowledgements", () => {
   it("resolves after relay OK true", async () => {
-    FakeWebSocket.accepted = true;
-    FakeWebSocket.message = "";
-    FakeWebSocket.instances = [];
     const relay = new NostrRelayClient({
       url: "ws://relay.test",
       webSocket: FakeWebSocket as unknown as typeof WebSocket,
@@ -91,10 +104,7 @@ describe("NostrRelayClient publish acknowledgements", () => {
   });
 
   it("can reconnect after a relay closes before opening", async () => {
-    FakeWebSocket.accepted = true;
-    FakeWebSocket.message = "";
     FakeWebSocket.failNextConnect = true;
-    FakeWebSocket.instances = [];
     const relay = new NostrRelayClient({
       url: "ws://relay.test",
       webSocket: FakeWebSocket as unknown as typeof WebSocket,
@@ -110,12 +120,83 @@ describe("NostrRelayClient publish acknowledgements", () => {
   it("rejects relay OK false", async () => {
     FakeWebSocket.accepted = false;
     FakeWebSocket.message = "blocked: created_at too old";
-    FakeWebSocket.instances = [];
     const relay = new NostrRelayClient({
       url: "ws://relay.test",
       webSocket: FakeWebSocket as unknown as typeof WebSocket,
     });
 
     await expect(relay.publish(event("reject"))).rejects.toThrow("created_at too old");
+  });
+});
+
+describe("NostrRelayClient subscription lifecycle", () => {
+  it("replays active subscriptions once in insertion order after reconnect", async () => {
+    const relay = new NostrRelayClient({
+      url: "ws://relay.test",
+      webSocket: FakeWebSocket as unknown as typeof WebSocket,
+    });
+    const firstFilter = { kinds: [21059], "#p": ["aa"] };
+    const secondFilter = { authors: ["bb"], since: 10 };
+    const onEose = (): void => undefined;
+
+    await relay.subscribe(firstFilter, { onEvent: () => undefined, onEose });
+    await relay.subscribe(secondFilter, { onEvent: () => undefined });
+    const firstSocket = FakeWebSocket.instances[0]!;
+
+    expect(firstSocket.sent.map((message) => JSON.parse(message))).toEqual([
+      ["REQ", "s1", firstFilter],
+      ["REQ", "s2", secondFilter],
+    ]);
+
+    firstFilter.kinds = [1];
+    firstSocket.serverMessage(["EOSE", "s1"]);
+    firstSocket.serverClose();
+    await relay.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(FakeWebSocket.instances[1]!.sent).toEqual(firstSocket.sent);
+  });
+
+  it("does not replay a subscription retired by relay CLOSED", async () => {
+    const relay = new NostrRelayClient({
+      url: "ws://relay.test",
+      webSocket: FakeWebSocket as unknown as typeof WebSocket,
+    });
+    const unsubscribe = await relay.subscribe(
+      { kinds: [21059] },
+      { onEvent: () => undefined },
+    );
+    const firstSocket = FakeWebSocket.instances[0]!;
+
+    firstSocket.serverMessage(["CLOSED", "s1", "rate-limited"]);
+    unsubscribe();
+    firstSocket.serverClose();
+    await relay.connect();
+
+    expect(firstSocket.sent.map((message) => JSON.parse(message))).toEqual([
+      ["REQ", "s1", { kinds: [21059] }],
+    ]);
+    expect(FakeWebSocket.instances[1]!.sent).toEqual([]);
+  });
+
+  it("does not replay subscriptions after explicit client close", async () => {
+    const relay = new NostrRelayClient({
+      url: "ws://relay.test",
+      webSocket: FakeWebSocket as unknown as typeof WebSocket,
+    });
+    const unsubscribe = await relay.subscribe(
+      { kinds: [21059] },
+      { onEvent: () => undefined },
+    );
+    const firstSocket = FakeWebSocket.instances[0]!;
+
+    relay.close();
+    await relay.connect();
+    unsubscribe();
+
+    expect(firstSocket.sent.map((message) => JSON.parse(message))).toEqual([
+      ["REQ", "s1", { kinds: [21059] }],
+    ]);
+    expect(FakeWebSocket.instances[1]!.sent).toEqual([]);
   });
 });

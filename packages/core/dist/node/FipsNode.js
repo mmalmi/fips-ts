@@ -1,9 +1,10 @@
 import { randomBytes } from "@noble/hashes/utils";
 import { bytesEqual, toHex } from "../codec/hex.js";
 import { FmpLink } from "../fmp/link.js";
+import { DirectFspTransportReassembler, isDirectFspTransportFragment, segmentDirectFspTransportRecord, } from "../fsp/directTransport.js";
 import { FspSession } from "../fsp/session.js";
 import { FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
-import { FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_PHASE_ESTABLISHED, isDirectFspEstablished, peekFspPhase, } from "../fsp/wire.js";
+import { FSP_FLAG_DIRECT_TRANSPORT, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_PHASE_ESTABLISHED, isDirectFspEstablished, peekFspPhase, } from "../fsp/wire.js";
 import { compressedPubkeyFromXOnly, } from "../identity/index.js";
 import { deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
 import { decodeSessionDatagramPayload, encodeSessionDatagram, LinkMessageType, } from "../protocol/link.js";
@@ -16,6 +17,10 @@ function nextSessionIdx() {
 const defaultRandom = { bytes: (n) => randomBytes(n) };
 const FMP_HANDSHAKE_TIMEOUT_MS = 15_000;
 const FMP_HANDSHAKE_RESEND_MS = 1_000;
+const FMP_HEARTBEAT_INTERVAL_MS = 5_000;
+const FSP_DEFAULT_PATH_MTU = 1_200;
+const ROUTE_RESOLUTION_TIMEOUT_MS = 5_000;
+const MAX_PENDING_ROUTE_RESOLUTIONS = 64;
 export class FipsNode {
     identity;
     forwarding;
@@ -28,11 +33,14 @@ export class FipsNode {
     peersByPubkey = new Map(); // by pubkey hex
     peersByNodeAddr = new Map(); // by NodeAddr hex
     pendingPeerConnects = new Map(); // by transportAddressKey
+    pendingRouteResolutions = new Map(); // by NodeAddr hex
     sessions = new Map(); // by remote NodeAddr hex
     listeners = new Map();
     discoveryTasks = new Set();
     discoveryConnectTasks = new Set();
     discoveryGeneration = 0;
+    heartbeatTimer;
+    directFspReassembler = new DirectFspTransportReassembler();
     started = false;
     constructor(cfg) {
         this.identity = cfg.identity;
@@ -75,6 +83,9 @@ export class FipsNode {
             throw err;
         }
         this.started = true;
+        this.heartbeatTimer = setInterval(() => {
+            void this.sendHeartbeats();
+        }, FMP_HEARTBEAT_INTERVAL_MS);
         const generation = ++this.discoveryGeneration;
         for (const transport of this.transports) {
             if (!transport.discover)
@@ -88,9 +99,15 @@ export class FipsNode {
         if (!this.started)
             return;
         this.started = false;
+        if (this.heartbeatTimer)
+            clearInterval(this.heartbeatTimer);
+        this.heartbeatTimer = undefined;
         this.discoveryGeneration++;
         for (const peer of this.peers.values()) {
             peer.outgoingHandshake?.reject(new Error("FIPS node stopped"));
+        }
+        for (const pending of this.pendingRouteResolutions.values()) {
+            pending.abort.abort();
         }
         for (const t of this.transports) {
             try {
@@ -108,7 +125,9 @@ export class FipsNode {
         this.peersByPubkey.clear();
         this.peersByNodeAddr.clear();
         this.pendingPeerConnects.clear();
+        this.pendingRouteResolutions.clear();
         this.sessions.clear();
+        this.directFspReassembler.clear();
     }
     async consumeDiscovery(transport, generation) {
         try {
@@ -242,18 +261,26 @@ export class FipsNode {
     /** Send a service datagram to a target identity (adjacent or routable). */
     async sendDatagram(args) {
         const session = await this.ensureSession(args.dst);
+        const directPeer = this.directPeerForSession(session);
         const fspFrame = session.fsp.encryptDatagram({
             srcPort: args.srcPort ?? 0,
             dstPort: args.dstPort,
             payload: args.payload,
-        });
-        await this.sendFspToward(session.remoteNodeAddr, fspFrame);
+        }, directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0);
+        if (directPeer)
+            await this.sendDirectFsp(directPeer, fspFrame);
+        else
+            await this.sendFspToward(session.remoteNodeAddr, fspFrame);
     }
     /** Send app-owned endpoint bytes to a target identity without service ports. */
     async sendEndpointData(args) {
         const session = await this.ensureSession(args.dst);
-        const fspFrame = session.fsp.encryptEndpointData(args.payload);
-        await this.sendFspToward(session.remoteNodeAddr, fspFrame);
+        const directPeer = this.directPeerForSession(session);
+        const fspFrame = session.fsp.encryptEndpointData(args.payload, directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0);
+        if (directPeer)
+            await this.sendDirectFsp(directPeer, fspFrame);
+        else
+            await this.sendFspToward(session.remoteNodeAddr, fspFrame);
     }
     on(event, cb) {
         let set = this.listeners.get(event);
@@ -310,19 +337,29 @@ export class FipsNode {
     }
     onTransportPacket(transport, p) {
         try {
-            const phase = peekFmpPhase(p.data);
-            this.logger.debug("fips packet received", p.remoteAddr.transport, p.remoteAddr.addr, p.data.length, phase);
             const key = transportAddressKey(p.remoteAddr);
             let peer = this.peers.get(key);
-            if (isDirectFspEstablished(p.data)) {
+            let packet = p.data;
+            if (isDirectFspTransportFragment(packet)) {
+                if (!peer || peer.link.state !== "established" || peer.pubkey.length === 0) {
+                    throw new Error("direct FSP fragment before adjacent link handshake complete");
+                }
+                const reassembled = this.directFspReassembler.ingest(key, packet, p.receivedAtMs);
+                if (!reassembled)
+                    return;
+                packet = reassembled;
+            }
+            if (isDirectFspEstablished(packet)) {
                 if (!peer || peer.link.state !== "established" || peer.pubkey.length === 0) {
                     throw new Error("direct FSP before adjacent link handshake complete");
                 }
-                void this.handleFspFromPeer(peer, deriveNodeAddr(peer.pubkey), p.data).catch((err) => {
+                void this.handleFspFromPeer(peer, deriveNodeAddr(peer.pubkey), packet).catch((err) => {
                     this.emit("error", { err: err, where: "direct-fsp" });
                 });
                 return;
             }
+            const phase = peekFmpPhase(packet);
+            this.logger.debug("fips packet received", p.remoteAddr.transport, p.remoteAddr.addr, packet.length, phase);
             switch (phase) {
                 case FMP_PHASE_MSG1: {
                     // Responder side: create link if absent.
@@ -341,7 +378,8 @@ export class FipsNode {
                         };
                         this.peers.set(key, peer);
                     }
-                    const result = peer.link.handleMsg1(p.data, (n) => this.random.bytes(n));
+                    const wasEstablished = peer.link.state === "established";
+                    const result = peer.link.handleMsg1(packet, (n) => this.random.bytes(n));
                     peer.pubkey = result.remotePubkey;
                     peer.pubkeyHex = toHex(result.remotePubkey);
                     this.rememberPeer(peer);
@@ -351,27 +389,32 @@ export class FipsNode {
                         });
                         this.logger.debug("fips msg2 sent", p.remoteAddr.transport, p.remoteAddr.addr, result.reply.length);
                     }
-                    this.emit("peer", {
-                        remotePubkey: peer.pubkeyHex,
-                        remoteAddr: peer.remoteAddr,
-                        state: "connected",
-                    });
+                    if (!wasEstablished) {
+                        this.emit("peer", {
+                            remotePubkey: peer.pubkeyHex,
+                            remoteAddr: peer.remoteAddr,
+                            state: "connected",
+                        });
+                    }
                     break;
                 }
                 case FMP_PHASE_MSG2: {
                     if (!peer)
                         throw new Error("FMP Msg2 with no peer state");
-                    peer.link.handleMsg2(p.data);
+                    const wasEstablished = peer.link.state === "established";
+                    peer.link.handleMsg2(packet);
                     peer.pubkey = peer.link.remotePubkey;
                     peer.pubkeyHex = toHex(peer.link.remotePubkey);
                     this.rememberPeer(peer);
-                    this.emit("peer", {
-                        remotePubkey: peer.pubkeyHex,
-                        remoteAddr: peer.remoteAddr,
-                        state: "connected",
-                    });
-                    peer.outgoingHandshake?.resolve();
-                    peer.outgoingHandshake = undefined;
+                    if (!wasEstablished) {
+                        this.emit("peer", {
+                            remotePubkey: peer.pubkeyHex,
+                            remoteAddr: peer.remoteAddr,
+                            state: "connected",
+                        });
+                        peer.outgoingHandshake?.resolve();
+                        peer.outgoingHandshake = undefined;
+                    }
                     this.logger.debug("fips msg2 handled", p.remoteAddr.transport, p.remoteAddr.addr);
                     break;
                 }
@@ -379,7 +422,7 @@ export class FipsNode {
                     if (!peer || peer.link.state !== "established") {
                         throw new Error("FMP Established before handshake complete");
                     }
-                    const { msgType, payload } = peer.link.decryptIncoming(p.data);
+                    const { msgType, payload } = peer.link.decryptIncoming(packet);
                     this.routeIncomingLinkMessage(peer, msgType, payload).catch((err) => {
                         this.emit("error", { err: err, where: "link-message" });
                     });
@@ -418,6 +461,18 @@ export class FipsNode {
             ...datagram,
             ttl: datagram.ttl - 1,
         });
+    }
+    async sendHeartbeats() {
+        const peers = [...this.peers.values()].filter((peer) => peer.link.state === "established");
+        await Promise.allSettled(peers.map(async (peer) => {
+            const frame = peer.link.encryptOutgoing(new Uint8Array(0), LinkMessageType.Heartbeat);
+            try {
+                await peer.transport.send(peer.remoteAddr, frame);
+            }
+            catch (err) {
+                this.emit("error", { err: err, where: "send Heartbeat" });
+            }
+        }));
     }
     async handleFspFromPeer(_peer, srcNodeAddr, fspFrame) {
         const phase = peekFspPhase(fspFrame);
@@ -520,12 +575,20 @@ export class FipsNode {
         this.sessions.set(remoteNodeHex, session);
         this.emit("session", { remotePubkey: remotePubkeyHex, state: "establishing" });
         const msg1 = fsp.buildSessionSetup((n) => this.random.bytes(n), this.identity.nodeAddr, remoteNodeAddr);
-        await this.sendFspToward(remoteNodeAddr, msg1);
-        await new Promise((resolve, reject) => {
+        let timer;
+        const setupDone = new Promise((resolve, reject) => {
             session.setupResolve = resolve;
             session.setupReject = reject;
-            setTimeout(() => reject(new Error("FSP handshake timeout")), 15_000);
+            timer = setTimeout(() => reject(new Error("FSP handshake timeout")), 15_000);
         });
+        try {
+            await this.sendFspToward(remoteNodeAddr, msg1);
+            await setupDone;
+        }
+        finally {
+            if (timer)
+                clearTimeout(timer);
+        }
         return session;
     }
     /**
@@ -534,31 +597,107 @@ export class FipsNode {
     async sendFspToward(remoteNodeAddr, fspFrame) {
         await this.sendSessionDatagram({
             ttl: 64,
-            pathMtu: 1200,
+            pathMtu: FSP_DEFAULT_PATH_MTU,
             srcAddr: this.identity.nodeAddr,
             destAddr: remoteNodeAddr,
             payload: fspFrame,
         });
     }
+    directPeerForSession(session) {
+        const peer = this.peersByNodeAddr.get(nodeAddrToHex(session.remoteNodeAddr));
+        return peer?.link.state === "established" ? peer : undefined;
+    }
+    async sendDirectFsp(peer, fspFrame) {
+        const pathMtu = Math.min(peer.transport.mtu, FSP_DEFAULT_PATH_MTU);
+        const packets = segmentDirectFspTransportRecord(fspFrame, pathMtu);
+        for (const packet of packets) {
+            await peer.transport.send(peer.remoteAddr, packet);
+        }
+    }
     async sendSessionDatagram(datagram) {
         const destNodeHex = nodeAddrToHex(datagram.destAddr);
-        const direct = this.peersByNodeAddr.get(destNodeHex);
-        if (direct && direct.link.state === "established") {
-            const encoded = encodeSessionDatagram(datagram);
-            const outer = direct.link.encryptOutgoing(encoded.subarray(1), LinkMessageType.SessionDatagram);
-            await direct.transport.send(direct.remoteAddr, outer);
-            return;
+        let nextHop = this.nextHopFor(destNodeHex);
+        if (!nextHop) {
+            await this.resolveRoute(datagram.destAddr, destNodeHex);
+            nextHop = this.nextHopFor(destNodeHex);
         }
+        if (!nextHop)
+            throw new Error(`no route to ${destNodeHex}`);
+        const encoded = encodeSessionDatagram(datagram);
+        const outer = nextHop.link.encryptOutgoing(encoded.subarray(1), LinkMessageType.SessionDatagram);
+        await nextHop.transport.send(nextHop.remoteAddr, outer);
+    }
+    nextHopFor(destNodeHex) {
+        const direct = this.peersByNodeAddr.get(destNodeHex);
+        if (direct?.link.state === "established")
+            return direct;
         const defaultPeer = this.defaultRoute
             ? this.peersByPubkey.get(this.defaultRoute)
             : undefined;
-        if (defaultPeer?.link.state === "established") {
-            const encoded = encodeSessionDatagram(datagram);
-            const outer = defaultPeer.link.encryptOutgoing(encoded.subarray(1), LinkMessageType.SessionDatagram);
-            await defaultPeer.transport.send(defaultPeer.remoteAddr, outer);
+        return defaultPeer?.link.state === "established" ? defaultPeer : undefined;
+    }
+    async resolveRoute(destNodeAddr, destNodeHex) {
+        const existing = this.pendingRouteResolutions.get(destNodeHex);
+        if (existing) {
+            await existing.promise;
             return;
         }
-        throw new Error(`no route to ${destNodeHex}`);
+        if (this.pendingRouteResolutions.size >= MAX_PENDING_ROUTE_RESOLUTIONS) {
+            throw new Error(`route resolution capacity exceeded for ${destNodeHex}`);
+        }
+        const abort = new AbortController();
+        const promise = this.resolveAndConnectRoute(destNodeAddr, destNodeHex, abort);
+        this.pendingRouteResolutions.set(destNodeHex, { promise, abort });
+        try {
+            await promise;
+        }
+        finally {
+            if (this.pendingRouteResolutions.get(destNodeHex)?.promise === promise) {
+                this.pendingRouteResolutions.delete(destNodeHex);
+            }
+        }
+    }
+    async resolveAndConnectRoute(destNodeAddr, destNodeHex, abort) {
+        const resolvers = this.transports.filter((transport) => transport.resolve !== undefined);
+        if (resolvers.length === 0)
+            throw new Error(`no route to ${destNodeHex}`);
+        const resolutionTasks = resolvers.map(async (transport) => {
+            const discovered = await transport.resolve(destNodeAddr, abort.signal);
+            if (!discovered)
+                throw new Error("transport did not resolve destination");
+            if (discovered.remoteAddr.transport !== transport.type) {
+                throw new Error("resolved address transport mismatch");
+            }
+            const remotePubkey = discoveryPublicKey(discovered);
+            if (!bytesEqual(deriveNodeAddr(remotePubkey), destNodeAddr)) {
+                throw new Error("resolved identity does not match destination NodeAddr");
+            }
+            return { transport, remoteAddr: discovered.remoteAddr, remotePubkey };
+        });
+        const noRoute = () => new Error(`no route to ${destNodeHex}`);
+        const candidate = Promise.any(resolutionTasks).catch(() => {
+            throw noRoute();
+        });
+        let timeout;
+        let onAbort;
+        const boundary = new Promise((_resolve, reject) => {
+            onAbort = () => reject(this.started ? noRoute() : new Error("FIPS node stopped"));
+            abort.signal.addEventListener("abort", onAbort, { once: true });
+            timeout = setTimeout(() => abort.abort(), ROUTE_RESOLUTION_TIMEOUT_MS);
+        });
+        let resolved;
+        try {
+            resolved = await Promise.race([candidate, boundary]);
+        }
+        finally {
+            if (timeout)
+                clearTimeout(timeout);
+            if (onAbort)
+                abort.signal.removeEventListener("abort", onAbort);
+            if (!abort.signal.aborted)
+                abort.abort();
+        }
+        await this.connectKnownPeer(resolved.transport, resolved.remoteAddr, resolved.remotePubkey);
     }
 }
 function discoveryPublicKey(discovered) {

@@ -1,7 +1,7 @@
 /**
  * Tiny harness around the `fips-rust-bridge` Cargo binary.
  *
- * The bridge runs a Noise responder (IK or XK) using the Rust FIPS
+ * The bridge runs one side of an interop exchange using the Rust FIPS
  * implementation and exchanges 4-byte-big-endian-length-prefixed frames over
  * stdin/stdout. This module spawns it and exposes a Promise-shaped frame
  * reader/writer.
@@ -11,9 +11,15 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
+const REPO_ROOT = resolve(__dirname, "../../../..");
+const BRIDGE_DIR = resolve(REPO_ROOT, "interop/rust-bridge");
+const BRIDGE_TARGET_DIR = process.env.CARGO_TARGET_DIR
+  ? resolve(REPO_ROOT, process.env.CARGO_TARGET_DIR)
+  : resolve(BRIDGE_DIR, "target");
 const BRIDGE_BIN = resolve(
-  __dirname,
-  "../../../../interop/rust-bridge/target/release/fips-rust-bridge",
+  BRIDGE_TARGET_DIR,
+  "release",
+  `fips-rust-bridge${process.platform === "win32" ? ".exe" : ""}`,
 );
 
 export function bridgeAvailable(): boolean {
@@ -31,13 +37,16 @@ interface PendingRead {
   reject: (err: Error) => void;
 }
 
-export function spawnBridge(mode: "ik" | "xk" | "fmp", responderSkHex: string): BridgeSession {
+export function spawnBridge(
+  mode: "ik" | "xk" | "fmp" | "fsp-initiator",
+  staticSkHex: string,
+): BridgeSession {
   if (!bridgeAvailable()) {
     throw new Error(
       `bridge binary not built at ${BRIDGE_BIN}; run \`cargo build --release --manifest-path interop/rust-bridge/Cargo.toml\``,
     );
   }
-  const proc = spawn(BRIDGE_BIN, [mode, responderSkHex], {
+  const proc = spawn(BRIDGE_BIN, [mode, staticSkHex], {
     stdio: ["pipe", "pipe", "pipe"],
   });
   const stderr: Buffer[] = [];

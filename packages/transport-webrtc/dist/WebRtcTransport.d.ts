@@ -1,4 +1,4 @@
-import { type DiscoveredPeer, type Logger, type Transport, type TransportAddress, type TransportContext } from "@fips/core";
+import { type DiscoveredPeer, type Logger, type NodeAddr, type Transport, type TransportAddress, type TransportContext } from "@fips/core";
 import { NostrRelayClient } from "./NostrRelayClient.js";
 export interface WebRtcTransportConfig {
     relays: string[];
@@ -38,12 +38,20 @@ export declare class WebRtcTransport implements Transport {
     private readonly autoConnectPeers;
     private readonly knownSessionIds;
     private readonly seenSessionIds;
+    private readonly advertCache;
+    private readonly advertWaiters;
     private discoveryStream?;
     private advertCleanup?;
     constructor(config: WebRtcTransportConfig);
     start(ctx: TransportContext): Promise<void>;
     stop(): Promise<void>;
     private handleAdvert;
+    resolve(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined>;
+    private cacheAdvert;
+    private getCachedAdvert;
+    private pruneAdvertCache;
+    private resolveAdvertWaiters;
+    private settleAdvertWaiter;
     discover(): AsyncIterable<DiscoveredPeer>;
     connect(addr: TransportAddress): Promise<void>;
     send(addr: TransportAddress, packet: Uint8Array): Promise<void>;

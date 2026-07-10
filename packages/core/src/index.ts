@@ -173,6 +173,14 @@ export {
 } from "./fsp/wire.js";
 
 export { FspSession } from "./fsp/session.js";
+export {
+  DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN,
+  DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS,
+  DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN,
+  DirectFspTransportReassembler,
+  isDirectFspTransportFragment,
+  segmentDirectFspTransportRecord,
+} from "./fsp/directTransport.js";
 
 export {
   FORWARD_VERSION,

@@ -1,10 +1,10 @@
 //! FIPS Rust ↔ TypeScript interop bridge.
 //!
-//! Runs a Noise IK or XK responder using the Rust FIPS implementation,
+//! Runs one side of a Noise/FSP exchange using the Rust FIPS implementation,
 //! exchanging framed bytes over stdin/stdout with the TS test on the other
-//! side. If the handshake and a transport-message round-trip succeed,
-//! interop is proven for: secp256k1 ECDH (SHA-256 of x-coord),
-//! Noise IK/XK over secp256k1+ChaChaPoly+SHA256, and the AEAD/KDF chain.
+//! side. If the handshake and a transport-message round-trip succeed, interop
+//! is proven for secp256k1 ECDH (SHA-256 of x-coord), Noise IK/XK over
+//! secp256k1+ChaChaPoly+SHA256, and the AEAD/KDF chain.
 //!
 //! Frame format: 4-byte big-endian length, then payload bytes.
 
@@ -17,6 +17,8 @@ use fips_core::noise::HandshakeState;
 use fips_core::protocol::FilterAnnounce;
 use fips_identity::Identity;
 use secp256k1::SecretKey;
+
+mod fsp_initiator;
 
 fn read_frame<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
@@ -35,10 +37,10 @@ fn write_frame<W: Write>(w: &mut W, data: &[u8]) -> io::Result<()> {
 }
 
 fn run_ik(static_sk_hex: &str) -> io::Result<()> {
-    let sk_bytes = hex::decode(static_sk_hex)
-        .map_err(|e| io::Error::other(format!("bad hex: {e}")))?;
-    let sk = SecretKey::from_slice(&sk_bytes)
-        .map_err(|e| io::Error::other(format!("bad sk: {e}")))?;
+    let sk_bytes =
+        hex::decode(static_sk_hex).map_err(|e| io::Error::other(format!("bad hex: {e}")))?;
+    let sk =
+        SecretKey::from_slice(&sk_bytes).map_err(|e| io::Error::other(format!("bad sk: {e}")))?;
     let identity = Identity::from_secret_key(sk);
     let kp = identity.keypair();
     let pubkey = kp.public_key();
@@ -90,10 +92,10 @@ fn run_ik(static_sk_hex: &str) -> io::Result<()> {
 }
 
 fn run_xk(static_sk_hex: &str) -> io::Result<()> {
-    let sk_bytes = hex::decode(static_sk_hex)
-        .map_err(|e| io::Error::other(format!("bad hex: {e}")))?;
-    let sk = SecretKey::from_slice(&sk_bytes)
-        .map_err(|e| io::Error::other(format!("bad sk: {e}")))?;
+    let sk_bytes =
+        hex::decode(static_sk_hex).map_err(|e| io::Error::other(format!("bad hex: {e}")))?;
+    let sk =
+        SecretKey::from_slice(&sk_bytes).map_err(|e| io::Error::other(format!("bad sk: {e}")))?;
     let identity = Identity::from_secret_key(sk);
     let kp = identity.keypair();
     let pubkey = kp.public_key();
@@ -199,10 +201,10 @@ fn build_fmp_established(
 /// decrypted inner plaintext for inspection, then sends one encrypted Rust
 /// established packet back.
 fn run_fmp(static_sk_hex: &str) -> io::Result<()> {
-    let sk_bytes = hex::decode(static_sk_hex)
-        .map_err(|e| io::Error::other(format!("bad hex: {e}")))?;
-    let sk = SecretKey::from_slice(&sk_bytes)
-        .map_err(|e| io::Error::other(format!("bad sk: {e}")))?;
+    let sk_bytes =
+        hex::decode(static_sk_hex).map_err(|e| io::Error::other(format!("bad hex: {e}")))?;
+    let sk =
+        SecretKey::from_slice(&sk_bytes).map_err(|e| io::Error::other(format!("bad sk: {e}")))?;
     let identity = Identity::from_secret_key(sk);
     let kp = identity.keypair();
     let pubkey = kp.public_key();
@@ -296,7 +298,9 @@ fn run_fmp(static_sk_hex: &str) -> io::Result<()> {
 /// on a single stdout line (no framing).
 fn run_bloom(args: &[String]) -> io::Result<()> {
     if args.len() < 2 {
-        return Err(io::Error::other("usage: bloom <numBits> <hashCount> [key-hex ...]"));
+        return Err(io::Error::other(
+            "usage: bloom <numBits> <hashCount> [key-hex ...]",
+        ));
     }
     let num_bits: usize = args[0]
         .parse()
@@ -307,8 +311,7 @@ fn run_bloom(args: &[String]) -> io::Result<()> {
     let mut f = BloomFilter::with_params(num_bits, hash_count)
         .map_err(|e| io::Error::other(format!("bloom init: {e:?}")))?;
     for key in &args[2..] {
-        let bytes =
-            hex::decode(key).map_err(|e| io::Error::other(format!("bad key hex: {e}")))?;
+        let bytes = hex::decode(key).map_err(|e| io::Error::other(format!("bad key hex: {e}")))?;
         f.insert_bytes(&bytes);
     }
     println!("{}", hex::encode(f.as_bytes()));
@@ -320,15 +323,16 @@ fn run_bloom(args: &[String]) -> io::Result<()> {
 /// wire bytes as hex on stdout.
 fn run_filter_announce(args: &[String]) -> io::Result<()> {
     if args.is_empty() {
-        return Err(io::Error::other("usage: filter-announce <sequence> [key-hex ...]"));
+        return Err(io::Error::other(
+            "usage: filter-announce <sequence> [key-hex ...]",
+        ));
     }
     let sequence: u64 = args[0]
         .parse()
         .map_err(|e| io::Error::other(format!("bad sequence: {e}")))?;
     let mut f = BloomFilter::new();
     for key in &args[1..] {
-        let bytes =
-            hex::decode(key).map_err(|e| io::Error::other(format!("bad key hex: {e}")))?;
+        let bytes = hex::decode(key).map_err(|e| io::Error::other(format!("bad key hex: {e}")))?;
         f.insert_bytes(&bytes);
     }
     let fa = FilterAnnounce::new(f, sequence);
@@ -343,6 +347,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("usage: fips-rust-bridge <ik|xk|fmp> <responder-sk-hex>");
+        eprintln!("       fips-rust-bridge fsp-initiator <initiator-sk-hex>");
         eprintln!("       fips-rust-bridge bloom <numBits> <hashCount> [key-hex ...]");
         process::exit(2);
     }
@@ -369,10 +374,19 @@ fn main() {
             }
             run_fmp(&args[2])
         }
+        "fsp-initiator" => {
+            if args.len() != 3 {
+                eprintln!("usage: fips-rust-bridge fsp-initiator <initiator-sk-hex>");
+                process::exit(2);
+            }
+            fsp_initiator::run(&args[2])
+        }
         "bloom" => run_bloom(&args[2..]),
         "filter-announce" => run_filter_announce(&args[2..]),
         _ => {
-            eprintln!("unknown mode {mode}; want 'ik' | 'xk' | 'fmp' | 'bloom' | 'filter-announce'");
+            eprintln!(
+                "unknown mode {mode}; want 'ik' | 'xk' | 'fmp' | 'fsp-initiator' | 'bloom' | 'filter-announce'"
+            );
             process::exit(2);
         }
     };

@@ -9,7 +9,7 @@ import { noiseNonce } from "../crypto/aead.js";
 import { ReplayWindow } from "../crypto/replay.js";
 import { NoiseHandshake } from "../noise/index.js";
 import { decodeSessionAck, decodeSessionMsg3, decodeSessionSetup, encodeSessionAck, encodeSessionMsg3, encodeSessionSetup, } from "../protocol/session.js";
-import { decodeDataPacket, decodeFspEstablished, decodeFspHandshake, decodeFspInner, encodeDataPacket, encodeFspEstablished, encodeFspEstablishedHeader, encodeFspHandshake, encodeFspInner, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_KEEPALIVE, NOISE_XK_MSG1_LEN, NOISE_XK_MSG2_LEN, NOISE_XK_MSG3_LEN, } from "./wire.js";
+import { decodeDataPacket, decodeFspEstablished, decodeFspHandshake, decodeFspInner, encodeDataPacket, encodeFspEstablished, encodeFspEstablishedHeader, encodeFspHandshake, encodeFspInner, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_KEEPALIVE, FSP_FLAG_DIRECT_TRANSPORT, NOISE_XK_MSG1_LEN, NOISE_XK_MSG2_LEN, NOISE_XK_MSG3_LEN, } from "./wire.js";
 const EPOCH_LEN = 8;
 function epoch() {
     return new Uint8Array(EPOCH_LEN);
@@ -194,7 +194,7 @@ export class FspSession {
         this.state = "established";
         this.hs = undefined;
     }
-    encryptDatagram(data) {
+    encryptDatagram(data, flags = 0) {
         if (this.state !== "established" || !this.tx)
             throw new Error("FSP not established");
         const counter = this.txCounter++;
@@ -204,11 +204,12 @@ export class FspSession {
             innerFlags: 0,
             payload: encodeDataPacket(data),
         });
-        const aad = encodeFspEstablishedHeader({ flags: 0, counter }, inner.length);
+        validateEstablishedFlags(flags);
+        const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
         const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-        return encodeFspEstablished({ flags: 0, counter, payloadLen: inner.length, ciphertext });
+        return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
     }
-    encryptEndpointData(payload) {
+    encryptEndpointData(payload, flags = 0) {
         if (this.state !== "established" || !this.tx)
             throw new Error("FSP not established");
         const counter = this.txCounter++;
@@ -218,11 +219,12 @@ export class FspSession {
             innerFlags: 0,
             payload,
         });
-        const aad = encodeFspEstablishedHeader({ flags: 0, counter }, inner.length);
+        validateEstablishedFlags(flags);
+        const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
         const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-        return encodeFspEstablished({ flags: 0, counter, payloadLen: inner.length, ciphertext });
+        return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
     }
-    encryptKeepalive() {
+    encryptKeepalive(flags = 0) {
         if (this.state !== "established" || !this.tx)
             throw new Error("FSP not established");
         const counter = this.txCounter++;
@@ -232,9 +234,10 @@ export class FspSession {
             innerFlags: 0,
             payload: new Uint8Array(0),
         });
-        const aad = encodeFspEstablishedHeader({ flags: 0, counter }, inner.length);
+        validateEstablishedFlags(flags);
+        const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
         const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-        return encodeFspEstablished({ flags: 0, counter, payloadLen: inner.length, ciphertext });
+        return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
     }
     decryptIncoming(packet) {
         if (this.state !== "established" || !this.rx)
@@ -253,6 +256,14 @@ export class FspSession {
             return { msgType: inner.msgType, endpointData: inner.payload };
         }
         return { msgType: inner.msgType };
+    }
+}
+function validateEstablishedFlags(flags) {
+    if (!Number.isInteger(flags) || flags < 0 || flags > 0xff) {
+        throw new Error("FSP flags must be one byte");
+    }
+    if ((flags & ~FSP_FLAG_DIRECT_TRANSPORT) !== 0) {
+        throw new Error("unsupported FSP established flags");
     }
 }
 //# sourceMappingURL=session.js.map

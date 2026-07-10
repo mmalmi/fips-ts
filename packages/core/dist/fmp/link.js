@@ -31,6 +31,8 @@ export class FmpLink {
     hs;
     tx;
     rx;
+    establishedMsg1;
+    establishedMsg2;
     txCounter = 0n;
     rxReplay = new ReplayWindow();
     state = "init";
@@ -69,6 +71,19 @@ export class FmpLink {
     handleMsg1(packet, _rand) {
         if (this.role !== "responder")
             throw new Error("only responder handles Msg1");
+        if (this.state === "established") {
+            if (this.establishedMsg1
+                && this.establishedMsg2
+                && bytesEqual(packet, this.establishedMsg1)
+                && this.remotePubkey) {
+                return {
+                    reply: new Uint8Array(this.establishedMsg2),
+                    established: true,
+                    remotePubkey: this.remotePubkey,
+                };
+            }
+            throw new Error("unexpected FMP Msg1 after establishment");
+        }
         if (!this.hs)
             throw new Error("noise handshake state missing");
         const msg1 = decodeFmpMsg1(packet);
@@ -90,12 +105,20 @@ export class FmpLink {
             receiverIdx: msg1.senderIdx,
             noiseMsg2,
         });
+        this.establishedMsg1 = new Uint8Array(packet);
+        this.establishedMsg2 = new Uint8Array(reply);
         this.finalize();
         return { reply, established: true, remotePubkey: rs };
     }
     handleMsg2(packet) {
         if (this.role !== "initiator")
             throw new Error("only initiator handles Msg2");
+        if (this.state === "established") {
+            if (this.establishedMsg2 && bytesEqual(packet, this.establishedMsg2)) {
+                return { established: true, remotePubkey: this.remotePubkey };
+            }
+            throw new Error("unexpected FMP Msg2 after establishment");
+        }
         if (!this.hs)
             throw new Error("noise handshake state missing");
         const msg2 = decodeFmpMsg2(packet);
@@ -107,6 +130,7 @@ export class FmpLink {
             throw new Error("noise IK msg2 inner payload must be 8 bytes");
         }
         this.remoteSessionIdx = msg2.senderIdx;
+        this.establishedMsg2 = new Uint8Array(packet);
         this.finalize();
         return { established: true, remotePubkey: this.remotePubkey };
     }

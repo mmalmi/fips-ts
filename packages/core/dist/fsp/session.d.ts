@@ -34,9 +34,9 @@ export declare class FspSession {
     handleMsg3(packet: Uint8Array): void;
     handleSessionMsg3(packet: Uint8Array): void;
     private finalize;
-    encryptDatagram(data: DataPacket): Uint8Array;
-    encryptEndpointData(payload: Uint8Array): Uint8Array;
-    encryptKeepalive(): Uint8Array;
+    encryptDatagram(data: DataPacket, flags?: number): Uint8Array;
+    encryptEndpointData(payload: Uint8Array, flags?: number): Uint8Array;
+    encryptKeepalive(flags?: number): Uint8Array;
     decryptIncoming(packet: Uint8Array): {
         msgType: number;
         data?: DataPacket;

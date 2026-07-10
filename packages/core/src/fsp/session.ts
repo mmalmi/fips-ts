@@ -34,6 +34,7 @@ import {
   FSP_MSG_DATA,
   FSP_MSG_ENDPOINT_DATA,
   FSP_MSG_KEEPALIVE,
+  FSP_FLAG_DIRECT_TRANSPORT,
   NOISE_XK_MSG1_LEN,
   NOISE_XK_MSG2_LEN,
   NOISE_XK_MSG3_LEN,
@@ -221,7 +222,7 @@ export class FspSession {
     this.hs = undefined;
   }
 
-  encryptDatagram(data: DataPacket): Uint8Array {
+  encryptDatagram(data: DataPacket, flags = 0): Uint8Array {
     if (this.state !== "established" || !this.tx) throw new Error("FSP not established");
     const counter = this.txCounter++;
     const inner = encodeFspInner({
@@ -230,12 +231,13 @@ export class FspSession {
       innerFlags: 0,
       payload: encodeDataPacket(data),
     });
-    const aad = encodeFspEstablishedHeader({ flags: 0, counter }, inner.length);
+    validateEstablishedFlags(flags);
+    const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
     const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-    return encodeFspEstablished({ flags: 0, counter, payloadLen: inner.length, ciphertext });
+    return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
   }
 
-  encryptEndpointData(payload: Uint8Array): Uint8Array {
+  encryptEndpointData(payload: Uint8Array, flags = 0): Uint8Array {
     if (this.state !== "established" || !this.tx) throw new Error("FSP not established");
     const counter = this.txCounter++;
     const inner = encodeFspInner({
@@ -244,12 +246,13 @@ export class FspSession {
       innerFlags: 0,
       payload,
     });
-    const aad = encodeFspEstablishedHeader({ flags: 0, counter }, inner.length);
+    validateEstablishedFlags(flags);
+    const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
     const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-    return encodeFspEstablished({ flags: 0, counter, payloadLen: inner.length, ciphertext });
+    return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
   }
 
-  encryptKeepalive(): Uint8Array {
+  encryptKeepalive(flags = 0): Uint8Array {
     if (this.state !== "established" || !this.tx) throw new Error("FSP not established");
     const counter = this.txCounter++;
     const inner = encodeFspInner({
@@ -258,9 +261,10 @@ export class FspSession {
       innerFlags: 0,
       payload: new Uint8Array(0),
     });
-    const aad = encodeFspEstablishedHeader({ flags: 0, counter }, inner.length);
+    validateEstablishedFlags(flags);
+    const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
     const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-    return encodeFspEstablished({ flags: 0, counter, payloadLen: inner.length, ciphertext });
+    return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
   }
 
   decryptIncoming(
@@ -288,5 +292,14 @@ export class FspSession {
       return { msgType: inner.msgType, endpointData: inner.payload };
     }
     return { msgType: inner.msgType };
+  }
+}
+
+function validateEstablishedFlags(flags: number): void {
+  if (!Number.isInteger(flags) || flags < 0 || flags > 0xff) {
+    throw new Error("FSP flags must be one byte");
+  }
+  if ((flags & ~FSP_FLAG_DIRECT_TRANSPORT) !== 0) {
+    throw new Error("unsupported FSP established flags");
   }
 }

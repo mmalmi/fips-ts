@@ -13,11 +13,14 @@ export declare class FipsNode {
     private peersByPubkey;
     private peersByNodeAddr;
     private pendingPeerConnects;
+    private pendingRouteResolutions;
     private sessions;
     private listeners;
     private discoveryTasks;
     private discoveryConnectTasks;
     private discoveryGeneration;
+    private heartbeatTimer?;
+    private readonly directFspReassembler;
     private started;
     constructor(cfg: FipsNodeConfig);
     start(): Promise<void>;
@@ -50,12 +53,18 @@ export declare class FipsNode {
     private rememberPeer;
     private onTransportPacket;
     private routeIncomingLinkMessage;
+    private sendHeartbeats;
     private handleFspFromPeer;
     private ensureSession;
     /**
      * Wrap an FSP frame in a SessionDatagram and send it toward a remote NodeAddr.
      */
     private sendFspToward;
+    private directPeerForSession;
+    private sendDirectFsp;
     private sendSessionDatagram;
+    private nextHopFor;
+    private resolveRoute;
+    private resolveAndConnectRoute;
 }
 //# sourceMappingURL=FipsNode.d.ts.map
