@@ -31,7 +31,7 @@ test.afterAll(async () => {
   await relay.close();
 });
 
-test("browser TypeScript FIPS dials Rust FIPS over WebRTC + local Nostr signaling", async ({ page }) => {
+test("Rust WebRTC stays responsive after a browser peer disconnects", async ({ page, context }) => {
   const manifest = rustManifestPath();
   test.skip(
     !fs.existsSync(manifest),
@@ -62,6 +62,28 @@ test("browser TypeScript FIPS dials Rust FIPS over WebRTC + local Nostr signalin
     }, { relayUrl: relay.url, pubkeyHex: rust.pubkeyHex });
 
     expect(reply).toBe("hello-rust-fips");
+
+    await page.close();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 2_000);
+    });
+
+    const replacementPage = await context.newPage();
+    await replacementPage.addInitScript((url) => {
+      window.__fipsTestRelayUrl = url;
+    }, relay.url);
+    await replacementPage.goto("/");
+    await replacementPage.waitForFunction(() => !!window.__fipsHarness);
+    const replacementReply = await replacementPage.evaluate(
+      async ({ relayUrl, pubkeyHex }) => window.__fipsHarness.echoWithRustWebRtcPeer(
+        relayUrl,
+        pubkeyHex,
+        "hello-after-disconnect",
+      ),
+      { relayUrl: relay.url, pubkeyHex: rust.pubkeyHex },
+    );
+    expect(replacementReply).toBe("hello-after-disconnect");
+    await replacementPage.close();
   } catch (err) {
     const stderr = rust.stderr();
     if (stderr) console.log(`rust fixture stderr:\n${stderr}`);
