@@ -56,7 +56,7 @@ export class FspSession {
         }
         return encodeFspHandshake({ phase: 1, noiseMsg });
     }
-    buildSessionSetup(_rand, srcNodeAddr, destNodeAddr) {
+    buildSessionSetup(_rand, srcCoords, destCoords) {
         if (this.role !== "initiator")
             throw new Error("only initiator builds SessionSetup");
         if (!this.remotePubkey)
@@ -69,8 +69,8 @@ export class FspSession {
             throw new Error(`XK msg1 size ${noiseMsg.length} != ${NOISE_XK_MSG1_LEN}`);
         }
         return encodeSessionSetup({
-            srcCoords: [srcNodeAddr],
-            destCoords: [destNodeAddr],
+            srcCoords: normalizeCoords(srcCoords),
+            destCoords: normalizeCoords(destCoords),
             flags: 0,
             handshakePayload: noiseMsg,
         });
@@ -92,7 +92,7 @@ export class FspSession {
         }
         return encodeFspHandshake({ phase: 2, noiseMsg });
     }
-    handleSessionSetup(packet, _rand, localNodeAddr) {
+    handleSessionSetup(packet, _rand, localCoords) {
         if (this.role !== "responder")
             throw new Error("only responder handles SessionSetup");
         if (this.receivedSessionSetup) {
@@ -115,7 +115,7 @@ export class FspSession {
             throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
         }
         const reply = encodeSessionAck({
-            srcCoords: [localNodeAddr],
+            srcCoords: normalizeCoords(localCoords),
             destCoords: setup.srcCoords,
             flags: 0,
             handshakePayload: noiseMsg,
@@ -302,5 +302,8 @@ function validateEstablishedFlags(flags) {
     if ((flags & ~(FSP_FLAG_DIRECT_TRANSPORT | FSP_FLAG_K)) !== 0) {
         throw new Error("unsupported FSP established flags");
     }
+}
+function normalizeCoords(coords) {
+    return coords instanceof Uint8Array ? [coords] : coords;
 }
 //# sourceMappingURL=session.js.map

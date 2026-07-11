@@ -24,4 +24,25 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    files: ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts"],
+    rules: {
+      "complexity": ["error", 20],
+      "max-depth": ["error", 4],
+      "max-lines": ["error", { max: 800, skipBlankLines: true, skipComments: true }],
+      "max-lines-per-function": ["error", { max: 120, skipBlankLines: true, skipComments: true }],
+      "max-params": ["error", 6],
+    },
+  },
+  {
+    // Existing transport/session orchestration debt. New routing and wire
+    // functionality belongs in focused modules covered by the limits above.
+    files: ["packages/core/src/node/FipsNode.ts"],
+    rules: {
+      "complexity": ["error", 50],
+      "max-depth": ["error", 5],
+      "max-lines": ["error", { max: 1_600, skipBlankLines: true, skipComments: true }],
+      "max-lines-per-function": ["error", { max: 240, skipBlankLines: true, skipComments: true }],
+    },
+  },
 );

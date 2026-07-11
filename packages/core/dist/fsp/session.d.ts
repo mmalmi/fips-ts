@@ -29,9 +29,9 @@ export declare class FspSession {
     state: "init" | "handshaking" | "established" | "closed";
     constructor(init: FspSessionInit);
     buildMsg1(_rand: (n: number) => Uint8Array): Uint8Array;
-    buildSessionSetup(_rand: (n: number) => Uint8Array, srcNodeAddr: NodeAddr, destNodeAddr: NodeAddr): Uint8Array;
+    buildSessionSetup(_rand: (n: number) => Uint8Array, srcCoords: NodeAddr | NodeAddr[], destCoords: NodeAddr | NodeAddr[]): Uint8Array;
     handleMsg1(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array;
-    handleSessionSetup(packet: Uint8Array, _rand: (n: number) => Uint8Array, localNodeAddr: NodeAddr): Uint8Array;
+    handleSessionSetup(packet: Uint8Array, _rand: (n: number) => Uint8Array, localCoords: NodeAddr | NodeAddr[]): Uint8Array;
     matchesSessionSetup(packet: Uint8Array): boolean;
     handleMsg2(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array;
     handleSessionAck(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array;

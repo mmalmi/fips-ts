@@ -2,4 +2,5 @@ export { DisconnectReason, HandshakeMessageType, LinkMessageType, SESSION_DATAGR
 export { FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE, V1_SIZE_CLASS, buildFilterAnnounce, decodeFilterAnnounce, encodeFilterAnnounce, type FilterAnnounce, } from "./filter.js";
 export { decodeSessionAck, decodeSessionMsg3, decodeSessionSetup, encodeSessionAck, encodeSessionMsg3, encodeSessionSetup, type SessionAck, type SessionMsg3, type SessionSetup, } from "./session.js";
 export { decodeLookupRequest, decodeLookupResponse, encodeLookupRequestPayload, encodeLookupResponsePayload, lookupResponseProofBytes, type LookupRequest, type LookupResponse, } from "./discovery.js";
+export { TREE_ANNOUNCE_MIN_PAYLOAD_SIZE, TREE_ANNOUNCE_VERSION, TREE_COORD_ENTRY_SIZE, buildTreeAnnounce, decodeTreeAnnounce, decodeTreeAnnouncePayload, encodeTreeAnnounce, treeDeclarationBytes, validateTreeAnnounceSemantics, verifyTreeAnnounce, type TreeAnnounce, type TreeCoordEntry, } from "./tree.js";
 //# sourceMappingURL=index.d.ts.map

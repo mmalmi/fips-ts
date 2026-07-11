@@ -18,6 +18,8 @@ export declare class FipsNode {
     private pendingRouteResolutions;
     private lookupReversePaths;
     private readonly learnedRoutes;
+    private readonly treeState;
+    private readonly coordCache;
     private sessions;
     private listeners;
     private discoveryTasks;
@@ -57,6 +59,12 @@ export declare class FipsNode {
     private rememberPeer;
     private onTransportPacket;
     private routeIncomingLinkMessage;
+    private sendTreeAnnounce;
+    private scheduleTreeAnnounce;
+    private sendTreeAnnounceToAll;
+    private handleTreeAnnounce;
+    private cacheSessionCoordinates;
+    private cacheCoordinates;
     private handleLookupRequest;
     private forwardLookupResponse;
     private sendLinkMessage;

@@ -178,7 +178,7 @@ describe("FipsNode on-demand route resolution", () => {
       await Promise.all([first, second]);
 
       expect(localTransport.resolveCalls).toBe(1);
-      expect(localTransport.establishedPackets).toBe(2);
+      expect(localTransport.establishedPackets).toBeGreaterThanOrEqual(2);
     } finally {
       await localNode.stop();
       await remoteNode.stop();

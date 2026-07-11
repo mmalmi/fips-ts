@@ -44,6 +44,12 @@ import {
   LinkMessageType,
   type SessionDatagram,
 } from "../protocol/link.js";
+import { decodeSessionAck, decodeSessionSetup } from "../protocol/session.js";
+import {
+  decodeTreeAnnouncePayload,
+  encodeTreeAnnounce,
+  verifyTreeAnnounce,
+} from "../protocol/tree.js";
 import {
   decodeLookupRequest,
   decodeLookupResponse,
@@ -74,6 +80,7 @@ import type {
   SessionEvent,
 } from "./types.js";
 import { LearnedRouteTable } from "./LearnedRouteTable.js";
+import { TreeState } from "./TreeState.js";
 
 interface AdjacentPeer {
   pubkey: Uint8Array;           // 33 compressed
@@ -84,6 +91,7 @@ interface AdjacentPeer {
   pendingResponderLink?: FmpLink;
   drainingResponderLinks?: Map<number, { link: FmpLink; expiresAtMs: number }>;
   abandonedInitiatorSessionIdx?: number;
+  treeAnnounced?: boolean;
   outgoingHandshake?: {
     resolve: () => void;
     reject: (err: Error) => void;
@@ -157,6 +165,8 @@ export class FipsNode {
   private pendingRouteResolutions = new Map<string, PendingRouteResolution>(); // by NodeAddr hex
   private lookupReversePaths = new Map<string, LookupReversePath>();
   private readonly learnedRoutes = new LearnedRouteTable();
+  private readonly treeState: TreeState;
+  private readonly coordCache = new Map<string, NodeAddr[]>();
   private sessions = new Map<string, Session>();    // by remote NodeAddr hex
   private listeners = new Map<FipsEventName, Set<(event: unknown) => void>>();
   private discoveryTasks = new Set<Promise<void>>();
@@ -168,6 +178,7 @@ export class FipsNode {
 
   constructor(cfg: FipsNodeConfig) {
     this.identity = cfg.identity;
+    this.treeState = new TreeState(cfg.identity);
     this.transports = cfg.transports;
     this.forwarding = cfg.forwarding ?? false;
     this.routingMode = cfg.routingMode ?? "tree";
@@ -406,7 +417,9 @@ export class FipsNode {
         this.peers.delete(key);
         this.peersByPubkey.delete(peer.pubkeyHex);
         if (peer.pubkey.length > 0) {
-          this.peersByNodeAddr.delete(nodeAddrToHex(deriveNodeAddr(peer.pubkey)));
+          const peerNodeAddr = deriveNodeAddr(peer.pubkey);
+          this.peersByNodeAddr.delete(nodeAddrToHex(peerNodeAddr));
+          if (this.treeState.removePeer(peerNodeAddr)) void this.sendTreeAnnounceToAll();
         }
       }
     }
@@ -627,9 +640,10 @@ export class FipsNode {
           peer.pubkeyHex = toHex(result.remotePubkey);
           this.rememberPeer(peer);
           if (result.reply) {
-            void transport.send(p.remoteAddr, result.reply).catch((err) => {
-              this.emit("error", { err: err as Error, where: "send Msg2" });
-            });
+            void transport.send(p.remoteAddr, result.reply)
+              .catch((err) => {
+                this.emit("error", { err: err as Error, where: "send Msg2" });
+              });
             this.logger.debug(
               "fips msg2 sent",
               p.remoteAddr.transport,
@@ -677,6 +691,7 @@ export class FipsNode {
             });
             peer.outgoingHandshake?.resolve();
             peer.outgoingHandshake = undefined;
+            this.scheduleTreeAnnounce(peer);
           }
           this.logger.debug("fips msg2 handled", p.remoteAddr.transport, p.remoteAddr.addr);
           break;
@@ -706,6 +721,7 @@ export class FipsNode {
             }
           }
           const { msgType, payload } = link.decryptIncoming(packet);
+          this.scheduleTreeAnnounce(peer);
           if (promotePending) {
             const previous = peer.link;
             peer.link = link;
@@ -742,6 +758,10 @@ export class FipsNode {
     msgType: number,
     payload: Uint8Array,
   ): Promise<void> {
+    if (msgType === LinkMessageType.TreeAnnounce) {
+      await this.handleTreeAnnounce(peer, payload);
+      return;
+    }
     if (msgType === LinkMessageType.LookupRequest) {
       await this.handleLookupRequest(peer, payload);
       return;
@@ -757,6 +777,7 @@ export class FipsNode {
     }
 
     const datagram = decodeSessionDatagramPayload(payload);
+    this.cacheSessionCoordinates(datagram);
     if (bytesEqual(datagram.destAddr, this.identity.nodeAddr)) {
       this.logger.debug(
         "session datagram delivered locally",
@@ -798,6 +819,71 @@ export class FipsNode {
     );
   }
 
+  private async sendTreeAnnounce(peer: AdjacentPeer): Promise<void> {
+    if (peer.link.state !== "established") return;
+    const encoded = encodeTreeAnnounce(this.treeState.announce());
+    await this.sendLinkMessage(peer, LinkMessageType.TreeAnnounce, encoded.subarray(1));
+  }
+
+  private scheduleTreeAnnounce(peer: AdjacentPeer): void {
+    if (peer.treeAnnounced) return;
+    peer.treeAnnounced = true;
+    setTimeout(() => {
+      void this.sendTreeAnnounce(peer).catch((error) => {
+        peer.treeAnnounced = false;
+        this.emit("error", { err: error as Error, where: "send TreeAnnounce" });
+      });
+    }, 0);
+  }
+
+  private async sendTreeAnnounceToAll(): Promise<void> {
+    const peers = [...this.peers.values()].filter((peer) => peer.link.state === "established");
+    await Promise.allSettled(peers.map((peer) => this.sendTreeAnnounce(peer)));
+  }
+
+  private async handleTreeAnnounce(peer: AdjacentPeer, payload: Uint8Array): Promise<void> {
+    const announce = decodeTreeAnnouncePayload(payload);
+    const peerNodeAddr = deriveNodeAddr(peer.pubkey);
+    if (!bytesEqual(announce.ancestry[0]!.nodeAddr, peerNodeAddr)) {
+      throw new Error("TreeAnnounce node address does not match authenticated peer");
+    }
+    if (!verifyTreeAnnounce(announce, peer.pubkey)) {
+      throw new Error("TreeAnnounce signature verification failed");
+    }
+    const changed = this.treeState.updatePeer(peerNodeAddr, announce);
+    this.logger.debug(
+      "tree announce accepted",
+      nodeAddrToHex(peerNodeAddr),
+      "depth",
+      announce.ancestry.length - 1,
+      "root",
+      nodeAddrToHex(announce.ancestry.at(-1)!.nodeAddr),
+    );
+    if (changed) await this.sendTreeAnnounceToAll();
+  }
+
+  private cacheSessionCoordinates(datagram: SessionDatagram): void {
+    const phase = datagram.payload[0]! & 0x0f;
+    try {
+      if (phase === 1) {
+        const setup = decodeSessionSetup(datagram.payload);
+        this.cacheCoordinates(datagram.srcAddr, setup.srcCoords);
+        this.cacheCoordinates(datagram.destAddr, setup.destCoords);
+      } else if (phase === 2) {
+        const ack = decodeSessionAck(datagram.payload);
+        this.cacheCoordinates(datagram.srcAddr, ack.srcCoords);
+        this.cacheCoordinates(datagram.destAddr, ack.destCoords);
+      }
+    } catch (error) {
+      this.logger.warn("invalid FSP session coordinates", error);
+    }
+  }
+
+  private cacheCoordinates(nodeAddr: NodeAddr, coords: NodeAddr[]): void {
+    if (coords.length === 0 || !bytesEqual(coords[0]!, nodeAddr)) return;
+    this.coordCache.set(nodeAddrToHex(nodeAddr), coords.map((entry) => new Uint8Array(entry)));
+  }
+
   private async handleLookupRequest(
     sourcePeer: AdjacentPeer,
     payload: Uint8Array,
@@ -805,7 +891,7 @@ export class FipsNode {
     const request = decodeLookupRequest(payload);
     const targetHex = nodeAddrToHex(request.target);
     if (bytesEqual(request.target, this.identity.nodeAddr)) {
-      const targetCoords = [this.identity.nodeAddr];
+      const targetCoords = this.treeState.coords;
       const proof = signSchnorr(
         this.identity,
         sha256(lookupResponseProofBytes(request.requestId, request.target, targetCoords)),
@@ -833,11 +919,15 @@ export class FipsNode {
     if (this.lookupReversePaths.has(reverseKey)) return;
 
     const directOrLearned = this.nextHopFor(targetHex, sourcePeer);
-    const fallbackPeers = this.routingMode === "reply_learned" && !directOrLearned
+    const fallbackPeers = !directOrLearned
       ? [...this.peers.values()]
         .filter((peer) =>
           peer !== sourcePeer
           && peer.link.state === "established"
+          && (
+            this.treeState.isTreePeer(deriveNodeAddr(peer.pubkey))
+            || this.routingMode === "reply_learned"
+          )
           && nodeAddrToHex(deriveNodeAddr(peer.pubkey)) !== nodeAddrToHex(request.origin)
           && (request.minMtu === 0 || peer.transport.mtu >= request.minMtu)
         )
@@ -889,6 +979,7 @@ export class FipsNode {
       this.logger.debug("lookup response not forwarded", nodeAddrToHex(response.target));
       return;
     }
+    this.cacheCoordinates(response.target, response.targetCoords);
     this.learnReverseRoute(nodeAddrToHex(response.target), sourcePeer);
     this.lookupReversePaths.delete(reverseKey);
     response.pathMtu = Math.min(response.pathMtu, reverse.peer.transport.mtu);
@@ -1075,20 +1166,20 @@ export class FipsNode {
         reply = session.pendingResponderFsp.handleSessionSetup(
           fspFrame,
           (n) => this.random.bytes(n),
-          this.identity.nodeAddr,
+          this.treeState.coords,
         );
       } else if (session?.fsp.matchesSessionSetup(fspFrame)) {
         reply = session.fsp.handleSessionSetup(
           fspFrame,
           (n) => this.random.bytes(n),
-          this.identity.nodeAddr,
+          this.treeState.coords,
         );
       } else if (session?.fsp.state === "established") {
         const pending = new FspSession({ identity: this.identity, role: "responder" });
         reply = pending.handleSessionSetup(
           fspFrame,
           (n) => this.random.bytes(n),
-          this.identity.nodeAddr,
+          this.treeState.coords,
         );
         session.pendingResponderFsp?.close();
         session.pendingResponderFsp = pending;
@@ -1097,7 +1188,7 @@ export class FipsNode {
         reply = fsp.handleSessionSetup(
           fspFrame,
           (n) => this.random.bytes(n),
-          this.identity.nodeAddr,
+          this.treeState.coords,
         );
         session = { remoteNodeAddr: srcNodeAddr, fsp, currentKBit: false };
         this.sessions.set(srcNodeHex, session);
@@ -1170,8 +1261,8 @@ export class FipsNode {
     this.emit("session", { remotePubkey: remotePubkeyHex, state: "establishing" });
     const msg1 = fsp.buildSessionSetup(
       (n) => this.random.bytes(n),
-      this.identity.nodeAddr,
-      remoteNodeAddr,
+      this.treeState.coords,
+      this.coordCache.get(remoteNodeHex) ?? [remoteNodeAddr],
     );
     let timer: ReturnType<typeof setTimeout> | undefined;
     const setupDone = new Promise<void>((resolve, reject) => {
@@ -1308,6 +1399,14 @@ export class FipsNode {
         },
       );
       if (learnedNodeHex) return this.peersByNodeAddr.get(learnedNodeHex);
+    }
+    const destCoords = this.coordCache.get(destNodeHex);
+    if (destCoords) {
+      const treeNodeHex = this.treeState.nextHop(destCoords, (nodeHex) => {
+        const candidate = this.peersByNodeAddr.get(nodeHex);
+        return candidate?.link.state === "established" && candidate !== excludedPeer;
+      });
+      if (treeNodeHex) return this.peersByNodeAddr.get(treeNodeHex);
     }
     const defaultPeer = this.defaultRoute
       ? this.peersByPubkey.get(this.defaultRoute)

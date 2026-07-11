@@ -5,6 +5,12 @@ export function validateWebRtcSignal(s, ctx) {
         throw new SignalValidationError("signal must be a JSON object");
     }
     const obj = s;
+    validateEnvelope(obj, ctx);
+    validateSignalBody(obj);
+    validateSignalSession(obj, ctx);
+    return obj;
+}
+function validateEnvelope(obj, ctx) {
     if (obj.protocol !== "fips-webrtc-v1") {
         throw new SignalValidationError(`bad protocol ${String(obj.protocol)}`);
     }
@@ -33,6 +39,8 @@ export function validateWebRtcSignal(s, ctx) {
     if (typeof obj.createdAtMs !== "number" || obj.createdAtMs > now + 60_000) {
         throw new SignalValidationError("signal createdAtMs in future");
     }
+}
+function validateSignalBody(obj) {
     if (obj.kind === "offer" || obj.kind === "answer") {
         if (typeof obj.sdp !== "string" || obj.sdp.length === 0) {
             throw new SignalValidationError("offer/answer requires sdp");
@@ -49,6 +57,11 @@ export function validateWebRtcSignal(s, ctx) {
     else {
         throw new SignalValidationError(`bad kind ${String(obj.kind)}`);
     }
+}
+function validateSignalSession(obj, ctx) {
+    if (typeof obj.sessionId !== "string") {
+        throw new SignalValidationError("missing sessionId");
+    }
     if (obj.kind === "answer" ||
         obj.kind === "candidate" ||
         obj.kind === "reject") {
@@ -59,6 +72,5 @@ export function validateWebRtcSignal(s, ctx) {
     if (ctx.seenSessionIds.has(`${obj.sessionId}:${obj.kind}`)) {
         throw new SignalValidationError("duplicate signal in replay window");
     }
-    return obj;
 }
 //# sourceMappingURL=WebRtcSignal.js.map

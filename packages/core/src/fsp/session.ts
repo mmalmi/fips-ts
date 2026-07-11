@@ -102,8 +102,8 @@ export class FspSession {
 
   buildSessionSetup(
     _rand: (n: number) => Uint8Array,
-    srcNodeAddr: NodeAddr,
-    destNodeAddr: NodeAddr,
+    srcCoords: NodeAddr | NodeAddr[],
+    destCoords: NodeAddr | NodeAddr[],
   ): Uint8Array {
     if (this.role !== "initiator") throw new Error("only initiator builds SessionSetup");
     if (!this.remotePubkey) throw new Error("initiator needs remote pubkey");
@@ -114,8 +114,8 @@ export class FspSession {
       throw new Error(`XK msg1 size ${noiseMsg.length} != ${NOISE_XK_MSG1_LEN}`);
     }
     return encodeSessionSetup({
-      srcCoords: [srcNodeAddr],
-      destCoords: [destNodeAddr],
+      srcCoords: normalizeCoords(srcCoords),
+      destCoords: normalizeCoords(destCoords),
       flags: 0,
       handshakePayload: noiseMsg,
     });
@@ -138,7 +138,7 @@ export class FspSession {
   handleSessionSetup(
     packet: Uint8Array,
     _rand: (n: number) => Uint8Array,
-    localNodeAddr: NodeAddr,
+    localCoords: NodeAddr | NodeAddr[],
   ): Uint8Array {
     if (this.role !== "responder") throw new Error("only responder handles SessionSetup");
     if (this.receivedSessionSetup) {
@@ -159,7 +159,7 @@ export class FspSession {
       throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
     }
     const reply = encodeSessionAck({
-      srcCoords: [localNodeAddr],
+      srcCoords: normalizeCoords(localCoords),
       destCoords: setup.srcCoords,
       flags: 0,
       handshakePayload: noiseMsg,
@@ -340,4 +340,8 @@ function validateEstablishedFlags(flags: number): void {
   if ((flags & ~(FSP_FLAG_DIRECT_TRANSPORT | FSP_FLAG_K)) !== 0) {
     throw new Error("unsupported FSP established flags");
   }
+}
+
+function normalizeCoords(coords: NodeAddr | NodeAddr[]): NodeAddr[] {
+  return coords instanceof Uint8Array ? [coords] : coords;
 }

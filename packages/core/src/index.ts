@@ -75,6 +75,10 @@ export {
   HandshakeMessageType,
   LinkMessageType,
   SESSION_DATAGRAM_HEADER_SIZE,
+  TREE_ANNOUNCE_MIN_PAYLOAD_SIZE,
+  TREE_ANNOUNCE_VERSION,
+  TREE_COORD_ENTRY_SIZE,
+  buildTreeAnnounce,
   V1_SIZE_CLASS,
   buildFilterAnnounce,
   decodeDisconnect,
@@ -86,6 +90,8 @@ export {
   decodeSessionAck,
   decodeSessionMsg3,
   decodeSessionSetup,
+  decodeTreeAnnounce,
+  decodeTreeAnnouncePayload,
   decrementTtl,
   disconnectReasonFromByte,
   encodeDisconnect,
@@ -97,6 +103,7 @@ export {
   encodeSessionDatagram,
   encodeSessionMsg3,
   encodeSessionSetup,
+  encodeTreeAnnounce,
   handshakeMessageTypeFromByte,
   isHandshakeMessageType,
   linkMessageTypeFromByte,
@@ -108,6 +115,10 @@ export {
   type SessionDatagram,
   type SessionMsg3,
   type SessionSetup,
+  type TreeAnnounce,
+  type TreeCoordEntry,
+  validateTreeAnnounceSemantics,
+  verifyTreeAnnounce,
 } from "./protocol/index.js";
 
 export {

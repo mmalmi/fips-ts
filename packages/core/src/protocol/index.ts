@@ -47,3 +47,18 @@ export {
   type LookupRequest,
   type LookupResponse,
 } from "./discovery.js";
+
+export {
+  TREE_ANNOUNCE_MIN_PAYLOAD_SIZE,
+  TREE_ANNOUNCE_VERSION,
+  TREE_COORD_ENTRY_SIZE,
+  buildTreeAnnounce,
+  decodeTreeAnnounce,
+  decodeTreeAnnouncePayload,
+  encodeTreeAnnounce,
+  treeDeclarationBytes,
+  validateTreeAnnounceSemantics,
+  verifyTreeAnnounce,
+  type TreeAnnounce,
+  type TreeCoordEntry,
+} from "./tree.js";
