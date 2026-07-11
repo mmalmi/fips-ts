@@ -85,3 +85,21 @@ test("Nostr advert auto-connect establishes FMP, not only a data channel", async
 
   expect(reply).toBe("advert-fmp-connect");
 });
+
+test("Nostr advert auto-connect replaces a disconnected WebRTC peer", async ({ page }) => {
+  await page.addInitScript((url) => {
+    window.__fipsTestRelayUrl = url;
+  }, relay.url);
+
+  await page.goto("/");
+  await page.waitForFunction(() => !!window.__fipsHarness);
+
+  const result = await page.evaluate(async () => {
+    return window.__fipsHarness.autoConnectWebRtcReconnect(window.__fipsTestRelayUrl!);
+  });
+
+  expect(result).toEqual({
+    first: "before-auto-reconnect",
+    second: "after-auto-reconnect",
+  });
+});

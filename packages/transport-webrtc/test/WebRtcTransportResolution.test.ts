@@ -23,13 +23,16 @@ import {
 
 class FakeRelay {
   readonly url = "ws://resolver.test";
+  readonly published: NostrEvent[] = [];
   private subscriptions: Array<{
     filter: NostrFilter;
     handler: (event: NostrEvent) => void;
   }> = [];
 
   async connect(): Promise<void> {}
-  async publish(): Promise<void> {}
+  async publish(event: NostrEvent): Promise<void> {
+    this.published.push(event);
+  }
 
   async subscribe(
     filter: NostrFilter,
@@ -86,6 +89,27 @@ afterEach(() => {
 });
 
 describe("WebRtcTransport NodeAddr resolution", () => {
+  it("refreshes its Nostr advert before the published advert expires", async () => {
+    vi.useFakeTimers();
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x60));
+    const relay = new FakeRelay();
+    const transport = new WebRtcTransport({
+      relays: [relay.url],
+      relayClients: [relayClient(relay)],
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+      advertiseOnNostr: true,
+      advertTtlMs: 2_000,
+    });
+
+    await transport.start(transportContext(local));
+    expect(relay.published).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(relay.published).toHaveLength(2);
+    await transport.stop();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(relay.published).toHaveLength(2);
+  });
+
   it("resolves a cached signature-validated advert identity", async () => {
     const local = await identityFromSecretKey(new Uint8Array(32).fill(0x61));
     const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x62));

@@ -84,6 +84,7 @@ interface AdvertWaiter {
 
 const MAX_ADVERT_CACHE_ENTRIES = 256;
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
+const AUTO_RECONNECT_DELAY_MS = 500;
 
 function randomId(): string {
   const a = new Uint8Array(16);
@@ -129,8 +130,11 @@ export class WebRtcTransport implements Transport {
   private readonly advertCache = new Map<string, CachedAdvert>(); // by NodeAddr hex
   private readonly peerSignalRelays = new Map<string, string[]>(); // by compressed pubkey hex
   private readonly advertWaiters = new Map<string, Set<AdvertWaiter>>(); // by NodeAddr hex
+  private readonly autoReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private discoveryStream?: AsyncEventStream<DiscoveredPeer>;
   private advertCleanup?: () => void;
+  private advertRefreshTimer?: ReturnType<typeof setInterval>;
+  private stopping = true;
 
   constructor(config: WebRtcTransportConfig) {
     this.cfg = {
@@ -158,6 +162,7 @@ export class WebRtcTransport implements Transport {
   }
 
   async start(ctx: TransportContext): Promise<void> {
+    this.stopping = false;
     this.ctx = ctx;
     this.discoveryStream = new AsyncEventStream<DiscoveredPeer>();
     const sharedRelayClients = this.cfg.relayClients;
@@ -210,17 +215,26 @@ export class WebRtcTransport implements Transport {
     });
 
     if (this.cfg.advertiseOnNostr) {
-      await this.signaling.publishAdvert({
-        identifier: FIPS_ADVERT_D_TAG,
-        version: 1,
-        endpoints: [{ transport: "webrtc", addr: toHex(ctx.localIdentity.publicKey) }],
-        signalRelays: this.cfg.relays,
-        stunServers: this.cfg.stunServers ?? [],
-      });
+      await this.publishLocalAdvert();
+      const refreshMs = Math.max(
+        1_000,
+        Math.floor((this.cfg.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS) / 2),
+      );
+      this.advertRefreshTimer = setInterval(() => {
+        if (this.stopping) return;
+        void this.publishLocalAdvert().catch((err) => {
+          this.logger.warn("advert refresh failed", err);
+        });
+      }, refreshMs);
     }
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    if (this.advertRefreshTimer) clearInterval(this.advertRefreshTimer);
+    this.advertRefreshTimer = undefined;
+    for (const timer of this.autoReconnectTimers.values()) clearTimeout(timer);
+    this.autoReconnectTimers.clear();
     this.advertCleanup?.();
     this.advertCleanup = undefined;
     this.signaling?.stop();
@@ -299,6 +313,17 @@ export class WebRtcTransport implements Transport {
       }
       this.discoveryStream?.push(cloneDiscoveredPeer(cached));
     }
+  }
+
+  private async publishLocalAdvert(): Promise<void> {
+    if (!this.ctx || !this.signaling) return;
+    await this.signaling.publishAdvert({
+      identifier: FIPS_ADVERT_D_TAG,
+      version: 1,
+      endpoints: [{ transport: "webrtc", addr: toHex(this.ctx.localIdentity.publicKey) }],
+      signalRelays: this.cfg.relays,
+      stunServers: this.cfg.stunServers ?? [],
+    });
   }
 
   async resolve(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined> {
@@ -416,6 +441,9 @@ export class WebRtcTransport implements Transport {
       throw new Error("WebRTC addr must be 33-byte compressed pubkey hex");
     }
     const remotePubkeyHex = addr.addr;
+    // Discovery reservations only cover the queued handoff to FipsNode.
+    // Once connect() starts, the concrete pending/connected maps own capacity.
+    this.autoConnectPeers.delete(remotePubkeyHex);
     if (this.conns.has(remotePubkeyHex)) return;
     const pendingConnect = this.pendingConnects.get(remotePubkeyHex);
     if (pendingConnect) {
@@ -555,6 +583,7 @@ export class WebRtcTransport implements Transport {
           }
         } else if (state === "failed" || state === "disconnected") {
           this.conns.delete(dial.remotePubkeyHex);
+          this.scheduleAutoReconnect(dial.remotePubkeyHex);
           if (this.pendingDials.delete(dial.sessionId)) {
             clearTimeout(dial.timer);
             dial.reject(new Error(`webrtc state ${state}`));
@@ -640,6 +669,7 @@ export class WebRtcTransport implements Transport {
             }
             if (state === "failed" || state === "disconnected") {
               this.conns.delete(valid.sender);
+              this.scheduleAutoReconnect(valid.sender);
             }
           },
           logger: this.logger,
@@ -666,6 +696,48 @@ export class WebRtcTransport implements Transport {
       return;
     }
     // "candidate" not used in non-trickle v1.
+  }
+
+  private scheduleAutoReconnect(remotePubkeyHex: string): void {
+    this.autoConnectPeers.delete(remotePubkeyHex);
+    if (!this.cfg.autoConnect || this.stopping || !this.ctx) {
+      this.logger.debug("webrtc auto-reconnect disabled", remotePubkeyHex);
+      return;
+    }
+    if (this.autoReconnectTimers.has(remotePubkeyHex)) return;
+    this.logger.debug("webrtc auto-reconnect scheduled", remotePubkeyHex);
+
+    const timer = setTimeout(() => {
+      this.autoReconnectTimers.delete(remotePubkeyHex);
+      if (this.stopping || !this.ctx || this.conns.has(remotePubkeyHex)) {
+        this.logger.debug("webrtc auto-reconnect no longer needed", remotePubkeyHex);
+        return;
+      }
+      if (this.pendingConnects.has(remotePubkeyHex) || this.autoConnectPeers.has(remotePubkeyHex)) {
+        this.logger.debug("webrtc auto-reconnect already pending", remotePubkeyHex);
+        return;
+      }
+      if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections) {
+        this.logger.debug("webrtc auto-reconnect capacity full", remotePubkeyHex);
+        return;
+      }
+
+      let nodeAddrHex: string;
+      try {
+        nodeAddrHex = nodeAddrToHex(deriveNodeAddr(fromHex(remotePubkeyHex)));
+      } catch {
+        return;
+      }
+      const cached = this.getCachedAdvert(nodeAddrHex);
+      if (!cached) {
+        this.logger.debug("webrtc auto-reconnect advert unavailable", remotePubkeyHex);
+        return;
+      }
+      this.autoConnectPeers.add(remotePubkeyHex);
+      this.logger.debug("webrtc auto-reconnect queued", remotePubkeyHex);
+      this.discoveryStream?.push(cached);
+    }, AUTO_RECONNECT_DELAY_MS);
+    this.autoReconnectTimers.set(remotePubkeyHex, timer);
   }
 }
 

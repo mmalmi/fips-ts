@@ -41,12 +41,16 @@ export declare class WebRtcTransport implements Transport {
     private readonly advertCache;
     private readonly peerSignalRelays;
     private readonly advertWaiters;
+    private readonly autoReconnectTimers;
     private discoveryStream?;
     private advertCleanup?;
+    private advertRefreshTimer?;
+    private stopping;
     constructor(config: WebRtcTransportConfig);
     start(ctx: TransportContext): Promise<void>;
     stop(): Promise<void>;
     private handleAdvert;
+    private publishLocalAdvert;
     resolve(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined>;
     private cacheAdvert;
     private getCachedAdvert;
@@ -59,5 +63,6 @@ export declare class WebRtcTransport implements Transport {
     close(addr: TransportAddress): Promise<void>;
     private startInitiatorHandshake;
     private handleIncomingSignal;
+    private scheduleAutoReconnect;
 }
 //# sourceMappingURL=WebRtcTransport.d.ts.map

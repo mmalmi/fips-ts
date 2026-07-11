@@ -116,6 +116,71 @@ async function autoConnectWebRtcPair(relayUrl: string): Promise<NodePair> {
   return { a, b, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey) };
 }
 
+async function autoConnectWebRtcReconnect(relayUrl: string): Promise<{ first: string; second: string }> {
+  const discoveryApp = "fips-auto-reconnect-e2e";
+  const aId = await generateIdentity();
+  const bId = await generateIdentity();
+  const aTransport = new WebRtcTransport({
+    relays: [relayUrl],
+    advertiseOnNostr: true,
+    autoConnect: true,
+    maxConnections: 1,
+    discoveryApp,
+  });
+  const bTransport = new WebRtcTransport({
+    relays: [relayUrl],
+    advertiseOnNostr: true,
+    autoConnect: false,
+    maxConnections: 1,
+    discoveryApp,
+  });
+  const a = new FipsNode({ identity: aId, transports: [aTransport] });
+  const b = new FipsNode({ identity: bId, transports: [bTransport] });
+  const pair = { a, b, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey) };
+  b.registerService(9000, async ({ payload, reply }) => {
+    await reply(payload);
+  });
+
+  await a.start();
+  await b.start();
+  try {
+    await waitForPeerState(a, pair.bPub, "connected");
+    const first = await echoOverPair(pair, "before-auto-reconnect");
+    await new Promise((resolve) => {
+      setTimeout(resolve, 2_000);
+    });
+    const disconnected = waitForPeerState(a, pair.bPub, "disconnected");
+    await aTransport.close({ transport: "webrtc", addr: pair.bPub });
+    await disconnected;
+    await waitForPeerState(a, pair.bPub, "connected");
+    const second = await echoOverPair(pair, "after-auto-reconnect");
+    return { first, second };
+  } finally {
+    await a.stop();
+    await b.stop();
+  }
+}
+
+function waitForPeerState(
+  node: FipsNode,
+  remotePubkey: string,
+  state: "connected" | "disconnected",
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      off();
+      reject(new Error(`peer ${remotePubkey} did not become ${state}`));
+    }, 20_000);
+    const off = node.on("peer", (event) => {
+      const peer = event as { remotePubkey: string; state: string };
+      if (peer.remotePubkey !== remotePubkey || peer.state !== state) return;
+      clearTimeout(timer);
+      off();
+      resolve();
+    });
+  });
+}
+
 async function duplicateWebRtcConnect(relayUrl: string): Promise<string> {
   const logger = {
     debug: (...a: unknown[]) => console.log("[webrtc-duplicate]", ...a),
@@ -421,6 +486,7 @@ async function echoWithRustWebRtcPeer(
 export const harness = {
   makeWebRtcPair,
   autoConnectWebRtcPair,
+  autoConnectWebRtcReconnect,
   duplicateWebRtcConnect,
   makeWebRtcChain,
   webRtcReconnect,
