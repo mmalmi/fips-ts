@@ -36,6 +36,7 @@ import {
   FSP_MSG_ENDPOINT_DATA,
   FSP_MSG_KEEPALIVE,
   FSP_FLAG_DIRECT_TRANSPORT,
+  FSP_FLAG_K,
   NOISE_XK_MSG1_LEN,
   NOISE_XK_MSG2_LEN,
   NOISE_XK_MSG3_LEN,
@@ -167,6 +168,11 @@ export class FspSession {
     this.receivedSessionSetup = new Uint8Array(packet);
     this.sentSessionAck = new Uint8Array(reply);
     return reply;
+  }
+
+  matchesSessionSetup(packet: Uint8Array): boolean {
+    return this.receivedSessionSetup !== undefined
+      && bytesEqual(packet, this.receivedSessionSetup);
   }
 
   handleMsg2(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array {
@@ -318,13 +324,20 @@ export class FspSession {
     }
     return { msgType: inner.msgType };
   }
+
+  close(): void {
+    this.state = "closed";
+    this.hs = undefined;
+    this.tx = undefined;
+    this.rx = undefined;
+  }
 }
 
 function validateEstablishedFlags(flags: number): void {
   if (!Number.isInteger(flags) || flags < 0 || flags > 0xff) {
     throw new Error("FSP flags must be one byte");
   }
-  if ((flags & ~FSP_FLAG_DIRECT_TRANSPORT) !== 0) {
+  if ((flags & ~(FSP_FLAG_DIRECT_TRANSPORT | FSP_FLAG_K)) !== 0) {
     throw new Error("unsupported FSP established flags");
   }
 }

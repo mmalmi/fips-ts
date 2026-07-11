@@ -69,6 +69,7 @@ export declare class FipsNode {
      * Wrap an FSP frame in a SessionDatagram and send it toward a remote NodeAddr.
      */
     private sendFspToward;
+    private prunePreviousFsp;
     private directPeerForSession;
     private sendDirectFsp;
     private sendSessionDatagram;

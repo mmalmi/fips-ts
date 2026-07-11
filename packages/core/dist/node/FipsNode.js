@@ -5,7 +5,7 @@ import { FmpLink } from "../fmp/link.js";
 import { DirectFspTransportReassembler, isDirectFspTransportFragment, segmentDirectFspTransportRecord, } from "../fsp/directTransport.js";
 import { FspSession } from "../fsp/session.js";
 import { decodeFmpMsg2, decodeFmpEstablished, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
-import { FSP_FLAG_DIRECT_TRANSPORT, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_PHASE_ESTABLISHED, isDirectFspEstablished, peekFspPhase, } from "../fsp/wire.js";
+import { decodeFspEstablished, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_PHASE_ESTABLISHED, isDirectFspEstablished, peekFspPhase, } from "../fsp/wire.js";
 import { compressedPubkeyFromXOnly, signSchnorr, } from "../identity/index.js";
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
 import { decodeSessionDatagramPayload, encodeSessionDatagram, LinkMessageType, } from "../protocol/link.js";
@@ -21,6 +21,7 @@ const FMP_HANDSHAKE_TIMEOUT_MS = 15_000;
 const FMP_HANDSHAKE_RESEND_MS = 1_000;
 const FMP_HEARTBEAT_INTERVAL_MS = 5_000;
 const FMP_REPLACED_LINK_DRAIN_MS = 10_000;
+const FSP_REKEY_DRAIN_MS = 45_000;
 const FSP_DEFAULT_PATH_MTU = 1_200;
 const ROUTE_RESOLUTION_TIMEOUT_MS = 5_000;
 const MAX_PENDING_ROUTE_RESOLUTIONS = 64;
@@ -124,6 +125,11 @@ export class FipsNode {
         }
         for (const pending of this.pendingRouteResolutions.values()) {
             pending.abort.abort();
+        }
+        for (const session of this.sessions.values()) {
+            session.fsp.close();
+            session.pendingResponderFsp?.close();
+            session.previousFsp?.fsp.close();
         }
         for (const t of this.transports) {
             try {
@@ -279,11 +285,12 @@ export class FipsNode {
     async sendDatagram(args) {
         const session = await this.ensureSession(args.dst);
         const directPeer = this.directPeerForSession(session);
+        const epochFlag = session.currentKBit ? FSP_FLAG_K : 0;
         const fspFrame = session.fsp.encryptDatagram({
             srcPort: args.srcPort ?? 0,
             dstPort: args.dstPort,
             payload: args.payload,
-        }, directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0);
+        }, epochFlag | (directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0));
         if (directPeer)
             await this.sendDirectFsp(directPeer, fspFrame);
         else
@@ -293,7 +300,8 @@ export class FipsNode {
     async sendEndpointData(args) {
         const session = await this.ensureSession(args.dst);
         const directPeer = this.directPeerForSession(session);
-        const fspFrame = session.fsp.encryptEndpointData(args.payload, directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0);
+        const epochFlag = session.currentKBit ? FSP_FLAG_K : 0;
+        const fspFrame = session.fsp.encryptEndpointData(args.payload, epochFlag | (directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0));
         if (directPeer)
             await this.sendDirectFsp(directPeer, fspFrame);
         else
@@ -722,7 +730,41 @@ export class FipsNode {
             if (!session || session.fsp.state !== "established") {
                 throw new Error(`FSP Established before handshake from ${srcNodeHex}`);
             }
-            const result = session.fsp.decryptIncoming(fspFrame);
+            this.prunePreviousFsp(session, Date.now());
+            const established = decodeFspEstablished(fspFrame);
+            const receivedKBit = (established.flags & FSP_FLAG_K) !== 0;
+            let receiveFsp = session.fsp;
+            let promotePending = false;
+            if (receivedKBit !== session.currentKBit) {
+                if (session.pendingResponderFsp?.state === "established") {
+                    receiveFsp = session.pendingResponderFsp;
+                    promotePending = true;
+                }
+                else if (session.previousFsp?.kBit === receivedKBit) {
+                    receiveFsp = session.previousFsp.fsp;
+                }
+                else {
+                    throw new Error(`FSP Established epoch mismatch: receivedK=${Number(receivedKBit)}`
+                        + ` currentK=${Number(session.currentKBit)}`);
+                }
+            }
+            const result = receiveFsp.decryptIncoming(fspFrame);
+            if (promotePending) {
+                session.previousFsp?.fsp.close();
+                session.previousFsp = {
+                    fsp: session.fsp,
+                    kBit: session.currentKBit,
+                    expiresAtMs: Date.now() + FSP_REKEY_DRAIN_MS,
+                };
+                session.fsp = receiveFsp;
+                session.currentKBit = receivedKBit;
+                session.pendingResponderFsp = undefined;
+                if (receiveFsp.remotePubkey) {
+                    session.remotePubkey = receiveFsp.remotePubkey;
+                    session.remotePubkeyHex = toHex(receiveFsp.remotePubkey);
+                }
+                this.logger.debug("promoted authenticated FSP rekey epoch", srcNodeHex, receivedKBit);
+            }
             const srcHex = session.remotePubkeyHex ?? srcNodeHex;
             if (result.msgType === FSP_MSG_DATA && result.data) {
                 const dp = result.data;
@@ -757,26 +799,22 @@ export class FipsNode {
         // Handshake phases 1/2/3.
         if (phase === 1) {
             let reply;
-            if (session?.fsp.role === "responder") {
-                try {
-                    reply = session.fsp.handleSessionSetup(fspFrame, (n) => this.random.bytes(n), this.identity.nodeAddr);
-                }
-                catch (error) {
-                    if (!(error instanceof Error)
-                        || error.message !== "unexpected FSP SessionSetup after handshake start") {
-                        throw error;
-                    }
-                    const fsp = new FspSession({ identity: this.identity, role: "responder" });
-                    reply = fsp.handleSessionSetup(fspFrame, (n) => this.random.bytes(n), this.identity.nodeAddr);
-                    session = { remoteNodeAddr: srcNodeAddr, fsp };
-                    this.sessions.set(srcNodeHex, session);
-                    this.emit("session", { remotePubkey: srcNodeHex, state: "establishing" });
-                }
+            if (session?.pendingResponderFsp?.matchesSessionSetup(fspFrame)) {
+                reply = session.pendingResponderFsp.handleSessionSetup(fspFrame, (n) => this.random.bytes(n), this.identity.nodeAddr);
+            }
+            else if (session?.fsp.matchesSessionSetup(fspFrame)) {
+                reply = session.fsp.handleSessionSetup(fspFrame, (n) => this.random.bytes(n), this.identity.nodeAddr);
+            }
+            else if (session?.fsp.state === "established") {
+                const pending = new FspSession({ identity: this.identity, role: "responder" });
+                reply = pending.handleSessionSetup(fspFrame, (n) => this.random.bytes(n), this.identity.nodeAddr);
+                session.pendingResponderFsp?.close();
+                session.pendingResponderFsp = pending;
             }
             else {
                 const fsp = new FspSession({ identity: this.identity, role: "responder" });
                 reply = fsp.handleSessionSetup(fspFrame, (n) => this.random.bytes(n), this.identity.nodeAddr);
-                session = { remoteNodeAddr: srcNodeAddr, fsp };
+                session = { remoteNodeAddr: srcNodeAddr, fsp, currentKBit: false };
                 this.sessions.set(srcNodeHex, session);
                 this.emit("session", { remotePubkey: srcNodeHex, state: "establishing" });
             }
@@ -798,10 +836,14 @@ export class FipsNode {
         if (phase === 3) {
             if (!session)
                 throw new Error(`FSP msg3 with no session ${srcNodeHex}`);
-            session.fsp.handleSessionMsg3(fspFrame);
-            if (session.fsp.remotePubkey) {
-                session.remotePubkey = session.fsp.remotePubkey;
-                session.remotePubkeyHex = toHex(session.fsp.remotePubkey);
+            const handshakeFsp = session.pendingResponderFsp ?? session.fsp;
+            handshakeFsp.handleSessionMsg3(fspFrame);
+            if (handshakeFsp.remotePubkey) {
+                if (session.remotePubkey && !bytesEqual(session.remotePubkey, handshakeFsp.remotePubkey)) {
+                    throw new Error("FSP rekey changed the authenticated remote identity");
+                }
+                session.remotePubkey = handshakeFsp.remotePubkey;
+                session.remotePubkeyHex = toHex(handshakeFsp.remotePubkey);
             }
             this.emit("session", {
                 remotePubkey: session.remotePubkeyHex ?? srcNodeHex,
@@ -830,7 +872,7 @@ export class FipsNode {
             role: "initiator",
             remotePubkey,
         });
-        session = { remoteNodeAddr, remotePubkeyHex, remotePubkey, fsp };
+        session = { remoteNodeAddr, remotePubkeyHex, remotePubkey, fsp, currentKBit: false };
         this.sessions.set(remoteNodeHex, session);
         this.emit("session", { remotePubkey: remotePubkeyHex, state: "establishing" });
         const msg1 = fsp.buildSessionSetup((n) => this.random.bytes(n), this.identity.nodeAddr, remoteNodeAddr);
@@ -861,6 +903,12 @@ export class FipsNode {
             destAddr: remoteNodeAddr,
             payload: fspFrame,
         });
+    }
+    prunePreviousFsp(session, nowMs) {
+        if (!session.previousFsp || session.previousFsp.expiresAtMs > nowMs)
+            return;
+        session.previousFsp.fsp.close();
+        session.previousFsp = undefined;
     }
     directPeerForSession(session) {
         const peer = this.peersByNodeAddr.get(nodeAddrToHex(session.remoteNodeAddr));

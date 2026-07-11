@@ -32,6 +32,7 @@ export declare class FspSession {
     buildSessionSetup(_rand: (n: number) => Uint8Array, srcNodeAddr: NodeAddr, destNodeAddr: NodeAddr): Uint8Array;
     handleMsg1(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array;
     handleSessionSetup(packet: Uint8Array, _rand: (n: number) => Uint8Array, localNodeAddr: NodeAddr): Uint8Array;
+    matchesSessionSetup(packet: Uint8Array): boolean;
     handleMsg2(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array;
     handleSessionAck(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array;
     handleMsg3(packet: Uint8Array): void;
@@ -45,5 +46,6 @@ export declare class FspSession {
         data?: DataPacket;
         endpointData?: Uint8Array;
     };
+    close(): void;
 }
 //# sourceMappingURL=session.d.ts.map

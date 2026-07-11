@@ -10,7 +10,7 @@ import { ReplayWindow } from "../crypto/replay.js";
 import { bytesEqual } from "../codec/hex.js";
 import { NoiseHandshake } from "../noise/index.js";
 import { decodeSessionAck, decodeSessionMsg3, decodeSessionSetup, encodeSessionAck, encodeSessionMsg3, encodeSessionSetup, } from "../protocol/session.js";
-import { decodeDataPacket, decodeFspEstablished, decodeFspHandshake, decodeFspInner, encodeDataPacket, encodeFspEstablished, encodeFspEstablishedHeader, encodeFspHandshake, encodeFspInner, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_KEEPALIVE, FSP_FLAG_DIRECT_TRANSPORT, NOISE_XK_MSG1_LEN, NOISE_XK_MSG2_LEN, NOISE_XK_MSG3_LEN, } from "./wire.js";
+import { decodeDataPacket, decodeFspEstablished, decodeFspHandshake, decodeFspInner, encodeDataPacket, encodeFspEstablished, encodeFspEstablishedHeader, encodeFspHandshake, encodeFspInner, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_KEEPALIVE, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, NOISE_XK_MSG1_LEN, NOISE_XK_MSG2_LEN, NOISE_XK_MSG3_LEN, } from "./wire.js";
 const EPOCH_LEN = 8;
 function epoch() {
     return new Uint8Array(EPOCH_LEN);
@@ -124,6 +124,10 @@ export class FspSession {
         this.receivedSessionSetup = new Uint8Array(packet);
         this.sentSessionAck = new Uint8Array(reply);
         return reply;
+    }
+    matchesSessionSetup(packet) {
+        return this.receivedSessionSetup !== undefined
+            && bytesEqual(packet, this.receivedSessionSetup);
     }
     handleMsg2(packet, _rand) {
         if (this.role !== "initiator")
@@ -284,12 +288,18 @@ export class FspSession {
         }
         return { msgType: inner.msgType };
     }
+    close() {
+        this.state = "closed";
+        this.hs = undefined;
+        this.tx = undefined;
+        this.rx = undefined;
+    }
 }
 function validateEstablishedFlags(flags) {
     if (!Number.isInteger(flags) || flags < 0 || flags > 0xff) {
         throw new Error("FSP flags must be one byte");
     }
-    if ((flags & ~FSP_FLAG_DIRECT_TRANSPORT) !== 0) {
+    if ((flags & ~(FSP_FLAG_DIRECT_TRANSPORT | FSP_FLAG_K)) !== 0) {
         throw new Error("unsupported FSP established flags");
     }
 }
