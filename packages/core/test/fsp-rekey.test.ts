@@ -46,6 +46,9 @@ describe("FipsNode FSP rekey epochs", () => {
     (node as any).sendFspToward = async (_addr: Uint8Array, reply: Uint8Array) => {
       routedReply = new Uint8Array(reply);
     };
+    (node as any).sendFspReplyToward = async (_addr: Uint8Array, reply: Uint8Array) => {
+      routedReply = new Uint8Array(reply);
+    };
     const received: string[] = [];
     node.on("endpointData", (event) => {
       received.push(new TextDecoder().decode((event as { payload: Uint8Array }).payload));

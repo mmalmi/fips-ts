@@ -212,6 +212,9 @@ describe("FipsNode on-demand route resolution", () => {
       transports: [cWebRtc, cBackhaul],
       forwarding: true,
       routingMode: "reply_learned",
+      // This fixture has an extra transit hop; its planned backhaul route
+      // stands in for Rust tree routing. WebVM itself has no default route.
+      defaultRoute: toHex(b.publicKey),
     });
     const dNode = new FipsNode({
       identity: d,
@@ -273,6 +276,7 @@ describe("FipsNode on-demand route resolution", () => {
     const a = await identityFromSecretKey(new Uint8Array(32).fill(0x41));
     const b = await identityFromSecretKey(new Uint8Array(32).fill(0x42));
     const unknown = await identityFromSecretKey(new Uint8Array(32).fill(0x43));
+    const claimedSource = await identityFromSecretKey(new Uint8Array(32).fill(0x44));
     const aTransport = new RoutedTransport("loop-like");
     const bTransport = new RoutedTransport("loop-like");
     const aNode = new FipsNode({
@@ -284,6 +288,7 @@ describe("FipsNode on-demand route resolution", () => {
       identity: b,
       transports: [bTransport],
       forwarding: true,
+      routingMode: "reply_learned",
       defaultRoute: toHex(a.publicKey),
     });
     const noRoute = new Promise<void>((resolve) => {
@@ -300,7 +305,7 @@ describe("FipsNode on-demand route resolution", () => {
       await sendSessionDatagram(aNode, {
         ttl: 63,
         pathMtu: 1_200,
-        srcAddr: a.nodeAddr,
+        srcAddr: claimedSource.nodeAddr,
         destAddr: unknown.nodeAddr,
         payload: new Uint8Array([1]),
       });
@@ -308,6 +313,9 @@ describe("FipsNode on-demand route resolution", () => {
       await noRoute;
       expect(aTransport.resolveCalls).toBe(0);
       expect(bTransport.resolveCalls).toBe(0);
+      const learnedRoutes = (bNode as unknown as { learnedRoutes: Map<string, unknown> })
+        .learnedRoutes;
+      expect(learnedRoutes.has(nodeAddrToHex(claimedSource.nodeAddr))).toBe(false);
     } finally {
       await aNode.stop();
       await bNode.stop();

@@ -575,7 +575,6 @@ export class FipsNode {
             return;
         }
         const datagram = decodeSessionDatagramPayload(payload);
-        this.learnReverseRoute(nodeAddrToHex(datagram.srcAddr), peer);
         if (bytesEqual(datagram.destAddr, this.identity.nodeAddr)) {
             this.logger.debug("session datagram delivered locally", nodeAddrToHex(datagram.srcAddr), "phase", datagram.payload[0] & 0x0f, "bytes", datagram.payload.length);
             await this.handleFspFromPeer(peer, datagram.srcAddr, datagram.payload);
@@ -742,7 +741,7 @@ export class FipsNode {
             peer.drainingResponderLinks = undefined;
         }
     }
-    async handleFspFromPeer(_peer, srcNodeAddr, fspFrame) {
+    async handleFspFromPeer(peer, srcNodeAddr, fspFrame) {
         const phase = peekFspPhase(fspFrame);
         const srcNodeHex = nodeAddrToHex(srcNodeAddr);
         let session = this.sessions.get(srcNodeHex);
@@ -769,6 +768,7 @@ export class FipsNode {
                 }
             }
             const result = receiveFsp.decryptIncoming(fspFrame);
+            this.learnReverseRoute(srcNodeHex, peer);
             if (promotePending) {
                 session.previousFsp?.fsp.close();
                 session.previousFsp = {
@@ -838,7 +838,7 @@ export class FipsNode {
                 this.sessions.set(srcNodeHex, session);
                 this.emit("session", { remotePubkey: srcNodeHex, state: "establishing" });
             }
-            await this.sendFspToward(srcNodeAddr, reply);
+            await this.sendFspReplyToward(srcNodeAddr, reply, peer);
             return;
         }
         if (phase === 2) {
@@ -859,12 +859,23 @@ export class FipsNode {
             const handshakeFsp = session.pendingResponderFsp ?? session.fsp;
             handshakeFsp.handleSessionMsg3(fspFrame);
             if (handshakeFsp.remotePubkey) {
+                if (!bytesEqual(deriveNodeAddr(handshakeFsp.remotePubkey), srcNodeAddr)) {
+                    handshakeFsp.close();
+                    if (session.pendingResponderFsp === handshakeFsp) {
+                        session.pendingResponderFsp = undefined;
+                    }
+                    else {
+                        this.sessions.delete(srcNodeHex);
+                    }
+                    throw new Error("FSP msg3 authenticated key does not match claimed source NodeAddr");
+                }
                 if (session.remotePubkey && !bytesEqual(session.remotePubkey, handshakeFsp.remotePubkey)) {
                     throw new Error("FSP rekey changed the authenticated remote identity");
                 }
                 session.remotePubkey = handshakeFsp.remotePubkey;
                 session.remotePubkeyHex = toHex(handshakeFsp.remotePubkey);
             }
+            this.learnReverseRoute(srcNodeHex, peer);
             this.emit("session", {
                 remotePubkey: session.remotePubkeyHex ?? srcNodeHex,
                 state: "established",
@@ -923,6 +934,24 @@ export class FipsNode {
             destAddr: remoteNodeAddr,
             payload: fspFrame,
         });
+    }
+    /**
+     * Return a pre-authentication FSP handshake response through the
+     * authenticated adjacent peer that delivered the request. This mirrors
+     * Rust fips-core's send_session_datagram_reply path and does not create a
+     * learned route from an unauthenticated SessionDatagram source claim.
+     */
+    async sendFspReplyToward(remoteNodeAddr, fspFrame, previousHop) {
+        const datagram = {
+            ttl: 64,
+            pathMtu: FSP_DEFAULT_PATH_MTU,
+            srcAddr: this.identity.nodeAddr,
+            destAddr: remoteNodeAddr,
+            payload: fspFrame,
+        };
+        this.logger.debug("session datagram reply routed", nodeAddrToHex(datagram.srcAddr), nodeAddrToHex(datagram.destAddr), "phase", datagram.payload[0] & 0x0f, "bytes", datagram.payload.length, previousHop.remoteAddr.transport, previousHop.remoteAddr.addr);
+        const encoded = encodeSessionDatagram(datagram);
+        await this.sendLinkMessage(previousHop, LinkMessageType.SessionDatagram, encoded.subarray(1));
     }
     prunePreviousFsp(session, nowMs) {
         if (!session.previousFsp || session.previousFsp.expiresAtMs > nowMs)

@@ -71,6 +71,13 @@ export declare class FipsNode {
      * Wrap an FSP frame in a SessionDatagram and send it toward a remote NodeAddr.
      */
     private sendFspToward;
+    /**
+     * Return a pre-authentication FSP handshake response through the
+     * authenticated adjacent peer that delivered the request. This mirrors
+     * Rust fips-core's send_session_datagram_reply path and does not create a
+     * learned route from an unauthenticated SessionDatagram source claim.
+     */
+    private sendFspReplyToward;
     private prunePreviousFsp;
     private directPeerForSession;
     private sendDirectFsp;
