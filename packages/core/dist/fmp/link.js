@@ -178,11 +178,12 @@ export class FmpLink {
         if (est.receiverIdx !== this.localSessionIdx) {
             throw new Error("FMP Established receiver_idx mismatch");
         }
-        if (!this.rxReplay.accept(est.counter)) {
+        if (!this.rxReplay.check(est.counter)) {
             throw new Error("FMP replay/duplicate counter");
         }
         const aad = encodeFmpEstablishedHeader({ flags: est.flags, receiverIdx: est.receiverIdx, counter: est.counter }, est.payloadLen);
         const plaintext = openWithCounter(this.rx, est.counter, aad, est.ciphertext);
+        this.rxReplay.accept(est.counter);
         const inner = decodeFmpInner(plaintext);
         return { msgType: inner.msgType, payload: inner.payload };
     }

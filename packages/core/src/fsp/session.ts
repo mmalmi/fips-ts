@@ -65,6 +65,8 @@ export class FspSession {
   private hs?: NoiseHandshake;
   private tx?: CipherState;
   private rx?: CipherState;
+  private receivedSessionSetup?: Uint8Array;
+  private sentSessionAck?: Uint8Array;
   private establishedMsg3?: Uint8Array;
   private txCounter = 0n;
   private replay = new ReplayWindow();
@@ -138,6 +140,12 @@ export class FspSession {
     localNodeAddr: NodeAddr,
   ): Uint8Array {
     if (this.role !== "responder") throw new Error("only responder handles SessionSetup");
+    if (this.receivedSessionSetup) {
+      if (bytesEqual(packet, this.receivedSessionSetup) && this.sentSessionAck) {
+        return new Uint8Array(this.sentSessionAck);
+      }
+      throw new Error("unexpected FSP SessionSetup after handshake start");
+    }
     if (!this.hs) throw new Error("noise handshake state missing");
     const setup = decodeSessionSetup(packet);
     if (setup.handshakePayload.length !== NOISE_XK_MSG1_LEN) {
@@ -149,12 +157,16 @@ export class FspSession {
     if (noiseMsg.length !== NOISE_XK_MSG2_LEN) {
       throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
     }
-    return encodeSessionAck({
+    const reply = encodeSessionAck({
       srcCoords: [localNodeAddr],
       destCoords: setup.srcCoords,
       flags: 0,
       handshakePayload: noiseMsg,
     });
+    this.state = "handshaking";
+    this.receivedSessionSetup = new Uint8Array(packet);
+    this.sentSessionAck = new Uint8Array(reply);
+    return reply;
   }
 
   handleMsg2(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array {
@@ -284,7 +296,7 @@ export class FspSession {
   ): { msgType: number; data?: DataPacket; endpointData?: Uint8Array } {
     if (this.state !== "established" || !this.rx) throw new Error("FSP not established");
     const est = decodeFspEstablished(packet);
-    if (!this.replay.accept(est.counter)) {
+    if (!this.replay.check(est.counter)) {
       throw new Error("FSP replay/duplicate counter");
     }
     const aad = encodeFspEstablishedHeader(
@@ -296,6 +308,7 @@ export class FspSession {
       noiseNonce(est.counter),
       aad,
     ).decrypt(est.ciphertext);
+    this.replay.accept(est.counter);
     const inner = decodeFspInner(plaintext);
     if (inner.msgType === FSP_MSG_DATA) {
       return { msgType: inner.msgType, data: decodeDataPacket(inner.payload) };

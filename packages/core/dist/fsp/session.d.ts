@@ -21,6 +21,8 @@ export declare class FspSession {
     private hs?;
     private tx?;
     private rx?;
+    private receivedSessionSetup?;
+    private sentSessionAck?;
     private establishedMsg3?;
     private txCounter;
     private replay;

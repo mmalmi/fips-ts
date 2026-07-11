@@ -999,15 +999,40 @@ export class FipsNode {
     }
     // Handshake phases 1/2/3.
     if (phase === 1) {
-      const fsp = new FspSession({ identity: this.identity, role: "responder" });
-      const reply = fsp.handleSessionSetup(
-        fspFrame,
-        (n) => this.random.bytes(n),
-        this.identity.nodeAddr,
-      );
-      session = { remoteNodeAddr: srcNodeAddr, fsp };
-      this.sessions.set(srcNodeHex, session);
-      this.emit("session", { remotePubkey: srcNodeHex, state: "establishing" });
+      let reply: Uint8Array;
+      if (session?.fsp.role === "responder") {
+        try {
+          reply = session.fsp.handleSessionSetup(
+            fspFrame,
+            (n) => this.random.bytes(n),
+            this.identity.nodeAddr,
+          );
+        } catch (error) {
+          if (!(error instanceof Error)
+            || error.message !== "unexpected FSP SessionSetup after handshake start") {
+            throw error;
+          }
+          const fsp = new FspSession({ identity: this.identity, role: "responder" });
+          reply = fsp.handleSessionSetup(
+            fspFrame,
+            (n) => this.random.bytes(n),
+            this.identity.nodeAddr,
+          );
+          session = { remoteNodeAddr: srcNodeAddr, fsp };
+          this.sessions.set(srcNodeHex, session);
+          this.emit("session", { remotePubkey: srcNodeHex, state: "establishing" });
+        }
+      } else {
+        const fsp = new FspSession({ identity: this.identity, role: "responder" });
+        reply = fsp.handleSessionSetup(
+          fspFrame,
+          (n) => this.random.bytes(n),
+          this.identity.nodeAddr,
+        );
+        session = { remoteNodeAddr: srcNodeAddr, fsp };
+        this.sessions.set(srcNodeHex, session);
+        this.emit("session", { remotePubkey: srcNodeHex, state: "establishing" });
+      }
       await this.sendFspToward(srcNodeAddr, reply);
       return;
     }

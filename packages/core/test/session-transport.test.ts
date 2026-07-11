@@ -158,4 +158,54 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
       "unexpected FSP Msg3 after establishment",
     );
   });
+
+  it("FspSession resends the original SessionAck for duplicate SessionSetup", async () => {
+    const { FspSession } = await import("../src/fsp/session.js");
+    const a = await identityFromSecretKey(new Uint8Array(32).fill(0x24));
+    const b = await identityFromSecretKey(new Uint8Array(32).fill(0x42));
+    const init = new FspSession({
+      identity: a,
+      role: "initiator",
+      remotePubkey: b.publicKey,
+    });
+    const resp = new FspSession({ identity: b, role: "responder" });
+
+    const msg1 = init.buildSessionSetup(() => new Uint8Array(0), a.nodeAddr, b.nodeAddr);
+    const msg2 = resp.handleSessionSetup(msg1, () => new Uint8Array(0), b.nodeAddr);
+    expect(resp.handleSessionSetup(msg1, () => new Uint8Array(0), b.nodeAddr)).toEqual(msg2);
+
+    const msg3 = init.handleSessionAck(msg2, () => new Uint8Array(0));
+    resp.handleSessionMsg3(msg3);
+    expect(resp.handleSessionSetup(msg1, () => new Uint8Array(0), b.nodeAddr)).toEqual(msg2);
+
+    const frame = init.encryptEndpointData(new TextEncoder().encode("still established"));
+    expect(new TextDecoder().decode(resp.decryptIncoming(frame).endpointData)).toBe(
+      "still established",
+    );
+  });
+
+  it("FspSession does not consume a counter when authentication fails", async () => {
+    const { FspSession } = await import("../src/fsp/session.js");
+    const a = await identityFromSecretKey(new Uint8Array(32).fill(0x26));
+    const b = await identityFromSecretKey(new Uint8Array(32).fill(0x62));
+    const init = new FspSession({
+      identity: a,
+      role: "initiator",
+      remotePubkey: b.publicKey,
+    });
+    const resp = new FspSession({ identity: b, role: "responder" });
+
+    const msg1 = init.buildMsg1(() => new Uint8Array(0));
+    const msg2 = resp.handleMsg1(msg1, () => new Uint8Array(0));
+    const msg3 = init.handleMsg2(msg2, () => new Uint8Array(0));
+    resp.handleMsg3(msg3);
+
+    const frame = init.encryptEndpointData(new TextEncoder().encode("authenticated"));
+    const corrupted = new Uint8Array(frame);
+    corrupted[corrupted.length - 1] ^= 1;
+    expect(() => resp.decryptIncoming(corrupted)).toThrow();
+    expect(new TextDecoder().decode(resp.decryptIncoming(frame).endpointData)).toBe(
+      "authenticated",
+    );
+  });
 });

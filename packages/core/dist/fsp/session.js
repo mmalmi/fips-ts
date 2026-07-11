@@ -22,6 +22,8 @@ export class FspSession {
     hs;
     tx;
     rx;
+    receivedSessionSetup;
+    sentSessionAck;
     establishedMsg3;
     txCounter = 0n;
     replay = new ReplayWindow();
@@ -93,6 +95,12 @@ export class FspSession {
     handleSessionSetup(packet, _rand, localNodeAddr) {
         if (this.role !== "responder")
             throw new Error("only responder handles SessionSetup");
+        if (this.receivedSessionSetup) {
+            if (bytesEqual(packet, this.receivedSessionSetup) && this.sentSessionAck) {
+                return new Uint8Array(this.sentSessionAck);
+            }
+            throw new Error("unexpected FSP SessionSetup after handshake start");
+        }
         if (!this.hs)
             throw new Error("noise handshake state missing");
         const setup = decodeSessionSetup(packet);
@@ -106,12 +114,16 @@ export class FspSession {
         if (noiseMsg.length !== NOISE_XK_MSG2_LEN) {
             throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
         }
-        return encodeSessionAck({
+        const reply = encodeSessionAck({
             srcCoords: [localNodeAddr],
             destCoords: setup.srcCoords,
             flags: 0,
             handshakePayload: noiseMsg,
         });
+        this.state = "handshaking";
+        this.receivedSessionSetup = new Uint8Array(packet);
+        this.sentSessionAck = new Uint8Array(reply);
+        return reply;
     }
     handleMsg2(packet, _rand) {
         if (this.role !== "initiator")
@@ -257,11 +269,12 @@ export class FspSession {
         if (this.state !== "established" || !this.rx)
             throw new Error("FSP not established");
         const est = decodeFspEstablished(packet);
-        if (!this.replay.accept(est.counter)) {
+        if (!this.replay.check(est.counter)) {
             throw new Error("FSP replay/duplicate counter");
         }
         const aad = encodeFspEstablishedHeader({ flags: est.flags, counter: est.counter }, est.payloadLen);
         const plaintext = chacha20poly1305(this.rx.getKey(), noiseNonce(est.counter), aad).decrypt(est.ciphertext);
+        this.replay.accept(est.counter);
         const inner = decodeFspInner(plaintext);
         if (inner.msgType === FSP_MSG_DATA) {
             return { msgType: inner.msgType, data: decodeDataPacket(inner.payload) };
