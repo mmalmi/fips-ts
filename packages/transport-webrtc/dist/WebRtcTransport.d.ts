@@ -34,6 +34,7 @@ export declare class WebRtcTransport implements Transport {
     private ownsRelayClients;
     private readonly conns;
     private readonly pendingDials;
+    private readonly pendingInbound;
     private readonly pendingConnects;
     private readonly autoConnectPeers;
     private readonly knownSessionIds;
@@ -64,5 +65,6 @@ export declare class WebRtcTransport implements Transport {
     private startInitiatorHandshake;
     private handleIncomingSignal;
     private scheduleAutoReconnect;
+    private clearPendingInbound;
 }
 //# sourceMappingURL=WebRtcTransport.d.ts.map

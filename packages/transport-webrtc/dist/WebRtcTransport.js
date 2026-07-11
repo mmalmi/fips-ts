@@ -2,6 +2,7 @@ import { fromHex, deriveNodeAddr, nodeAddrToHex, toHex, noopLogger, } from "@fip
 import { NostrRelayClient } from "./NostrRelayClient.js";
 import { DEFAULT_FIPS_ADVERT_TTL_MS, FIPS_ADVERT_D_TAG, NostrWebRtcSignaling, } from "./NostrWebRtcSignaling.js";
 import { WebRtcConnection } from "./WebRtcConnection.js";
+import { AsyncEventStream, advertExpiryMs, cloneDiscoveredPeer, emptyAsyncIterable, normalizeSignalRelays, waitForIceGatheringComplete, } from "./WebRtcTransportSupport.js";
 import { validateWebRtcSignal, } from "./WebRtcSignal.js";
 const MAX_ADVERT_CACHE_ENTRIES = 256;
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
@@ -29,6 +30,7 @@ export class WebRtcTransport {
     ownsRelayClients = false;
     conns = new Map(); // by pubkeyHex
     pendingDials = new Map(); // by sessionId
+    pendingInbound = new Map(); // by sessionId
     pendingConnects = new Map(); // by pubkeyHex
     autoConnectPeers = new Set(); // by pubkeyHex
     knownSessionIds = new Set();
@@ -150,6 +152,9 @@ export class WebRtcTransport {
             dial.reject(new Error("transport stopped"));
         }
         this.pendingDials.clear();
+        for (const timer of this.pendingInbound.values())
+            clearTimeout(timer);
+        this.pendingInbound.clear();
         this.pendingConnects.clear();
         this.knownSessionIds.clear();
         this.seenSessionIds.clear();
@@ -497,36 +502,55 @@ export class WebRtcTransport {
         if (valid.kind === "offer") {
             if (!this.cfg.acceptConnections)
                 return;
+            if (this.pendingInbound.has(valid.sessionId))
+                return;
+            if (this.conns.size + this.pendingDials.size + this.pendingInbound.size
+                >= this.cfg.maxConnections) {
+                this.logger.warn("inbound WebRTC offer rejected at connection limit", valid.sender);
+                return;
+            }
             const remoteAddr = { transport: "webrtc", addr: valid.sender };
             const pc = new this.RTCPC({
                 iceServers: (this.cfg.stunServers ?? []).map((u) => ({ urls: u })),
             });
+            this.pendingInbound.set(valid.sessionId, setTimeout(() => {
+                this.pendingInbound.delete(valid.sessionId);
+                pc.close();
+            }, this.cfg.connectTimeoutMs));
             // Capture the incoming data channel via ondatachannel; wire it up
             // *after* publishing the answer, since the channel won't arrive until
             // the initiator receives the answer and the ICE handshake completes.
             const dcPromise = new Promise((resolve) => {
                 pc.ondatachannel = (evt) => resolve(evt.channel);
             });
-            await pc.setRemoteDescription({ type: "offer", sdp: valid.sdp });
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            await waitForIceGatheringComplete(pc, this.cfg.iceGatherTimeoutMs);
-            this.knownSessionIds.add(valid.sessionId);
-            const reply = {
-                protocol: "fips-webrtc-v1",
-                version: 1,
-                sessionId: valid.sessionId,
-                kind: "answer",
-                sender: localPubkeyHex,
-                recipient: valid.sender,
-                sdp: pc.localDescription.sdp,
-                createdAtMs: Date.now(),
-                expiresAtMs: Date.now() + 60_000,
-            };
-            await this.signaling.sendSignal(senderXOnlyHex, reply, [sourceRelayUrl]);
-            this.logger.debug("webrtc answer sent", valid.sender, valid.sessionId);
+            try {
+                await pc.setRemoteDescription({ type: "offer", sdp: valid.sdp });
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                await waitForIceGatheringComplete(pc, this.cfg.iceGatherTimeoutMs);
+                this.knownSessionIds.add(valid.sessionId);
+                const reply = {
+                    protocol: "fips-webrtc-v1",
+                    version: 1,
+                    sessionId: valid.sessionId,
+                    kind: "answer",
+                    sender: localPubkeyHex,
+                    recipient: valid.sender,
+                    sdp: pc.localDescription.sdp,
+                    createdAtMs: Date.now(),
+                    expiresAtMs: Date.now() + 60_000,
+                };
+                await this.signaling.sendSignal(senderXOnlyHex, reply, [sourceRelayUrl]);
+                this.logger.debug("webrtc answer sent", valid.sender, valid.sessionId);
+            }
+            catch (err) {
+                this.clearPendingInbound(valid.sessionId);
+                pc.close();
+                throw err;
+            }
             // Now wait for the negotiated channel to arrive and wire it up.
             dcPromise.then((dataChannel) => {
+                this.clearPendingInbound(valid.sessionId);
                 let conn = null;
                 conn = new WebRtcConnection({
                     remotePubkeyHex: valid.sender,
@@ -554,7 +578,10 @@ export class WebRtcTransport {
                     },
                     logger: this.logger,
                 });
-            }).catch((err) => this.logger.warn("dcPromise", err));
+            }).catch((err) => {
+                this.clearPendingInbound(valid.sessionId);
+                this.logger.warn("dcPromise", err);
+            });
             return;
         }
         if (valid.kind === "answer") {
@@ -619,113 +646,11 @@ export class WebRtcTransport {
         }, AUTO_RECONNECT_DELAY_MS);
         this.autoReconnectTimers.set(remotePubkeyHex, timer);
     }
-}
-function waitForIceGatheringComplete(pc, timeoutMs) {
-    if (pc.iceGatheringState === "complete")
-        return Promise.resolve();
-    return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-            pc.removeEventListener("icegatheringstatechange", onChange);
-            resolve();
-        }, timeoutMs);
-        function onChange() {
-            if (pc.iceGatheringState === "complete") {
-                clearTimeout(timer);
-                pc.removeEventListener("icegatheringstatechange", onChange);
-                resolve();
-            }
-        }
-        pc.addEventListener("icegatheringstatechange", onChange);
-    });
-}
-class AsyncEventStream {
-    values = [];
-    waiters = [];
-    closed = false;
-    push(value) {
-        if (this.closed)
-            return;
-        const waiter = this.waiters.shift();
-        if (waiter)
-            waiter({ done: false, value });
-        else
-            this.values.push(value);
+    clearPendingInbound(sessionId) {
+        const timer = this.pendingInbound.get(sessionId);
+        if (timer)
+            clearTimeout(timer);
+        this.pendingInbound.delete(sessionId);
     }
-    close() {
-        if (this.closed)
-            return;
-        this.closed = true;
-        this.values.length = 0;
-        for (const waiter of this.waiters.splice(0)) {
-            waiter({ done: true, value: undefined });
-        }
-    }
-    [Symbol.asyncIterator]() {
-        return {
-            next: () => {
-                const value = this.values.shift();
-                if (value !== undefined)
-                    return Promise.resolve({ done: false, value });
-                if (this.closed)
-                    return Promise.resolve({ done: true, value: undefined });
-                return new Promise((resolve) => {
-                    this.waiters.push(resolve);
-                });
-            },
-        };
-    }
-}
-async function* emptyAsyncIterable() {
-    return;
-}
-function normalizeSignalRelays(value) {
-    if (!Array.isArray(value))
-        return [];
-    const relays = [];
-    for (const candidate of value.slice(0, 8)) {
-        if (typeof candidate !== "string")
-            continue;
-        try {
-            const parsed = new URL(candidate);
-            if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:")
-                continue;
-            const normalized = parsed.toString();
-            if (!relays.includes(normalized))
-                relays.push(normalized);
-        }
-        catch {
-            /* Invalid advertised relay URL. */
-        }
-    }
-    return relays;
-}
-function cloneDiscoveredPeer(peer) {
-    return {
-        remoteAddr: { ...peer.remoteAddr },
-        publicKey: peer.publicKey ? new Uint8Array(peer.publicKey) : undefined,
-        meta: peer.meta
-            ? Object.fromEntries(Object.entries(peer.meta).map(([key, value]) => [
-                key,
-                Array.isArray(value) ? [...value] : value,
-            ]))
-            : undefined,
-    };
-}
-function advertExpiryMs(event, ttlMs, nowMs) {
-    if (!Number.isFinite(ttlMs) || ttlMs <= 0)
-        return undefined;
-    const createdAtMs = event.created_at * 1_000;
-    if (!Number.isSafeInteger(createdAtMs) || createdAtMs < 0)
-        return undefined;
-    const localExpiryMs = Math.min(createdAtMs + ttlMs, nowMs + ttlMs);
-    const expiration = event.tags.find((tag) => tag[0] === "expiration")?.[1];
-    if (expiration === undefined)
-        return localExpiryMs;
-    if (!/^\d+$/.test(expiration))
-        return undefined;
-    const advertisedExpiryMs = Number(expiration) * 1_000;
-    if (!Number.isSafeInteger(advertisedExpiryMs))
-        return undefined;
-    return Math.min(localExpiryMs, advertisedExpiryMs);
 }
 //# sourceMappingURL=WebRtcTransport.js.map
