@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FipsNode,
   FMP_PHASE_ESTABLISHED,
-  deriveNodeAddr,
+  LinkMessageType,
+  encodeLookupRequestPayload,
   identityFromSecretKey,
   nodeAddrToHex,
   peekFmpPhase,
@@ -87,6 +88,24 @@ function sendSessionDatagram(node: FipsNode, datagram: SessionDatagram): Promise
   ).sendSessionDatagram(datagram);
 }
 
+function sendLookupRequest(
+  node: FipsNode,
+  peerPubkey: string,
+  request: Parameters<typeof encodeLookupRequestPayload>[0],
+): Promise<void> {
+  const internals = node as unknown as {
+    peersByPubkey: Map<string, unknown>;
+    sendLinkMessage(peer: unknown, msgType: number, payload: Uint8Array): Promise<void>;
+  };
+  const peer = internals.peersByPubkey.get(peerPubkey);
+  if (!peer) throw new Error(`missing test peer ${peerPubkey}`);
+  return internals.sendLinkMessage(
+    peer,
+    LinkMessageType.LookupRequest,
+    encodeLookupRequestPayload(request),
+  );
+}
+
 afterEach(() => {
   registry.clear();
   vi.useRealTimers();
@@ -166,15 +185,17 @@ describe("FipsNode on-demand route resolution", () => {
     }
   });
 
-  it("forwards from an Ethernet-like link onto a resolved WebRTC-like link", async () => {
+  it("uses Rust-compatible reply-learned lookup routing across a transit bridge", async () => {
     const a = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
     const b = await identityFromSecretKey(new Uint8Array(32).fill(0x32));
     const c = await identityFromSecretKey(new Uint8Array(32).fill(0x33));
+    const d = await identityFromSecretKey(new Uint8Array(32).fill(0x34));
     const aEthernet = new RoutedTransport("ethernet-like");
     const bEthernet = new RoutedTransport("ethernet-like");
     const bWebRtc = new RoutedTransport("webrtc-like");
     const cWebRtc = new RoutedTransport("webrtc-like");
-    bWebRtc.resolvedPeers.set(nodeAddrToHex(deriveNodeAddr(c.publicKey)), c.publicKey);
+    const cBackhaul = new RoutedTransport("backhaul-like");
+    const dBackhaul = new RoutedTransport("backhaul-like");
     const aNode = new FipsNode({
       identity: a,
       transports: [aEthernet],
@@ -184,37 +205,112 @@ describe("FipsNode on-demand route resolution", () => {
       identity: b,
       transports: [bEthernet, bWebRtc],
       forwarding: true,
+      routingMode: "reply_learned",
     });
     const cNode = new FipsNode({
       identity: c,
-      transports: [cWebRtc],
-      defaultRoute: toHex(b.publicKey),
+      transports: [cWebRtc, cBackhaul],
+      forwarding: true,
+      routingMode: "reply_learned",
+    });
+    const dNode = new FipsNode({
+      identity: d,
+      transports: [dBackhaul],
+      defaultRoute: toHex(c.publicKey),
     });
     let received: Uint8Array | undefined;
-    cNode.registerService(8_080, ({ payload }) => {
+    dNode.registerService(8_080, ({ payload }) => {
       received = payload;
     });
 
     await aNode.start();
     await bNode.start();
     await cNode.start();
+    await dNode.start();
     try {
       await aNode.connect({
         transport: "ethernet-like",
         addr: toHex(b.publicKey),
       });
+      await bNode.connect({
+        transport: "webrtc-like",
+        addr: toHex(c.publicKey),
+      });
+      await cNode.connect({
+        transport: "backhaul-like",
+        addr: toHex(d.publicKey),
+      });
+      await sendLookupRequest(aNode, toHex(b.publicKey), {
+        requestId: 0x3132333435363738n,
+        target: d.nodeAddr,
+        origin: a.nodeAddr,
+        ttl: 8,
+        minMtu: 0,
+        originCoords: [a.nodeAddr],
+      });
+      await vi.waitFor(() => {
+        const learnedRoutes = (bNode as unknown as { learnedRoutes: Map<string, unknown> })
+          .learnedRoutes;
+        expect(learnedRoutes.has(nodeAddrToHex(d.nodeAddr))).toBe(true);
+      });
       await aNode.sendDatagram({
-        dst: toHex(c.publicKey),
+        dst: toHex(d.publicKey),
         dstPort: 8_080,
         payload: new TextEncoder().encode("ethernet-to-webrtc"),
       });
 
       expect(new TextDecoder().decode(received)).toBe("ethernet-to-webrtc");
-      expect(bWebRtc.resolveCalls).toBe(1);
+      expect(bWebRtc.resolveCalls).toBe(0);
     } finally {
       await aNode.stop();
       await bNode.stop();
       await cNode.stop();
+      await dNode.stop();
+    }
+  });
+
+  it("never forwards a datagram back to the peer it arrived from", async () => {
+    const a = await identityFromSecretKey(new Uint8Array(32).fill(0x41));
+    const b = await identityFromSecretKey(new Uint8Array(32).fill(0x42));
+    const unknown = await identityFromSecretKey(new Uint8Array(32).fill(0x43));
+    const aTransport = new RoutedTransport("loop-like");
+    const bTransport = new RoutedTransport("loop-like");
+    const aNode = new FipsNode({
+      identity: a,
+      transports: [aTransport],
+      defaultRoute: toHex(b.publicKey),
+    });
+    const bNode = new FipsNode({
+      identity: b,
+      transports: [bTransport],
+      forwarding: true,
+      defaultRoute: toHex(a.publicKey),
+    });
+    const noRoute = new Promise<void>((resolve) => {
+      bNode.on("error", (event) => {
+        const error = event as { err: Error };
+        if (error.err.message === `no route to ${nodeAddrToHex(unknown.nodeAddr)}`) resolve();
+      });
+    });
+
+    await aNode.start();
+    await bNode.start();
+    try {
+      await aNode.connect({ transport: "loop-like", addr: toHex(b.publicKey) });
+      await sendSessionDatagram(aNode, {
+        ttl: 63,
+        pathMtu: 1_200,
+        srcAddr: a.nodeAddr,
+        destAddr: unknown.nodeAddr,
+        payload: new Uint8Array([1]),
+      });
+
+      await noRoute;
+      expect(aTransport.resolveCalls).toBe(0);
+      expect(bTransport.resolveCalls).toBe(0);
+    } finally {
+      await aNode.stop();
+      await bNode.stop();
     }
   });
 });

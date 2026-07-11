@@ -4,6 +4,7 @@ import type { FipsEventName, FipsNodeConfig, FipsServiceHandler } from "./types.
 export declare class FipsNode {
     readonly identity: FipsIdentity;
     readonly forwarding: boolean;
+    private readonly routingMode;
     private readonly transports;
     private readonly random;
     private readonly logger;
@@ -16,6 +17,7 @@ export declare class FipsNode {
     private pendingPeerConnects;
     private pendingRouteResolutions;
     private lookupReversePaths;
+    private readonly learnedRoutes;
     private sessions;
     private listeners;
     private discoveryTasks;
@@ -74,6 +76,7 @@ export declare class FipsNode {
     private sendDirectFsp;
     private sendSessionDatagram;
     private nextHopFor;
+    private learnReverseRoute;
     private resolveRoute;
     private resolveAndConnectRoute;
 }

@@ -2,6 +2,7 @@ import { FipsNode, type FipsServiceHandler, type Logger, type ServiceRegistratio
 export interface CreateBrowserFipsNodeConfig {
     identityStoreName?: string;
     forwarding?: boolean;
+    routingMode?: "tree" | "reply_learned";
     defaultRoute?: string;
     transports: Transport[];
     services?: ServiceRegistration[];

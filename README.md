@@ -53,7 +53,10 @@ The invariant: **WebRTC connects adjacent peers. FIPS routes opaque bytes to nod
 `sendFrame(frame)`. Both callbacks carry complete Ethernet frames without an
 FCS, making the package independent of any particular browser VM. Discovery
 beacons are consumed by `FipsNode` and establish a real FMP link automatically.
-Non-direct traffic requires an explicit `FipsNodeConfig.defaultRoute` next hop.
+For native-mesh transit, set `FipsNodeConfig.routingMode` to `reply_learned`.
+That mode mirrors Rust FIPS reverse-path learning: authenticated session traffic
+and successful lookup replies reinforce expiring, weighted next-hop routes.
+`defaultRoute` remains available for fixed test and point-to-point topologies.
 
 See [`docs/architecture.md`](docs/architecture.md), [`docs/rust-compat.md`](docs/rust-compat.md), [`docs/signal-protocol.md`](docs/signal-protocol.md), [`docs/hashtree-integration.md`](docs/hashtree-integration.md).
 

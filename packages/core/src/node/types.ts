@@ -28,6 +28,8 @@ export interface FipsNodeConfig {
   identity: FipsIdentity;
   transports: Transport[];
   forwarding?: boolean;
+  /** Matches Rust fips-core's `node.routing.mode`. Defaults to `tree`. */
+  routingMode?: "tree" | "reply_learned";
   /** Explicit next-hop peer pubkey for destinations without a direct link. */
   defaultRoute?: string;
   services?: ServiceRegistration[];

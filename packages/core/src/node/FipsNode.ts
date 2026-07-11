@@ -73,6 +73,7 @@ import type {
   ServiceContext,
   SessionEvent,
 } from "./types.js";
+import { LearnedRouteTable } from "./LearnedRouteTable.js";
 
 interface AdjacentPeer {
   pubkey: Uint8Array;           // 33 compressed
@@ -134,10 +135,14 @@ const ROUTE_RESOLUTION_TIMEOUT_MS = 5_000;
 const MAX_PENDING_ROUTE_RESOLUTIONS = 64;
 const LOOKUP_REVERSE_PATH_TTL_MS = 30_000;
 const MAX_LOOKUP_REVERSE_PATHS = 256;
+const REPLY_LEARNED_ROUTE_TTL_SECONDS = 300;
+const MAX_REPLY_LEARNED_ROUTES_PER_DESTINATION = 4;
+const MAX_REPLY_LEARNED_LOOKUP_PEERS = 16;
 
 export class FipsNode {
   readonly identity: FipsIdentity;
   readonly forwarding: boolean;
+  private readonly routingMode: "tree" | "reply_learned";
   private readonly transports: Transport[];
   private readonly random: RandomSource;
   private readonly logger: Logger;
@@ -151,6 +156,7 @@ export class FipsNode {
   private pendingPeerConnects = new Map<string, Promise<void>>(); // by transportAddressKey
   private pendingRouteResolutions = new Map<string, PendingRouteResolution>(); // by NodeAddr hex
   private lookupReversePaths = new Map<string, LookupReversePath>();
+  private readonly learnedRoutes = new LearnedRouteTable();
   private sessions = new Map<string, Session>();    // by remote NodeAddr hex
   private listeners = new Map<FipsEventName, Set<(event: unknown) => void>>();
   private discoveryTasks = new Set<Promise<void>>();
@@ -164,6 +170,7 @@ export class FipsNode {
     this.identity = cfg.identity;
     this.transports = cfg.transports;
     this.forwarding = cfg.forwarding ?? false;
+    this.routingMode = cfg.routingMode ?? "tree";
     this.defaultRoute = cfg.defaultRoute?.toLowerCase();
     if (this.defaultRoute && !/^(02|03)[0-9a-f]{64}$/.test(this.defaultRoute)) {
       throw new Error("defaultRoute must be a 33-byte compressed pubkey hex");
@@ -254,6 +261,7 @@ export class FipsNode {
     this.pendingPeerConnects.clear();
     this.pendingRouteResolutions.clear();
     this.lookupReversePaths.clear();
+    this.learnedRoutes.clear();
     this.sessions.clear();
     this.directFspReassembler.clear();
   }
@@ -749,6 +757,7 @@ export class FipsNode {
     }
 
     const datagram = decodeSessionDatagramPayload(payload);
+    this.learnReverseRoute(nodeAddrToHex(datagram.srcAddr), peer);
     if (bytesEqual(datagram.destAddr, this.identity.nodeAddr)) {
       this.logger.debug(
         "session datagram delivered locally",
@@ -781,10 +790,13 @@ export class FipsNode {
       "ttl",
       datagram.ttl,
     );
-    await this.sendSessionDatagram({
-      ...datagram,
-      ttl: datagram.ttl - 1,
-    });
+    await this.sendSessionDatagram(
+      {
+        ...datagram,
+        ttl: datagram.ttl - 1,
+      },
+      peer,
+    );
   }
 
   private async handleLookupRequest(
@@ -821,16 +833,23 @@ export class FipsNode {
     this.pruneLookupReversePaths(Date.now());
     if (this.lookupReversePaths.has(reverseKey)) return;
 
-    let nextHop = this.nextHopFor(targetHex);
-    if (!nextHop) {
-      await this.resolveRoute(request.target, targetHex);
-      nextHop = this.nextHopFor(targetHex);
-    }
-    if (!nextHop || nextHop === sourcePeer) {
+    const directOrLearned = this.nextHopFor(targetHex, sourcePeer);
+    const fallbackPeers = this.routingMode === "reply_learned" && !directOrLearned
+      ? [...this.peers.values()]
+        .filter((peer) =>
+          peer !== sourcePeer
+          && peer.link.state === "established"
+          && nodeAddrToHex(deriveNodeAddr(peer.pubkey)) !== nodeAddrToHex(request.origin)
+          && (request.minMtu === 0 || peer.transport.mtu >= request.minMtu)
+        )
+        .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS)
+      : [];
+    const nextHops = directOrLearned ? [directOrLearned] : fallbackPeers;
+    if (nextHops.length === 0) {
       this.logger.debug("lookup request not forwarded", targetHex, "no-next-hop");
       return;
     }
-    if (request.minMtu !== 0 && nextHop.transport.mtu < request.minMtu) {
+    if (directOrLearned && request.minMtu !== 0 && directOrLearned.transport.mtu < request.minMtu) {
       this.logger.debug("lookup request not forwarded", targetHex, "mtu");
       return;
     }
@@ -842,16 +861,20 @@ export class FipsNode {
       expiresAtMs: Date.now() + LOOKUP_REVERSE_PATH_TTL_MS,
     });
     request.ttl -= 1;
-    await this.sendLinkMessage(
-      nextHop,
-      LinkMessageType.LookupRequest,
-      encodeLookupRequestPayload(request),
+    const encoded = encodeLookupRequestPayload(request);
+    const results = await Promise.allSettled(
+      nextHops.map((nextHop) =>
+        this.sendLinkMessage(nextHop, LinkMessageType.LookupRequest, encoded)
+      ),
     );
+    if (results.every((result) => result.status === "rejected")) {
+      this.lookupReversePaths.delete(reverseKey);
+      throw new Error(`failed to forward lookup request for ${targetHex}`);
+    }
     this.logger.debug(
       "lookup request forwarded",
       targetHex,
-      nextHop.remoteAddr.transport,
-      nextHop.remoteAddr.addr,
+      nextHops.length,
     );
   }
 
@@ -867,6 +890,7 @@ export class FipsNode {
       this.logger.debug("lookup response not forwarded", nodeAddrToHex(response.target));
       return;
     }
+    this.learnReverseRoute(nodeAddrToHex(response.target), sourcePeer);
     this.lookupReversePaths.delete(reverseKey);
     response.pathMtu = Math.min(response.pathMtu, reverse.peer.transport.mtu);
     await this.sendLinkMessage(
@@ -1189,12 +1213,15 @@ export class FipsNode {
     }
   }
 
-  private async sendSessionDatagram(datagram: SessionDatagram): Promise<void> {
+  private async sendSessionDatagram(
+    datagram: SessionDatagram,
+    previousHop?: AdjacentPeer,
+  ): Promise<void> {
     const destNodeHex = nodeAddrToHex(datagram.destAddr);
-    let nextHop = this.nextHopFor(destNodeHex);
-    if (!nextHop) {
+    let nextHop = this.nextHopFor(destNodeHex, previousHop);
+    if (!nextHop && !previousHop) {
       await this.resolveRoute(datagram.destAddr, destNodeHex);
-      nextHop = this.nextHopFor(destNodeHex);
+      nextHop = this.nextHopFor(destNodeHex, previousHop);
     }
     if (!nextHop) throw new Error(`no route to ${destNodeHex}`);
 
@@ -1218,13 +1245,43 @@ export class FipsNode {
     await nextHop.transport.send(nextHop.remoteAddr, outer);
   }
 
-  private nextHopFor(destNodeHex: string): AdjacentPeer | undefined {
+  private nextHopFor(
+    destNodeHex: string,
+    excludedPeer?: AdjacentPeer,
+  ): AdjacentPeer | undefined {
     const direct = this.peersByNodeAddr.get(destNodeHex);
-    if (direct?.link.state === "established") return direct;
+    if (direct?.link.state === "established" && direct !== excludedPeer) return direct;
+    if (this.routingMode === "reply_learned") {
+      const learnedNodeHex = this.learnedRoutes.selectNextHop(
+        destNodeHex,
+        Date.now(),
+        (nextHop) => {
+          const candidate = this.peersByNodeAddr.get(nextHop);
+          return candidate?.link.state === "established" && candidate !== excludedPeer;
+        },
+      );
+      if (learnedNodeHex) return this.peersByNodeAddr.get(learnedNodeHex);
+    }
     const defaultPeer = this.defaultRoute
       ? this.peersByPubkey.get(this.defaultRoute)
       : undefined;
-    return defaultPeer?.link.state === "established" ? defaultPeer : undefined;
+    return defaultPeer?.link.state === "established" && defaultPeer !== excludedPeer
+      ? defaultPeer
+      : undefined;
+  }
+
+  private learnReverseRoute(destinationNodeHex: string, nextHop: AdjacentPeer): void {
+    if (this.routingMode !== "reply_learned") return;
+    const localNodeHex = nodeAddrToHex(this.identity.nodeAddr);
+    const nextHopNodeHex = nodeAddrToHex(deriveNodeAddr(nextHop.pubkey));
+    if (destinationNodeHex === localNodeHex) return;
+    this.learnedRoutes.learn(
+      destinationNodeHex,
+      nextHopNodeHex,
+      Date.now(),
+      REPLY_LEARNED_ROUTE_TTL_SECONDS,
+      MAX_REPLY_LEARNED_ROUTES_PER_DESTINATION,
+    );
   }
 
   private async resolveRoute(destNodeAddr: NodeAddr, destNodeHex: string): Promise<void> {
