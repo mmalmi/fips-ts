@@ -16,7 +16,7 @@
 
 import { v2 as nip44v2 } from "nostr-tools/nip44";
 
-import { type FipsIdentity } from "@fips/core";
+import type { FipsIdentity } from "@fips/core";
 
 const conversationKeyCache = new WeakMap<FipsIdentity, Map<string, Uint8Array>>();
 

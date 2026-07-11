@@ -92,7 +92,10 @@ export function spawnBridge(
 
   function readFrame(): Promise<Uint8Array> {
     return new Promise<Uint8Array>((resolve, reject) => {
-      if (closed) return reject(closeReason!);
+      if (closed) {
+        reject(closeReason!);
+        return;
+      }
       pending.push({ resolve, reject });
       drainFrames();
     });
@@ -100,23 +103,37 @@ export function spawnBridge(
 
   function writeFrame(data: Uint8Array): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      if (closed) return reject(new Error("bridge closed"));
+      if (closed) {
+        reject(new Error("bridge closed"));
+        return;
+      }
       const len = new Uint8Array(4);
       len[0] = (data.length >>> 24) & 0xff;
       len[1] = (data.length >>> 16) & 0xff;
       len[2] = (data.length >>> 8) & 0xff;
       len[3] = data.length & 0xff;
       proc.stdin.write(len, (err) => {
-        if (err) return reject(err);
-        proc.stdin.write(data, (err2) => (err2 ? reject(err2) : resolve()));
+        if (err) {
+          reject(err);
+          return;
+        }
+        proc.stdin.write(data, (err2) => {
+          if (err2) reject(err2);
+          else resolve();
+        });
       });
     });
   }
 
   function close(): Promise<number> {
     return new Promise<number>((resolve) => {
-      if (closed) return resolve(proc.exitCode ?? -1);
-      proc.on("close", (code) => resolve(code ?? -1));
+      if (closed) {
+        resolve(proc.exitCode ?? -1);
+        return;
+      }
+      proc.on("close", (code) => {
+        resolve(code ?? -1);
+      });
       try {
         proc.stdin.end();
       } catch {

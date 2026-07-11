@@ -47,7 +47,9 @@ export async function startLocalNostrRelay(
   port = 0,
 ): Promise<LocalNostrRelay> {
   const wss = new WebSocketServer({ host: "127.0.0.1", port });
-  await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+  await new Promise<void>((resolve) => {
+    wss.once("listening", () => resolve());
+  });
   const events: RelayEvent[] = [];
   const subs = new Set<Subscription>();
 
@@ -123,9 +125,12 @@ export async function startLocalNostrRelay(
       for (const ws of wss.clients) {
         try { ws.terminate(); } catch { /* ignore */ }
       }
-      await new Promise<void>((resolve, reject) =>
-        wss.close((err) => (err ? reject(err) : resolve())),
-      );
+      await new Promise<void>((resolve, reject) => {
+        wss.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
     },
   };
 }

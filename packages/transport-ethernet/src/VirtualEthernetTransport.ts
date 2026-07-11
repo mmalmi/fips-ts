@@ -363,7 +363,9 @@ class AsyncEventStream<T> implements AsyncIterable<T> {
         const value = this.values.shift();
         if (value !== undefined) return Promise.resolve({ done: false, value });
         if (this.closed) return Promise.resolve({ done: true, value: undefined });
-        return new Promise<IteratorResult<T>>((resolve) => this.waiters.push(resolve));
+        return new Promise<IteratorResult<T>>((resolve) => {
+          this.waiters.push(resolve);
+        });
       },
     };
   }

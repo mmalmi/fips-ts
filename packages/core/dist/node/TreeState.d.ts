@@ -1,4 +1,4 @@
-import { type FipsIdentity } from "../identity/index.js";
+import type { FipsIdentity } from "../identity/index.js";
 import { type NodeAddr } from "../nodeaddr/index.js";
 import { type TreeAnnounce } from "../protocol/tree.js";
 export declare class TreeState {

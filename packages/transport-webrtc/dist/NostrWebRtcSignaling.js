@@ -227,7 +227,9 @@ export class NostrWebRtcSignaling {
     }
 }
 function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
 }
 async function waitForRelayWarmup(operations) {
     if (operations.length === 0)

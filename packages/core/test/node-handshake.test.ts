@@ -355,7 +355,9 @@ describe("FipsNode FMP handshake", () => {
 
       const response = await Promise.race([
         receivedReply,
-        new Promise<undefined>((resolve) => setTimeout(resolve, 2_000)),
+        new Promise<undefined>((resolve) => {
+          setTimeout(resolve, 2_000);
+        }),
       ]);
       if (!response) throw new Error("direct FSP reply timed out");
       expect(response).toEqual(reply);

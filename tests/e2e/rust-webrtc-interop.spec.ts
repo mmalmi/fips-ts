@@ -165,7 +165,9 @@ async function stopProcess(proc: ChildProcessWithoutNullStreams): Promise<void> 
     proc.kill("SIGTERM");
   }
   const exited = once(proc, "exit").then(() => undefined);
-  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+  const timeout = new Promise<void>((resolve) => {
+    setTimeout(resolve, 5_000);
+  });
   await Promise.race([exited, timeout]);
   if (proc.exitCode === null && proc.signalCode === null) {
     proc.kill("SIGKILL");

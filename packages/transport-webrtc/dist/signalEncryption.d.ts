@@ -13,7 +13,7 @@
  * The Nostr `pubkey` argument is the 32-byte x-only hex (not the 33-byte
  * compressed key FIPS uses internally).
  */
-import { type FipsIdentity } from "@fips/core";
+import type { FipsIdentity } from "@fips/core";
 export declare function encryptSignalContent(identity: FipsIdentity, recipientXOnlyHex: string, plaintext: string): string;
 export declare function decryptSignalContent(identity: FipsIdentity, senderXOnlyHex: string, content: string): string;
 //# sourceMappingURL=signalEncryption.d.ts.map

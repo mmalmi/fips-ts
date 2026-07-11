@@ -1,5 +1,5 @@
 import { bytesEqual } from "../codec/hex.js";
-import { type FipsIdentity } from "../identity/index.js";
+import type { FipsIdentity } from "../identity/index.js";
 import { compareNodeAddr, nodeAddrToHex, type NodeAddr } from "../nodeaddr/index.js";
 import {
   buildTreeAnnounce,

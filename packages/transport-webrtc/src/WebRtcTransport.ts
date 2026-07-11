@@ -288,7 +288,11 @@ export class WebRtcTransport implements Transport {
       const shouldDelay = localPubkeyHex.length === 66
         && localPubkeyHex.slice(2) > remotePubkeyHex.slice(2);
       this.autoConnectPeers.add(remotePubkeyHex);
-      if (shouldDelay) await new Promise((resolve) => setTimeout(resolve, 1200));
+      if (shouldDelay) {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 1200);
+        });
+      }
       if (!this.ctx || this.conns.has(remotePubkeyHex)) {
         this.autoConnectPeers.delete(remotePubkeyHex);
         continue;
@@ -713,7 +717,9 @@ class AsyncEventStream<T> implements AsyncIterable<T> {
         const value = this.values.shift();
         if (value !== undefined) return Promise.resolve({ done: false, value });
         if (this.closed) return Promise.resolve({ done: true, value: undefined });
-        return new Promise<IteratorResult<T>>((resolve) => this.waiters.push(resolve));
+        return new Promise<IteratorResult<T>>((resolve) => {
+          this.waiters.push(resolve);
+        });
       },
     };
   }

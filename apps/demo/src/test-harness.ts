@@ -147,7 +147,9 @@ async function duplicateWebRtcConnect(relayUrl: string): Promise<string> {
   try {
     const addr = { transport: "webrtc" as const, addr: toHex(bId.publicKey) };
     const first = a.connect(addr);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
     const second = a.connect(addr);
     await Promise.all([first, second]);
     return await echoOverPair({ a, b, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey) }, "duplicate-connect");
