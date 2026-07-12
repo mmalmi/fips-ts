@@ -1,5 +1,12 @@
 # Changelog
 
+## @fips/transport-webrtc 0.0.30 - 2026-07-12
+
+- Preserve speculative auto-connect reservations when concurrent route
+  resolution consumes the same retained Nostr adverts before dialing begins.
+- Cover repeated advert replay and resolution so a four-dial speculative cap
+  cannot expand back to the full connection limit.
+
 ## @fips/transport-webrtc 0.0.29 - 2026-07-12
 
 - Keep inbound and explicit connection capacity available while retained Nostr

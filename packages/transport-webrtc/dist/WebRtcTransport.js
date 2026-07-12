@@ -275,10 +275,10 @@ export class WebRtcTransport {
     async resolve(nodeAddr, signal) {
         const nodeAddrHex = nodeAddrToHex(nodeAddr);
         const cached = this.getCachedAdvert(nodeAddrHex);
-        if (cached) {
-            this.autoConnectPeers.delete(cached.remoteAddr.addr);
+        // Resolution may race the discovery consumer. Keep any queued reservation
+        // until connect() atomically transfers it to pendingAutoConnects.
+        if (cached)
             return cached;
-        }
         if (!this.ctx || signal?.aborted)
             return undefined;
         return new Promise((resolve) => {
@@ -354,7 +354,6 @@ export class WebRtcTransport {
         const waiters = this.advertWaiters.get(nodeAddrHex);
         if (!waiters || waiters.size === 0)
             return false;
-        this.autoConnectPeers.delete(peer.remoteAddr.addr);
         for (const waiter of [...waiters]) {
             this.settleAdvertWaiter(nodeAddrHex, waiter, cloneDiscoveredPeer(peer));
         }
