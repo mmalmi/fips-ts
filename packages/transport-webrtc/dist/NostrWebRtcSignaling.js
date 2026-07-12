@@ -19,7 +19,7 @@ export const FIPS_ADVERT_IDENTIFIER = "fips-overlay-v1";
 export const FIPS_ADVERT_D_TAG = FIPS_ADVERT_IDENTIFIER;
 export const FIPS_DEFAULT_DISCOVERY_APP = "fips-overlay-v1";
 export const FIPS_PROTOCOL_VERSION = "1";
-export const DEFAULT_FIPS_ADVERT_TTL_MS = 30 * 60 * 1000;
+export const DEFAULT_FIPS_ADVERT_TTL_MS = 60 * 60 * 1000;
 const RELAY_OPERATION_WARMUP_MS = 1_500;
 export class NostrWebRtcSignaling {
     identity;

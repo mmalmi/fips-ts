@@ -12,6 +12,7 @@ import {
 import {
   FIPS_ADVERT_D_TAG,
   FIPS_ADVERT_KIND,
+  DEFAULT_FIPS_ADVERT_TTL_MS,
   FIPS_PROTOCOL_VERSION,
   WebRtcTransport,
   signEvent,
@@ -20,6 +21,7 @@ import {
   type NostrFilter,
   type NostrRelayClient,
 } from "../src/index.js";
+import { advertExpiryMs } from "../src/WebRtcTransportSupport.js";
 
 class FakeRelay {
   readonly url = "ws://resolver.test";
@@ -89,6 +91,17 @@ afterEach(() => {
 });
 
 describe("WebRtcTransport NodeAddr resolution", () => {
+  it("honors the Rust-compatible one-hour advert freshness window", () => {
+    const now = Date.now();
+    const createdAt = Math.floor((now - 45 * 60 * 1_000) / 1_000);
+    const event = {
+      created_at: createdAt,
+      tags: [["expiration", String(Math.floor((now + 15 * 60 * 1_000) / 1_000))]],
+    } as NostrEvent;
+
+    expect(advertExpiryMs(event, DEFAULT_FIPS_ADVERT_TTL_MS, now)).toBeGreaterThan(now);
+  });
+
   it("refreshes its Nostr advert before the published advert expires", async () => {
     vi.useFakeTimers();
     const local = await identityFromSecretKey(new Uint8Array(32).fill(0x60));

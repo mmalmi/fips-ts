@@ -139,6 +139,7 @@ export class WebRtcTransport implements Transport {
   private readonly seenSessionIds = new Set<string>();
   private readonly advertCache = new Map<string, CachedAdvert>(); // by NodeAddr hex
   private readonly peerSignalRelays = new Map<string, string[]>(); // by compressed pubkey hex
+  private readonly peersWithTraffic = new Set<string>();
   private readonly advertWaiters = new Map<string, Set<AdvertWaiter>>(); // by NodeAddr hex
   private readonly autoReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly autoConnectCooldowns = new Map<string, number>();
@@ -270,6 +271,7 @@ export class WebRtcTransport implements Transport {
     this.seenSessionIds.clear();
     this.advertCache.clear();
     this.peerSignalRelays.clear();
+    this.peersWithTraffic.clear();
     for (const [nodeAddrHex, waiters] of this.advertWaiters) {
       for (const waiter of [...waiters]) {
         this.settleAdvertWaiter(nodeAddrHex, waiter, undefined);
@@ -317,7 +319,9 @@ export class WebRtcTransport implements Transport {
     for (const [remote, until] of this.autoConnectCooldowns) {
       if (until <= now) this.autoConnectCooldowns.delete(remote);
     }
-    for (const cached of this.advertCache.values()) {
+    const candidates = [...this.advertCache.values()]
+      .sort((left, right) => right.expiresAtMs - left.expiresAtMs);
+    for (const cached of candidates) {
       if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections) return;
       const remote = cached.peer.remoteAddr.addr;
       if (this.conns.has(remote) || this.pendingConnects.has(remote) || this.autoConnectPeers.has(remote)) continue;
@@ -328,6 +332,7 @@ export class WebRtcTransport implements Transport {
           this.autoConnectPeers.delete(remote);
           return;
         }
+        this.logger.debug("webrtc auto-connect queued", remote);
         this.discoveryStream?.push(cloneDiscoveredPeer(cached.peer));
       };
       if (localPubkeyHex.slice(2) > remote.slice(2)) setTimeout(push, 1_200);
@@ -548,10 +553,15 @@ export class WebRtcTransport implements Transport {
   }
 
   async close(addr: TransportAddress): Promise<void> {
+    const provenPeer = this.peersWithTraffic.delete(addr.addr);
     const conn = this.conns.get(addr.addr);
     if (conn) {
       conn.close();
       this.conns.delete(addr.addr);
+    }
+    if (provenPeer || this.autoReconnectTimers.has(addr.addr)) {
+      this.scheduleAutoReconnect(addr.addr);
+      return;
     }
     this.handleAutoConnectFailure(addr.addr);
   }
@@ -590,6 +600,7 @@ export class WebRtcTransport implements Transport {
       pc: dial.pc,
       dataChannel: dial.dataChannel,
       onPacket: (data) => {
+        this.peersWithTraffic.add(dial.remotePubkeyHex);
         this.ctx?.onPacket({
           transportType: "webrtc",
           remoteAddr: addr,
@@ -698,6 +709,7 @@ export class WebRtcTransport implements Transport {
           pc,
           dataChannel,
           onPacket: (data) => {
+            this.peersWithTraffic.add(valid.sender);
             this.ctx?.onPacket({
               transportType: "webrtc",
               remoteAddr,
@@ -751,18 +763,18 @@ export class WebRtcTransport implements Transport {
       return;
     }
     if (this.autoReconnectTimers.has(remotePubkeyHex)) return;
-    this.logger.debug("webrtc auto-reconnect scheduled", remotePubkeyHex);
-
     const delay = Math.max(
       AUTO_RECONNECT_DELAY_MS,
       (this.autoConnectCooldowns.get(remotePubkeyHex) ?? 0) - Date.now(),
     );
+    this.logger.debug("webrtc auto-reconnect scheduled", remotePubkeyHex, delay);
     const timer = setTimeout(() => {
       this.autoReconnectTimers.delete(remotePubkeyHex);
       if (this.stopping || !this.ctx || this.conns.has(remotePubkeyHex)) {
         this.logger.debug("webrtc auto-reconnect no longer needed", remotePubkeyHex);
         return;
       }
+      this.logger.debug("webrtc auto-reconnect retrying", remotePubkeyHex);
       this.fillAutoConnectSlots();
     }, delay);
     this.autoReconnectTimers.set(remotePubkeyHex, timer);
