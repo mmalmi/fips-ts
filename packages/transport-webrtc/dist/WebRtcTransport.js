@@ -35,6 +35,7 @@ export class WebRtcTransport {
     pendingInbound = new Map(); // by sessionId
     pendingConnects = new Map(); // by pubkeyHex
     autoConnectPeers = new Set(); // by pubkeyHex
+    pendingAutoConnects = new Set(); // by pubkeyHex
     knownSessionIds = new Set();
     seenSessionIds = new Set();
     advertCache = new Map(); // by NodeAddr hex
@@ -154,6 +155,7 @@ export class WebRtcTransport {
             c.close();
         this.conns.clear();
         this.autoConnectPeers.clear();
+        this.pendingAutoConnects.clear();
         if (this.ownsRelayClients) {
             for (const r of this.relayClients)
                 r.close();
@@ -235,6 +237,8 @@ export class WebRtcTransport {
         });
         for (const cached of candidates) {
             if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections)
+                return;
+            if (this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects())
                 return;
             const remote = cached.peer.remoteAddr.addr;
             if (this.conns.has(remote) || this.pendingConnects.has(remote) || this.autoConnectPeers.has(remote))
@@ -380,7 +384,7 @@ export class WebRtcTransport {
         const remotePubkeyHex = addr.addr;
         // Discovery reservations only cover the queued handoff to FipsNode.
         // Once connect() starts, the concrete pending/connected maps own capacity.
-        this.autoConnectPeers.delete(remotePubkeyHex);
+        const isAutoConnect = this.autoConnectPeers.delete(remotePubkeyHex);
         if (this.conns.has(remotePubkeyHex))
             return;
         const pendingConnect = this.pendingConnects.get(remotePubkeyHex);
@@ -388,6 +392,8 @@ export class WebRtcTransport {
             await pendingConnect;
             return;
         }
+        if (isAutoConnect)
+            this.pendingAutoConnects.add(remotePubkeyHex);
         const remoteXOnlyHex = remotePubkeyHex.slice(2); // strip 02/03 parity
         const signalRelays = this.peerSignalRelays.get(remotePubkeyHex) ?? this.cfg.relays;
         const sessionId = randomId();
@@ -450,6 +456,10 @@ export class WebRtcTransport {
             }
             if (!this.conns.has(remotePubkeyHex)) {
                 this.autoConnectPeers.delete(remotePubkeyHex);
+            }
+            if (isAutoConnect) {
+                this.pendingAutoConnects.delete(remotePubkeyHex);
+                this.fillAutoConnectSlots();
             }
         }
     }
@@ -694,6 +704,12 @@ export class WebRtcTransport {
         if (timer)
             clearTimeout(timer);
         this.pendingInbound.delete(sessionId);
+    }
+    speculativeAutoConnects() {
+        return this.autoConnectPeers.size + this.pendingAutoConnects.size;
+    }
+    maxSpeculativeAutoConnects() {
+        return Math.max(1, Math.floor(this.cfg.maxConnections / 2));
     }
 }
 //# sourceMappingURL=WebRtcTransport.js.map

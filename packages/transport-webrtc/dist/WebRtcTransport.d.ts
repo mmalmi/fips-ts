@@ -37,6 +37,7 @@ export declare class WebRtcTransport implements Transport {
     private readonly pendingInbound;
     private readonly pendingConnects;
     private readonly autoConnectPeers;
+    private readonly pendingAutoConnects;
     private readonly knownSessionIds;
     private readonly seenSessionIds;
     private readonly advertCache;
@@ -73,5 +74,7 @@ export declare class WebRtcTransport implements Transport {
     private scheduleAutoReconnect;
     private handleAutoConnectFailure;
     private clearPendingInbound;
+    private speculativeAutoConnects;
+    private maxSpeculativeAutoConnects;
 }
 //# sourceMappingURL=WebRtcTransport.d.ts.map

@@ -1,5 +1,12 @@
 # Changelog
 
+## @fips/transport-webrtc 0.0.29 - 2026-07-12
+
+- Keep inbound and explicit connection capacity available while retained Nostr
+  adverts trigger speculative WebRTC auto-dials.
+- Verify a live peer can connect and reconnect while eight stale adverts remain
+  in the relay backlog.
+
 ## @fips/core 0.0.21 - 2026-07-12
 
 - Resolve simultaneous FSP session initiation deterministically by NodeAddr so

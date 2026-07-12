@@ -162,6 +162,101 @@ async function autoConnectWebRtcReconnect(relayUrl: string): Promise<{ first: st
   }
 }
 
+async function connectThroughStaleAdvertBacklog(relayUrl: string): Promise<{
+  first: string;
+  second: string;
+}> {
+  const discoveryApp = `fips-stale-backlog-${crypto.randomUUID()}`;
+  const stalePeerCount = 8;
+  for (let index = 0; index < stalePeerCount; index++) {
+    const identity = await generateIdentity();
+    const node = new FipsNode({
+      identity,
+      transports: [new WebRtcTransport({
+        relays: [relayUrl],
+        advertiseOnNostr: true,
+        discoveryApp,
+      })],
+    });
+    await node.start();
+    await node.stop();
+  }
+
+  let resolveBacklog!: () => void;
+  const backlogStarted = new Promise<void>((resolve) => {
+    resolveBacklog = resolve;
+  });
+  const pendingStalePeers = new Set<string>();
+  const listenerId = await generateIdentity();
+  const listenerLogger = {
+    debug: (...args: unknown[]) => {
+      if (args[0] !== "webrtc connect start" || typeof args[1] !== "string") return;
+      pendingStalePeers.add(args[1]);
+      if (pendingStalePeers.size >= 4) resolveBacklog();
+    },
+    info: (..._args: unknown[]) => undefined,
+    warn: (..._args: unknown[]) => undefined,
+    error: (..._args: unknown[]) => undefined,
+  };
+  const listener = new FipsNode({
+    identity: listenerId,
+    logger: listenerLogger,
+    transports: [new WebRtcTransport({
+      relays: [relayUrl],
+      advertiseOnNostr: true,
+      autoConnect: true,
+      connectTimeoutMs: 8_000,
+      discoveryApp,
+      maxConnections: 8,
+      logger: listenerLogger,
+    })],
+  });
+  listener.registerService(9000, async ({ payload, reply }) => reply(payload));
+  await listener.start();
+
+  const backlogTimer = setTimeout(() => resolveBacklog(), 5_000);
+  await backlogStarted;
+  clearTimeout(backlogTimer);
+
+  const liveId = await generateIdentity();
+  const createLiveNode = () => new FipsNode({
+    identity: liveId,
+    transports: [new WebRtcTransport({
+      relays: [relayUrl],
+      advertiseOnNostr: true,
+      autoConnect: false,
+      connectTimeoutMs: 8_000,
+      discoveryApp,
+      maxConnections: 8,
+    })],
+  });
+  let live = createLiveNode();
+  await live.start();
+  try {
+    await live.connect({ transport: "webrtc", addr: toHex(listenerId.publicKey) });
+    const first = await echoOverPair({
+      a: live,
+      b: listener,
+      aPub: toHex(liveId.publicKey),
+      bPub: toHex(listenerId.publicKey),
+    }, "live-peer-through-stale-backlog");
+    await live.stop();
+    live = createLiveNode();
+    await live.start();
+    await live.connect({ transport: "webrtc", addr: toHex(listenerId.publicKey) });
+    const second = await echoOverPair({
+      a: live,
+      b: listener,
+      aPub: toHex(liveId.publicKey),
+      bPub: toHex(listenerId.publicKey),
+    }, "reconnected-peer-through-stale-backlog");
+    return { first, second };
+  } finally {
+    await live.stop();
+    await listener.stop();
+  }
+}
+
 function waitForPeerState(
   node: FipsNode,
   remotePubkey: string,
@@ -507,6 +602,7 @@ export const harness = {
   makeWebRtcPair,
   autoConnectWebRtcPair,
   autoConnectWebRtcReconnect,
+  connectThroughStaleAdvertBacklog,
   duplicateWebRtcConnect,
   makeWebRtcChain,
   webRtcReconnect,
