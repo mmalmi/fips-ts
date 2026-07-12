@@ -31,14 +31,21 @@ describe("Three-node FIPS routing (A - B - C) over MemoryTransport", () => {
       await aNode.connect({ transport: "memory", addr: toHex(b.publicKey) });
       await bNode.connect({ transport: "memory", addr: toHex(c.publicKey) });
       const internals = (node: FipsNode) => node as unknown as {
-        treeState: { coords: NodeAddr[]; root: NodeAddr };
-        coordCache: Map<string, NodeAddr[]>;
+        routing: {
+          treeState: { coords: NodeAddr[]; root: NodeAddr };
+          coordCache: Map<string, NodeAddr[]>;
+        };
       };
       await expect.poll(() => {
-        const roots = [aNode, bNode, cNode].map((node) => nodeAddrToHex(internals(node).treeState.root));
+        const roots = [aNode, bNode, cNode].map(
+          (node) => nodeAddrToHex(internals(node).routing.treeState.root),
+        );
         return new Set(roots).size;
       }).toBe(1);
-      internals(aNode).coordCache.set(nodeAddrToHex(c.nodeAddr), internals(cNode).treeState.coords);
+      internals(aNode).routing.coordCache.set(
+        nodeAddrToHex(c.nodeAddr),
+        internals(cNode).routing.treeState.coords,
+      );
 
       const response = new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("tree route timeout")), 5_000);

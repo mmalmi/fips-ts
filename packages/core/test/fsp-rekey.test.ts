@@ -41,12 +41,13 @@ describe("FipsNode FSP rekey epochs", () => {
       fsp: oldResponder,
       currentKBit: false,
     };
-    (node as any).sessions.set(sourceKey, session);
+    const internal = node as any;
+    internal.sessionManager.sessions.set(sourceKey, session);
     let routedReply: Uint8Array | undefined;
-    (node as any).sendFspToward = async (_addr: Uint8Array, reply: Uint8Array) => {
+    internal.routing.sendFspToward = async (_addr: Uint8Array, reply: Uint8Array) => {
       routedReply = new Uint8Array(reply);
     };
-    (node as any).sendFspReplyToward = async (_addr: Uint8Array, reply: Uint8Array) => {
+    internal.routing.sendFspReplyToward = async (_addr: Uint8Array, reply: Uint8Array) => {
       routedReply = new Uint8Array(reply);
     };
     const received: string[] = [];
@@ -64,10 +65,10 @@ describe("FipsNode FSP rekey epochs", () => {
       initiatorIdentity.nodeAddr,
       responderIdentity.nodeAddr,
     );
-    await (node as any).handleFspFromPeer({}, initiatorIdentity.nodeAddr, rekeySetup);
+    await internal.sessionManager.handleFromPeer({}, initiatorIdentity.nodeAddr, rekeySetup);
     const rekeyAck = routedReply!;
     routedReply = undefined;
-    await (node as any).handleFspFromPeer(
+    await internal.sessionManager.handleFromPeer(
       {},
       initiatorIdentity.nodeAddr,
       rekeyInitiator.handleSessionAck(rekeyAck, () => new Uint8Array(0)),
@@ -75,7 +76,7 @@ describe("FipsNode FSP rekey epochs", () => {
 
     expect(session.fsp).toBe(oldResponder);
     expect(session.pendingResponderFsp?.state).toBe("established");
-    await (node as any).handleFspFromPeer(
+    await internal.sessionManager.handleFromPeer(
       {},
       initiatorIdentity.nodeAddr,
       oldInitiator.encryptEndpointData(
@@ -86,7 +87,7 @@ describe("FipsNode FSP rekey epochs", () => {
     expect(session.fsp).toBe(oldResponder);
 
     const promotedResponder = session.pendingResponderFsp;
-    await (node as any).handleFspFromPeer(
+    await internal.sessionManager.handleFromPeer(
       {},
       initiatorIdentity.nodeAddr,
       rekeyInitiator.encryptEndpointData(
@@ -98,7 +99,7 @@ describe("FipsNode FSP rekey epochs", () => {
     expect(session.fsp).toBe(promotedResponder);
     expect(session.previousFsp?.fsp).toBe(oldResponder);
 
-    await (node as any).handleFspFromPeer(
+    await internal.sessionManager.handleFromPeer(
       {},
       initiatorIdentity.nodeAddr,
       oldInitiator.encryptEndpointData(

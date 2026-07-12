@@ -47,9 +47,11 @@ describe("FipsNode route safety", () => {
       };
       const sendSessionDatagram = (
         aNode as unknown as {
-          sendSessionDatagram(value: SessionDatagram): Promise<void>;
+          routing: { sendSessionDatagram(value: SessionDatagram): Promise<void> };
         }
-      ).sendSessionDatagram.bind(aNode);
+      ).routing.sendSessionDatagram.bind(
+        (aNode as unknown as { routing: unknown }).routing,
+      );
 
       await expect(sendSessionDatagram(datagram)).rejects.toThrow(
         `no route to ${toHex(unknown.nodeAddr)}`,

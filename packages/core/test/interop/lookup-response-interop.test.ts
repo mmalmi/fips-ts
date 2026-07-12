@@ -28,16 +28,18 @@ describe("LookupResponse interop: Rust origin -> TypeScript target", () => {
         await bridge.writeFrame(responsePayload);
       });
       const internal = node as unknown as {
-        routeIncomingLinkMessage(
-          peer: unknown,
-          messageType: number,
-          payload: Uint8Array,
-        ): Promise<void>;
+        routing: {
+          handleLinkMessage(
+            peer: unknown,
+            messageType: number,
+            payload: Uint8Array,
+          ): Promise<void>;
+        };
         sendLinkMessage: typeof sendLinkMessage;
       };
       internal.sendLinkMessage = sendLinkMessage;
 
-      await internal.routeIncomingLinkMessage(
+      await internal.routing.handleLinkMessage(
         sourcePeer,
         LinkMessageType.LookupRequest,
         requestPayload,

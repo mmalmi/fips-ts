@@ -10,24 +10,18 @@ export declare class FipsNode {
     private readonly logger;
     private readonly defaultRoute?;
     private readonly heartbeatIntervalMs;
-    private services;
     private peers;
     private peersByPubkey;
     private peersByNodeAddr;
     private pendingPeerConnects;
-    private pendingRouteResolutions;
-    private lookupReversePaths;
-    private readonly originLookups;
-    private readonly learnedRoutes;
-    private readonly treeState;
-    private readonly coordCache;
-    private sessions;
     private listeners;
     private discoveryTasks;
     private discoveryConnectTasks;
     private discoveryGeneration;
     private heartbeatTimer?;
     private readonly directFspReassembler;
+    private readonly routing;
+    private readonly sessionManager;
     private started;
     constructor(cfg: FipsNodeConfig);
     start(): Promise<void>;
@@ -59,44 +53,9 @@ export declare class FipsNode {
     private onTransportConn;
     private rememberPeer;
     private onTransportPacket;
-    private routeIncomingLinkMessage;
-    private sendTreeAnnounce;
-    private scheduleTreeAnnounce;
-    private sendTreeAnnounceToAll;
-    private handleTreeAnnounce;
-    private cacheSessionCoordinates;
-    private cacheCoordinates;
-    private handleLookupRequest;
-    private forwardLookupResponse;
-    private handleOriginLookupResponse;
     private sendLinkMessage;
-    private pruneLookupReversePaths;
-    private reserveLookupReversePath;
     private sendHeartbeats;
     private stageResponderReplacement;
     private pruneDrainingResponderLinks;
-    private handleFspFromPeer;
-    private ensureSession;
-    private ensureFirstContactRoute;
-    private originLookupPeers;
-    /**
-     * Wrap an FSP frame in a SessionDatagram and send it toward a remote NodeAddr.
-     */
-    private sendFspToward;
-    /**
-     * Return a pre-authentication FSP handshake response through the
-     * authenticated adjacent peer that delivered the request. This mirrors
-     * Rust fips-core's send_session_datagram_reply path and does not create a
-     * learned route from an unauthenticated SessionDatagram source claim.
-     */
-    private sendFspReplyToward;
-    private prunePreviousFsp;
-    private directPeerForSession;
-    private sendDirectFsp;
-    private sendSessionDatagram;
-    private nextHopFor;
-    private learnReverseRoute;
-    private resolveRoute;
-    private resolveAndConnectRoute;
 }
 //# sourceMappingURL=FipsNode.d.ts.map

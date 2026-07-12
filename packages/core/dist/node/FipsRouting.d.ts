@@ -1,0 +1,58 @@
+import { type FipsIdentity } from "../identity/index.js";
+import { type NodeAddr } from "../nodeaddr/index.js";
+import type { Logger, Transport, TransportAddress } from "../transport/types.js";
+import type { AdjacentPeer } from "./PeerState.js";
+interface FipsRoutingConfig {
+    identity: FipsIdentity;
+    forwarding: boolean;
+    routingMode: "tree" | "reply_learned";
+    defaultRoute?: string;
+    transports: Transport[];
+    logger: Logger;
+    randomBytes: (length: number) => Uint8Array;
+    getPeers: () => Iterable<AdjacentPeer>;
+    getPeerByPubkey: (pubkeyHex: string) => AdjacentPeer | undefined;
+    getPeerByNodeAddr: (nodeAddrHex: string) => AdjacentPeer | undefined;
+    sendLinkMessage: (peer: AdjacentPeer, msgType: number, payload: Uint8Array) => Promise<void>;
+    connectKnownPeer: (transport: Transport, remoteAddr: TransportAddress, remotePubkey: Uint8Array) => Promise<void>;
+    handleLocalSession: (peer: AdjacentPeer, srcNodeAddr: NodeAddr, payload: Uint8Array) => Promise<void>;
+    emitError: (error: Error, where: string) => void;
+    isStarted: () => boolean;
+}
+export declare class FipsRouting {
+    private readonly cfg;
+    private readonly treeState;
+    private readonly pendingRouteResolutions;
+    private readonly lookupReversePaths;
+    private readonly originLookups;
+    private readonly learnedRoutes;
+    private readonly coordCache;
+    constructor(cfg: FipsRoutingConfig);
+    get coords(): NodeAddr[];
+    coordinatesFor(nodeAddrHex: string): NodeAddr[] | undefined;
+    stop(): void;
+    removePeer(peerNodeAddr: NodeAddr): void;
+    handleLinkMessage(peer: AdjacentPeer, msgType: number, payload: Uint8Array): Promise<void>;
+    sendTreeAnnounce(peer: AdjacentPeer): Promise<void>;
+    scheduleTreeAnnounce(peer: AdjacentPeer): void;
+    ensureFirstContactRoute(target: NodeAddr, targetHex: string, targetPubkey: Uint8Array): Promise<void>;
+    sendFspToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array): Promise<void>;
+    sendFspReplyToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array, previousHop: AdjacentPeer): Promise<void>;
+    learnReverseRoute(destinationNodeHex: string, nextHop: AdjacentPeer): void;
+    private sendTreeAnnounceToAll;
+    private handleTreeAnnounce;
+    private cacheSessionCoordinates;
+    private cacheCoordinates;
+    private handleLookupRequest;
+    private forwardLookupResponse;
+    private handleOriginLookupResponse;
+    private originLookupPeers;
+    private sendSessionDatagram;
+    private nextHopFor;
+    private pruneLookupReversePaths;
+    private reserveLookupReversePath;
+    private resolveRoute;
+    private resolveAndConnectRoute;
+}
+export {};
+//# sourceMappingURL=FipsRouting.d.ts.map

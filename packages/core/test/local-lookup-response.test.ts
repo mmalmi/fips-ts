@@ -18,11 +18,13 @@ describe("FipsNode local lookup response", () => {
     const sourcePeer = { transport: { mtu: 1_200 } };
     const sendLinkMessage = vi.fn(async () => {});
     const internal = node as unknown as {
-      routeIncomingLinkMessage(
-        peer: unknown,
-        messageType: number,
-        payload: Uint8Array,
-      ): Promise<void>;
+      routing: {
+        handleLinkMessage(
+          peer: unknown,
+          messageType: number,
+          payload: Uint8Array,
+        ): Promise<void>;
+      };
       sendLinkMessage: typeof sendLinkMessage;
     };
     internal.sendLinkMessage = sendLinkMessage;
@@ -35,7 +37,7 @@ describe("FipsNode local lookup response", () => {
       minMtu: 0,
       originCoords: [new Uint8Array(16).fill(0x77)],
     };
-    await internal.routeIncomingLinkMessage(
+    await internal.routing.handleLinkMessage(
       sourcePeer,
       LinkMessageType.LookupRequest,
       encodeLookupRequestPayload(request),

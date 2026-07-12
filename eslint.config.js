@@ -46,13 +46,13 @@ export default tseslint.config(
     },
   },
   {
-    // Existing transport/session orchestration debt. New routing and wire
-    // functionality belongs in focused modules covered by the limits above.
+    // The FMP receive state machine remains intentionally contiguous so its
+    // handshake transitions can be audited together. File size still uses
+    // the standard 800-line source limit above.
     files: ["packages/core/src/node/FipsNode.ts"],
     rules: {
       "complexity": ["error", 50],
       "max-depth": ["error", 5],
-      "max-lines": ["error", { max: 1_600, skipBlankLines: true, skipComments: true }],
       "max-lines-per-function": ["error", { max: 240, skipBlankLines: true, skipComments: true }],
     },
   },

@@ -81,9 +81,9 @@ class RoutedTransport implements Transport {
 function sendSessionDatagram(node: FipsNode, datagram: SessionDatagram): Promise<void> {
   return (
     node as unknown as {
-      sendSessionDatagram(value: SessionDatagram): Promise<void>;
+      routing: { sendSessionDatagram(value: SessionDatagram): Promise<void> };
     }
-  ).sendSessionDatagram(datagram);
+  ).routing.sendSessionDatagram(datagram);
 }
 
 afterEach(() => {
@@ -220,7 +220,9 @@ describe("FipsNode on-demand route resolution", () => {
         addr: toHex(d.publicKey),
       });
       await vi.waitFor(() => {
-        const tree = (cNode as unknown as { treeState: { root: NodeAddr } }).treeState;
+        const tree = (
+          cNode as unknown as { routing: { treeState: { root: NodeAddr } } }
+        ).routing.treeState;
         expect(nodeAddrToHex(tree.root)).toBe(nodeAddrToHex(a.nodeAddr));
       });
       await aNode.sendDatagram({
@@ -232,8 +234,9 @@ describe("FipsNode on-demand route resolution", () => {
       expect(new TextDecoder().decode(received)).toBe("ethernet-to-webrtc");
       expect(aEthernet.resolveCalls).toBe(0);
       expect(bWebRtc.resolveCalls).toBe(0);
-      const bLearnedRoutes = (bNode as unknown as { learnedRoutes: Map<string, unknown> })
-        .learnedRoutes;
+      const bLearnedRoutes = (
+        bNode as unknown as { routing: { learnedRoutes: Map<string, unknown> } }
+      ).routing.learnedRoutes;
       expect(bLearnedRoutes.has(nodeAddrToHex(d.nodeAddr))).toBe(true);
       const cDirectPeers = (cNode as unknown as { peersByNodeAddr: Map<string, unknown> })
         .peersByNodeAddr;
@@ -287,8 +290,9 @@ describe("FipsNode on-demand route resolution", () => {
       await noRoute;
       expect(aTransport.resolveCalls).toBe(0);
       expect(bTransport.resolveCalls).toBe(0);
-      const learnedRoutes = (bNode as unknown as { learnedRoutes: Map<string, unknown> })
-        .learnedRoutes;
+      const learnedRoutes = (
+        bNode as unknown as { routing: { learnedRoutes: Map<string, unknown> } }
+      ).routing.learnedRoutes;
       expect(learnedRoutes.has(nodeAddrToHex(claimedSource.nodeAddr))).toBe(false);
     } finally {
       await aNode.stop();
