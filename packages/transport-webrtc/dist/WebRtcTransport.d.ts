@@ -45,6 +45,7 @@ export declare class WebRtcTransport implements Transport {
     private readonly advertWaiters;
     private readonly autoReconnectTimers;
     private readonly autoConnectCooldowns;
+    private autoConnectFillTimer?;
     private discoveryStream?;
     private advertCleanup?;
     private advertRefreshTimer?;

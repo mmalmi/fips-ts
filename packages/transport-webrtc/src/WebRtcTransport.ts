@@ -94,6 +94,7 @@ const MAX_ADVERT_CACHE_ENTRIES = 256;
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
 const AUTO_RECONNECT_DELAY_MS = 500;
 const AUTO_CONNECT_FAILURE_COOLDOWN_MS = 30_000;
+const AUTO_CONNECT_SETTLE_MS = 750;
 
 function randomId(): string {
   const a = new Uint8Array(16);
@@ -143,6 +144,7 @@ export class WebRtcTransport implements Transport {
   private readonly advertWaiters = new Map<string, Set<AdvertWaiter>>(); // by NodeAddr hex
   private readonly autoReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly autoConnectCooldowns = new Map<string, number>();
+  private autoConnectFillTimer?: ReturnType<typeof setTimeout>;
   private discoveryStream?: AsyncEventStream<DiscoveredPeer>;
   private advertCleanup?: () => void;
   private advertRefreshTimer?: ReturnType<typeof setInterval>;
@@ -248,6 +250,8 @@ export class WebRtcTransport implements Transport {
     for (const timer of this.autoReconnectTimers.values()) clearTimeout(timer);
     this.autoReconnectTimers.clear();
     this.autoConnectCooldowns.clear();
+    if (this.autoConnectFillTimer) clearTimeout(this.autoConnectFillTimer);
+    this.autoConnectFillTimer = undefined;
     this.advertCleanup?.();
     this.advertCleanup = undefined;
     this.signaling?.stop();
@@ -308,7 +312,12 @@ export class WebRtcTransport implements Transport {
       if (!cached) continue;
       this.peerSignalRelays.set(remotePubkeyHex, [...signalRelays]);
       const requested = this.resolveAdvertWaiters(nodeAddrHex, cached);
-      if (this.cfg.autoConnect && !requested) this.fillAutoConnectSlots(localPubkeyHex);
+      if (this.cfg.autoConnect && !requested && !this.autoConnectFillTimer) {
+        this.autoConnectFillTimer = setTimeout(() => {
+          this.autoConnectFillTimer = undefined;
+          this.fillAutoConnectSlots(localPubkeyHex);
+        }, AUTO_CONNECT_SETTLE_MS);
+      }
     }
   }
 
