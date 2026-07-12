@@ -43,6 +43,8 @@ export class WebRtcTransport {
     advertWaiters = new Map(); // by NodeAddr hex
     autoReconnectTimers = new Map();
     autoConnectCooldowns = new Map();
+    autoConnectAttempts = new Map();
+    autoConnectAttemptSequence = 0;
     autoConnectFillTimer;
     discoveryStream;
     advertCleanup;
@@ -140,6 +142,8 @@ export class WebRtcTransport {
             clearTimeout(timer);
         this.autoReconnectTimers.clear();
         this.autoConnectCooldowns.clear();
+        this.autoConnectAttempts.clear();
+        this.autoConnectAttemptSequence = 0;
         if (this.autoConnectFillTimer)
             clearTimeout(this.autoConnectFillTimer);
         this.autoConnectFillTimer = undefined;
@@ -224,7 +228,11 @@ export class WebRtcTransport {
                 this.autoConnectCooldowns.delete(remote);
         }
         const candidates = [...this.advertCache.values()]
-            .sort((left, right) => right.expiresAtMs - left.expiresAtMs);
+            .sort((left, right) => {
+            const leftAttempt = this.autoConnectAttempts.get(left.peer.remoteAddr.addr) ?? 0;
+            const rightAttempt = this.autoConnectAttempts.get(right.peer.remoteAddr.addr) ?? 0;
+            return leftAttempt - rightAttempt || right.expiresAtMs - left.expiresAtMs;
+        });
         for (const cached of candidates) {
             if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections)
                 return;
@@ -233,6 +241,7 @@ export class WebRtcTransport {
                 continue;
             if ((this.autoConnectCooldowns.get(remote) ?? 0) > now)
                 continue;
+            this.autoConnectAttempts.set(remote, ++this.autoConnectAttemptSequence);
             this.autoConnectPeers.add(remote);
             const push = () => {
                 if (this.stopping || !this.ctx || this.conns.has(remote)) {
@@ -304,7 +313,10 @@ export class WebRtcTransport {
             const oldest = this.advertCache.keys().next().value;
             if (oldest === undefined)
                 break;
+            const evicted = this.advertCache.get(oldest);
             this.advertCache.delete(oldest);
+            if (evicted)
+                this.autoConnectAttempts.delete(evicted.peer.remoteAddr.addr);
         }
         this.advertCache.set(nodeAddrHex, {
             peer: cloneDiscoveredPeer(peer),
@@ -319,6 +331,7 @@ export class WebRtcTransport {
             return undefined;
         if (cached.expiresAtMs <= Date.now()) {
             this.advertCache.delete(nodeAddrHex);
+            this.autoConnectAttempts.delete(cached.peer.remoteAddr.addr);
             return undefined;
         }
         this.advertCache.delete(nodeAddrHex);
@@ -327,8 +340,10 @@ export class WebRtcTransport {
     }
     pruneAdvertCache(nowMs) {
         for (const [nodeAddrHex, cached] of this.advertCache) {
-            if (cached.expiresAtMs <= nowMs)
+            if (cached.expiresAtMs <= nowMs) {
                 this.advertCache.delete(nodeAddrHex);
+                this.autoConnectAttempts.delete(cached.peer.remoteAddr.addr);
+            }
         }
     }
     resolveAdvertWaiters(nodeAddrHex, peer) {

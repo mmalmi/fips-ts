@@ -144,6 +144,8 @@ export class WebRtcTransport implements Transport {
   private readonly advertWaiters = new Map<string, Set<AdvertWaiter>>(); // by NodeAddr hex
   private readonly autoReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly autoConnectCooldowns = new Map<string, number>();
+  private readonly autoConnectAttempts = new Map<string, number>();
+  private autoConnectAttemptSequence = 0;
   private autoConnectFillTimer?: ReturnType<typeof setTimeout>;
   private discoveryStream?: AsyncEventStream<DiscoveredPeer>;
   private advertCleanup?: () => void;
@@ -250,6 +252,8 @@ export class WebRtcTransport implements Transport {
     for (const timer of this.autoReconnectTimers.values()) clearTimeout(timer);
     this.autoReconnectTimers.clear();
     this.autoConnectCooldowns.clear();
+    this.autoConnectAttempts.clear();
+    this.autoConnectAttemptSequence = 0;
     if (this.autoConnectFillTimer) clearTimeout(this.autoConnectFillTimer);
     this.autoConnectFillTimer = undefined;
     this.advertCleanup?.();
@@ -329,12 +333,17 @@ export class WebRtcTransport implements Transport {
       if (until <= now) this.autoConnectCooldowns.delete(remote);
     }
     const candidates = [...this.advertCache.values()]
-      .sort((left, right) => right.expiresAtMs - left.expiresAtMs);
+      .sort((left, right) => {
+        const leftAttempt = this.autoConnectAttempts.get(left.peer.remoteAddr.addr) ?? 0;
+        const rightAttempt = this.autoConnectAttempts.get(right.peer.remoteAddr.addr) ?? 0;
+        return leftAttempt - rightAttempt || right.expiresAtMs - left.expiresAtMs;
+      });
     for (const cached of candidates) {
       if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections) return;
       const remote = cached.peer.remoteAddr.addr;
       if (this.conns.has(remote) || this.pendingConnects.has(remote) || this.autoConnectPeers.has(remote)) continue;
       if ((this.autoConnectCooldowns.get(remote) ?? 0) > now) continue;
+      this.autoConnectAttempts.set(remote, ++this.autoConnectAttemptSequence);
       this.autoConnectPeers.add(remote);
       const push = () => {
         if (this.stopping || !this.ctx || this.conns.has(remote)) {
@@ -412,7 +421,9 @@ export class WebRtcTransport implements Transport {
     while (this.advertCache.size >= MAX_ADVERT_CACHE_ENTRIES) {
       const oldest = this.advertCache.keys().next().value as string | undefined;
       if (oldest === undefined) break;
+      const evicted = this.advertCache.get(oldest);
       this.advertCache.delete(oldest);
+      if (evicted) this.autoConnectAttempts.delete(evicted.peer.remoteAddr.addr);
     }
     this.advertCache.set(nodeAddrHex, {
       peer: cloneDiscoveredPeer(peer),
@@ -427,6 +438,7 @@ export class WebRtcTransport implements Transport {
     if (!cached) return undefined;
     if (cached.expiresAtMs <= Date.now()) {
       this.advertCache.delete(nodeAddrHex);
+      this.autoConnectAttempts.delete(cached.peer.remoteAddr.addr);
       return undefined;
     }
     this.advertCache.delete(nodeAddrHex);
@@ -436,7 +448,10 @@ export class WebRtcTransport implements Transport {
 
   private pruneAdvertCache(nowMs: number): void {
     for (const [nodeAddrHex, cached] of this.advertCache) {
-      if (cached.expiresAtMs <= nowMs) this.advertCache.delete(nodeAddrHex);
+      if (cached.expiresAtMs <= nowMs) {
+        this.advertCache.delete(nodeAddrHex);
+        this.autoConnectAttempts.delete(cached.peer.remoteAddr.addr);
+      }
     }
   }
 

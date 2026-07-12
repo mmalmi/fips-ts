@@ -210,6 +210,45 @@ describe("WebRtcTransport NodeAddr resolution", () => {
     }
   });
 
+  it("tries every unseen advert before retrying an earlier failed candidate", async () => {
+    vi.useFakeTimers();
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x79));
+    const candidates = await Promise.all([0x7a, 0x7b, 0x7c, 0x7d].map(
+      (byte) => identityFromSecretKey(new Uint8Array(32).fill(byte)),
+    ));
+    const relay = new FakeRelay();
+    const transport = new WebRtcTransport({
+      relays: [relay.url],
+      relayClients: [relayClient(relay)],
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+      autoConnect: true,
+      maxConnections: 1,
+    });
+
+    await transport.start(transportContext(local));
+    try {
+      const discovered = transport.discover()[Symbol.asyncIterator]();
+      for (const candidate of candidates) relay.emit(advertEvent(candidate, 3_600));
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      const first = await discovered.next();
+      expect(first.value?.remoteAddr.addr).toBe(toHex(candidates[0]!.publicKey));
+      await transport.close(first.value!.remoteAddr);
+      await vi.advanceTimersByTimeAsync(1_300);
+
+      const second = await discovered.next();
+      expect(second.value?.remoteAddr.addr).toBe(toHex(candidates[1]!.publicKey));
+      await vi.advanceTimersByTimeAsync(31_000);
+      await transport.close(second.value!.remoteAddr);
+      await vi.advanceTimersByTimeAsync(1_300);
+
+      const third = await discovered.next();
+      expect(third.value?.remoteAddr.addr).toBe(toHex(candidates[2]!.publicKey));
+    } finally {
+      await transport.stop();
+    }
+  });
+
   it("settles the initial relay backlog before choosing the freshest advert", async () => {
     const local = await identityFromSecretKey(new Uint8Array(32).fill(0x76));
     const shorter = await identityFromSecretKey(new Uint8Array(32).fill(0x77));
