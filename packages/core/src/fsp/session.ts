@@ -68,6 +68,8 @@ export class FspSession {
   private rx?: CipherState;
   private receivedSessionSetup?: Uint8Array;
   private sentSessionAck?: Uint8Array;
+  private receivedSessionAck?: Uint8Array;
+  private sentSessionMsg3?: Uint8Array;
   private establishedMsg3?: Uint8Array;
   private txCounter = 0n;
   private replay = new ReplayWindow();
@@ -193,6 +195,12 @@ export class FspSession {
 
   handleSessionAck(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array {
     if (this.role !== "initiator") throw new Error("only initiator handles SessionAck");
+    if (this.receivedSessionAck) {
+      if (bytesEqual(packet, this.receivedSessionAck) && this.sentSessionMsg3) {
+        return new Uint8Array(this.sentSessionMsg3);
+      }
+      throw new Error("unexpected FSP SessionAck after establishment");
+    }
     if (!this.hs) throw new Error("noise handshake state missing");
     const ack = decodeSessionAck(packet);
     if (ack.handshakePayload.length !== NOISE_XK_MSG2_LEN) throw new Error("bad XK msg2 length");
@@ -202,8 +210,11 @@ export class FspSession {
     if (noiseMsg.length !== NOISE_XK_MSG3_LEN) {
       throw new Error(`XK msg3 size ${noiseMsg.length} != ${NOISE_XK_MSG3_LEN}`);
     }
+    const reply = encodeSessionMsg3({ flags: 0, handshakePayload: noiseMsg });
+    this.receivedSessionAck = new Uint8Array(packet);
+    this.sentSessionMsg3 = new Uint8Array(reply);
     this.finalize();
-    return encodeSessionMsg3({ flags: 0, handshakePayload: noiseMsg });
+    return reply;
   }
 
   handleMsg3(packet: Uint8Array): void {

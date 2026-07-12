@@ -44,9 +44,13 @@ export declare class FipsRouting {
     private cacheSessionCoordinates;
     private cacheCoordinates;
     private handleLookupRequest;
+    private resolveAndForwardLookup;
+    private canResolveLookupDirectly;
+    private lookupCanProgress;
     private forwardLookupResponse;
     private handleOriginLookupResponse;
     private originLookupPeers;
+    private retryOriginLookup;
     private sendSessionDatagram;
     private nextHopFor;
     private pruneLookupReversePaths;

@@ -1,6 +1,6 @@
 {
   "name": "@fips/transport-webrtc",
-  "version": "0.0.23",
+  "version": "0.0.27",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

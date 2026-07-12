@@ -23,6 +23,8 @@ export declare class FspSession {
     private rx?;
     private receivedSessionSetup?;
     private sentSessionAck?;
+    private receivedSessionAck?;
+    private sentSessionMsg3?;
     private establishedMsg3?;
     private txCounter;
     private replay;

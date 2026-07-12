@@ -1,6 +1,6 @@
 {
   "name": "@fips/transport-ethernet",
-  "version": "0.0.15",
+  "version": "0.0.19",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

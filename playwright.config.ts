@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const port = Number(process.env.FIPS_TS_E2E_PORT ?? 5173);
+const baseURL = `http://127.0.0.1:${port}`;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
@@ -10,7 +13,7 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 10_000 },
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL,
     trace: "retain-on-failure",
     headless: true,
     actionTimeout: 10_000,
@@ -22,8 +25,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "pnpm --filter demo dev -- --host 127.0.0.1 --port 5173",
-    url: "http://127.0.0.1:5173",
+    command: `pnpm --filter demo dev --host 127.0.0.1 --port ${port}`,
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
   },

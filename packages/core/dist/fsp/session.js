@@ -24,6 +24,8 @@ export class FspSession {
     rx;
     receivedSessionSetup;
     sentSessionAck;
+    receivedSessionAck;
+    sentSessionMsg3;
     establishedMsg3;
     txCounter = 0n;
     replay = new ReplayWindow();
@@ -152,6 +154,12 @@ export class FspSession {
     handleSessionAck(packet, _rand) {
         if (this.role !== "initiator")
             throw new Error("only initiator handles SessionAck");
+        if (this.receivedSessionAck) {
+            if (bytesEqual(packet, this.receivedSessionAck) && this.sentSessionMsg3) {
+                return new Uint8Array(this.sentSessionMsg3);
+            }
+            throw new Error("unexpected FSP SessionAck after establishment");
+        }
         if (!this.hs)
             throw new Error("noise handshake state missing");
         const ack = decodeSessionAck(packet);
@@ -164,8 +172,11 @@ export class FspSession {
         if (noiseMsg.length !== NOISE_XK_MSG3_LEN) {
             throw new Error(`XK msg3 size ${noiseMsg.length} != ${NOISE_XK_MSG3_LEN}`);
         }
+        const reply = encodeSessionMsg3({ flags: 0, handshakePayload: noiseMsg });
+        this.receivedSessionAck = new Uint8Array(packet);
+        this.sentSessionMsg3 = new Uint8Array(reply);
         this.finalize();
-        return encodeSessionMsg3({ flags: 0, handshakePayload: noiseMsg });
+        return reply;
     }
     handleMsg3(packet) {
         if (this.role !== "responder")

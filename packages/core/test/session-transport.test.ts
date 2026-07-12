@@ -184,6 +184,29 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
     );
   });
 
+  it("FspSession resends the original SessionMsg3 for duplicate SessionAck", async () => {
+    const { FspSession } = await import("../src/fsp/session.js");
+    const a = await identityFromSecretKey(new Uint8Array(32).fill(0x27));
+    const b = await identityFromSecretKey(new Uint8Array(32).fill(0x72));
+    const init = new FspSession({
+      identity: a,
+      role: "initiator",
+      remotePubkey: b.publicKey,
+    });
+    const resp = new FspSession({ identity: b, role: "responder" });
+
+    const msg1 = init.buildSessionSetup(() => new Uint8Array(0), a.nodeAddr, b.nodeAddr);
+    const msg2 = resp.handleSessionSetup(msg1, () => new Uint8Array(0), b.nodeAddr);
+    const msg3 = init.handleSessionAck(msg2, () => new Uint8Array(0));
+    expect(init.handleSessionAck(msg2, () => new Uint8Array(0))).toEqual(msg3);
+
+    const changed = new Uint8Array(msg2);
+    changed[changed.length - 1] ^= 1;
+    expect(() => init.handleSessionAck(changed, () => new Uint8Array(0))).toThrow(
+      "unexpected FSP SessionAck after establishment",
+    );
+  });
+
   it("FspSession does not consume a counter when authentication fails", async () => {
     const { FspSession } = await import("../src/fsp/session.js");
     const a = await identityFromSecretKey(new Uint8Array(32).fill(0x26));

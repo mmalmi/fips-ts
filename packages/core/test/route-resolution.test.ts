@@ -233,7 +233,7 @@ describe("FipsNode on-demand route resolution", () => {
 
       expect(new TextDecoder().decode(received)).toBe("ethernet-to-webrtc");
       expect(aEthernet.resolveCalls).toBe(0);
-      expect(bWebRtc.resolveCalls).toBe(0);
+      expect(bWebRtc.resolveCalls).toBe(1);
       const bLearnedRoutes = (
         bNode as unknown as { routing: { learnedRoutes: Map<string, unknown> } }
       ).routing.learnedRoutes;
@@ -246,6 +246,138 @@ describe("FipsNode on-demand route resolution", () => {
       await bNode.stop();
       await cNode.stop();
       await dNode.stop();
+    }
+  }, 10_000);
+
+  it("releases the first datagram when a retry gains a newly connected transit peer", async () => {
+    const guest = await identityFromSecretKey(new Uint8Array(32).fill(0x35));
+    const host = await identityFromSecretKey(new Uint8Array(32).fill(0x36));
+    const sibling = await identityFromSecretKey(new Uint8Array(32).fill(0x37));
+    const transit = await identityFromSecretKey(new Uint8Array(32).fill(0x38));
+    const target = await identityFromSecretKey(new Uint8Array(32).fill(0x39));
+    const guestEthernet = new RoutedTransport("guest-late");
+    const hostEthernet = new RoutedTransport("guest-late");
+    const hostSibling = new RoutedTransport("sibling-late");
+    const siblingTransport = new RoutedTransport("sibling-late");
+    const hostWebRtc = new RoutedTransport("webrtc-late");
+    const transitWebRtc = new RoutedTransport("webrtc-late");
+    const transitBackhaul = new RoutedTransport("backhaul-late");
+    const targetBackhaul = new RoutedTransport("backhaul-late");
+    const guestNode = new FipsNode({
+      identity: guest,
+      transports: [guestEthernet],
+      routingMode: "reply_learned",
+    });
+    const hostNode = new FipsNode({
+      identity: host,
+      transports: [hostEthernet, hostSibling, hostWebRtc],
+      forwarding: true,
+      routingMode: "reply_learned",
+    });
+    const siblingNode = new FipsNode({
+      identity: sibling,
+      transports: [siblingTransport],
+      routingMode: "reply_learned",
+    });
+    const transitNode = new FipsNode({
+      identity: transit,
+      transports: [transitWebRtc, transitBackhaul],
+      forwarding: true,
+      routingMode: "reply_learned",
+    });
+    const targetNode = new FipsNode({
+      identity: target,
+      transports: [targetBackhaul],
+      routingMode: "reply_learned",
+    });
+    let received: Uint8Array | undefined;
+    targetNode.registerService(8_081, ({ payload }) => {
+      received = payload;
+    });
+
+    await Promise.all([
+      guestNode.start(),
+      hostNode.start(),
+      siblingNode.start(),
+      transitNode.start(),
+      targetNode.start(),
+    ]);
+    try {
+      await guestNode.connect({ transport: "guest-late", addr: toHex(host.publicKey) });
+      await hostNode.connect({ transport: "sibling-late", addr: toHex(sibling.publicKey) });
+
+      const firstDatagram = guestNode.sendDatagram({
+        dst: toHex(target.publicKey),
+        dstPort: 8_081,
+        payload: new TextEncoder().encode("first-packet"),
+      });
+      await vi.waitFor(() => {
+        const reversePaths = (
+          hostNode as unknown as { routing: { lookupReversePaths: Map<string, unknown> } }
+        ).routing.lookupReversePaths;
+        expect(reversePaths.size).toBe(1);
+      });
+
+      await hostNode.connect({ transport: "webrtc-late", addr: toHex(transit.publicKey) });
+      await transitNode.connect({ transport: "backhaul-late", addr: toHex(target.publicKey) });
+      await firstDatagram;
+
+      expect(new TextDecoder().decode(received)).toBe("first-packet");
+    } finally {
+      await guestNode.stop();
+      await hostNode.stop();
+      await siblingNode.stop();
+      await transitNode.stop();
+      await targetNode.stop();
+    }
+  }, 10_000);
+
+  it("resolves a lookup target on a forwarding host before releasing the first datagram", async () => {
+    const guest = await identityFromSecretKey(new Uint8Array(32).fill(0x3a));
+    const host = await identityFromSecretKey(new Uint8Array(32).fill(0x3b));
+    const target = await identityFromSecretKey(new Uint8Array(32).fill(0x3c));
+    const guestEthernet = new RoutedTransport("guest-resolved");
+    const hostEthernet = new RoutedTransport("guest-resolved");
+    const hostWebRtc = new RoutedTransport("webrtc-resolved");
+    const targetWebRtc = new RoutedTransport("webrtc-resolved");
+    hostWebRtc.resolvedPeers.set(nodeAddrToHex(target.nodeAddr), target.publicKey);
+    const guestNode = new FipsNode({
+      identity: guest,
+      transports: [guestEthernet],
+      routingMode: "reply_learned",
+    });
+    const hostNode = new FipsNode({
+      identity: host,
+      transports: [hostEthernet, hostWebRtc],
+      forwarding: true,
+      routingMode: "reply_learned",
+    });
+    const targetNode = new FipsNode({
+      identity: target,
+      transports: [targetWebRtc],
+      routingMode: "reply_learned",
+    });
+    let received: Uint8Array | undefined;
+    targetNode.registerService(8_082, ({ payload }) => {
+      received = payload;
+    });
+
+    await Promise.all([guestNode.start(), hostNode.start(), targetNode.start()]);
+    try {
+      await guestNode.connect({ transport: "guest-resolved", addr: toHex(host.publicKey) });
+      await guestNode.sendDatagram({
+        dst: toHex(target.publicKey),
+        dstPort: 8_082,
+        payload: new TextEncoder().encode("resolved-first-packet"),
+      });
+
+      expect(new TextDecoder().decode(received)).toBe("resolved-first-packet");
+      expect(hostWebRtc.resolveCalls).toBe(1);
+      expect(hostWebRtc.establishedPackets).toBeGreaterThan(0);
+    } finally {
+      await guestNode.stop();
+      await hostNode.stop();
+      await targetNode.stop();
     }
   }, 10_000);
 

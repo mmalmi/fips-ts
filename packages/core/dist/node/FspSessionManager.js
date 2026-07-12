@@ -74,13 +74,16 @@ export class FspSessionManager {
         if (phase === 2) {
             if (!session)
                 throw new Error(`FSP msg2 with no session ${srcNodeHex}`);
+            const wasEstablished = session.fsp.state === "established";
             const reply = session.fsp.handleSessionAck(fspFrame, (n) => this.cfg.random.bytes(n));
-            const eventPubkey = session.remotePubkeyHex ?? srcNodeHex;
-            this.cfg.emitSession({ remotePubkey: eventPubkey, state: "established" });
+            if (!wasEstablished) {
+                const eventPubkey = session.remotePubkeyHex ?? srcNodeHex;
+                this.cfg.emitSession({ remotePubkey: eventPubkey, state: "established" });
+                session.setupResolve?.();
+                session.setupResolve = undefined;
+                session.setupReject = undefined;
+            }
             await this.cfg.routing.sendFspToward(srcNodeAddr, reply);
-            session.setupResolve?.();
-            session.setupResolve = undefined;
-            session.setupReject = undefined;
             return;
         }
         if (phase === 3) {

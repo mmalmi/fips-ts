@@ -14,6 +14,7 @@ const MAX_PENDING_ROUTE_RESOLUTIONS = 64;
 const LOOKUP_REVERSE_PATH_TTL_MS = 30_000;
 const MAX_LOOKUP_REVERSE_PATHS = 256;
 const LOOKUP_ORIGIN_TIMEOUT_MS = 5_000;
+const LOOKUP_ORIGIN_RETRY_INTERVAL_MS = 250;
 const LOOKUP_ORIGIN_TTL = 8;
 const MAX_PENDING_ORIGIN_LOOKUPS = 64;
 const REPLY_LEARNED_ROUTE_TTL_SECONDS = 300;
@@ -114,9 +115,6 @@ export class FipsRouting {
             await existing.promise;
             return;
         }
-        const peers = this.originLookupPeers();
-        if (peers.length === 0)
-            return;
         const pending = this.originLookups.create({
             targetHex,
             targetPubkey,
@@ -131,11 +129,13 @@ export class FipsRouting {
             minMtu: 0,
             originCoords: this.treeState.coords,
         });
-        const results = await Promise.allSettled(peers.map((peer) => this.cfg.sendLinkMessage(peer, LinkMessageType.LookupRequest, encoded)));
-        if (results.every((result) => result.status === "rejected")) {
-            this.originLookups.fail(pending, new Error(`no route to ${targetHex}`));
+        const retrying = this.retryOriginLookup(pending, encoded);
+        try {
+            await pending.promise;
         }
-        await pending.promise;
+        finally {
+            await retrying;
+        }
     }
     async sendFspToward(remoteNodeAddr, fspFrame) {
         await this.sendSessionDatagram({
@@ -230,8 +230,11 @@ export class FipsRouting {
         }
         const reverseKey = lookupReverseKey(request.requestId, request.target);
         this.pruneLookupReversePaths(Date.now());
-        if (this.lookupReversePaths.has(reverseKey))
+        const existingReverse = this.lookupReversePaths.get(reverseKey);
+        if (existingReverse && peerNodeKey(existingReverse.peer) !== peerNodeKey(sourcePeer))
             return;
+        if (existingReverse)
+            existingReverse.peer = sourcePeer;
         const directOrLearned = this.nextHopFor(targetHex, sourcePeer);
         const fallbackPeers = !directOrLearned
             ? [...this.cfg.getPeers()]
@@ -243,8 +246,10 @@ export class FipsRouting {
                 && (request.minMtu === 0 || peer.transport.mtu >= request.minMtu))
                 .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS)
             : [];
-        const nextHops = directOrLearned ? [directOrLearned] : fallbackPeers;
-        if (nextHops.length === 0) {
+        const nextHops = (directOrLearned ? [directOrLearned] : fallbackPeers)
+            .filter((nextHop) => !existingReverse?.forwardedNextHops.has(peerNodeKey(nextHop)));
+        const canResolveDirectly = this.canResolveLookupDirectly(directOrLearned);
+        if (!this.lookupCanProgress(nextHops, canResolveDirectly)) {
             this.cfg.logger.debug("lookup request not forwarded", targetHex, "no-next-hop");
             return;
         }
@@ -252,21 +257,73 @@ export class FipsRouting {
             this.cfg.logger.debug("lookup request not forwarded", targetHex, "mtu");
             return;
         }
-        if (this.lookupReversePaths.has(reverseKey))
-            return;
-        this.reserveLookupReversePath();
-        this.lookupReversePaths.set(reverseKey, {
+        const reverse = existingReverse ?? {
             peer: sourcePeer,
             expiresAtMs: Date.now() + LOOKUP_REVERSE_PATH_TTL_MS,
-        });
+            forwardedNextHops: new Set(),
+        };
+        if (!existingReverse) {
+            this.reserveLookupReversePath();
+            this.lookupReversePaths.set(reverseKey, reverse);
+        }
+        if (canResolveDirectly) {
+            const requestForResolution = { ...request };
+            void this.resolveAndForwardLookup(requestForResolution, targetHex, reverseKey, reverse, sourcePeer);
+        }
+        if (nextHops.length === 0)
+            return;
+        for (const nextHop of nextHops)
+            reverse.forwardedNextHops.add(peerNodeKey(nextHop));
         request.ttl -= 1;
         const encoded = encodeLookupRequestPayload(request);
         const results = await Promise.allSettled(nextHops.map((nextHop) => this.cfg.sendLinkMessage(nextHop, LinkMessageType.LookupRequest, encoded)));
+        results.forEach((result, index) => {
+            if (result.status === "rejected") {
+                const nextHop = nextHops[index];
+                if (nextHop)
+                    reverse.forwardedNextHops.delete(peerNodeKey(nextHop));
+            }
+        });
         if (results.every((result) => result.status === "rejected")) {
-            this.lookupReversePaths.delete(reverseKey);
+            if (reverse.forwardedNextHops.size === 0)
+                this.lookupReversePaths.delete(reverseKey);
             throw new Error(`failed to forward lookup request for ${targetHex}`);
         }
         this.cfg.logger.debug("lookup request forwarded", targetHex, nextHops.length);
+    }
+    async resolveAndForwardLookup(request, targetHex, reverseKey, reverse, sourcePeer) {
+        try {
+            await this.resolveRoute(request.target, targetHex);
+        }
+        catch {
+            this.cfg.logger.debug("lookup target transport resolution failed", targetHex);
+            return;
+        }
+        if (this.lookupReversePaths.get(reverseKey) !== reverse)
+            return;
+        const nextHop = this.nextHopFor(targetHex, sourcePeer);
+        if (!nextHop || (request.minMtu !== 0 && nextHop.transport.mtu < request.minMtu))
+            return;
+        const nextHopKey = peerNodeKey(nextHop);
+        if (reverse.forwardedNextHops.has(nextHopKey))
+            return;
+        reverse.forwardedNextHops.add(nextHopKey);
+        try {
+            await this.cfg.sendLinkMessage(nextHop, LinkMessageType.LookupRequest, encodeLookupRequestPayload({ ...request, ttl: request.ttl - 1 }));
+            this.cfg.logger.debug("lookup request forwarded after transport resolution", targetHex);
+        }
+        catch (error) {
+            reverse.forwardedNextHops.delete(nextHopKey);
+            this.cfg.emitError(error, "forward resolved LookupRequest");
+        }
+    }
+    canResolveLookupDirectly(nextHop) {
+        if (nextHop)
+            return false;
+        return this.cfg.transports.some((transport) => transport.resolve !== undefined);
+    }
+    lookupCanProgress(nextHops, canResolveDirectly) {
+        return nextHops.length > 0 || canResolveDirectly;
     }
     async forwardLookupResponse(sourcePeer, payload) {
         const response = decodeLookupResponse(payload);
@@ -320,6 +377,18 @@ export class FipsRouting {
             return peer === defaultPeer || this.treeState.isTreePeer(deriveNodeAddr(peer.pubkey));
         })
             .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS);
+    }
+    async retryOriginLookup(pending, encoded) {
+        while (this.originLookups.get(pending.targetHex) === pending) {
+            const peers = this.originLookupPeers();
+            await Promise.allSettled(peers.map((peer) => this.cfg.sendLinkMessage(peer, LinkMessageType.LookupRequest, encoded)));
+            if (this.originLookups.get(pending.targetHex) !== pending)
+                return;
+            await Promise.race([
+                pending.promise.catch(() => undefined),
+                delay(LOOKUP_ORIGIN_RETRY_INTERVAL_MS),
+            ]);
+        }
     }
     async sendSessionDatagram(datagram, previousHop) {
         const destNodeHex = nodeAddrToHex(datagram.destAddr);
@@ -439,6 +508,14 @@ export class FipsRouting {
         }
         await this.cfg.connectKnownPeer(resolved.transport, resolved.remoteAddr, resolved.remotePubkey);
     }
+}
+function peerNodeKey(peer) {
+    return nodeAddrToHex(deriveNodeAddr(peer.pubkey));
+}
+function delay(milliseconds) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, milliseconds);
+    });
 }
 function discoveryPublicKey(discovered) {
     const hinted = discovered.publicKey;
