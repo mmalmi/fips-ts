@@ -22,11 +22,35 @@ export class IndexedDbIdentityStore implements IdentityStore {
   }
 
   async getOrCreateIdentity(): Promise<FipsIdentity> {
-    const existing = await this.load();
-    if (existing) return existing;
-    const id = await generateIdentity();
-    await this.save(id);
-    return id;
+    const candidate = await generateIdentity();
+    const db = await this.openDb();
+    try {
+      const secretKeyHex = await new Promise<string>((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, "readwrite");
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.get(KEY_NAME);
+        let selectedSecretKeyHex = exportIdentity(candidate).secretKeyHex;
+
+        req.onsuccess = () => {
+          const existing = req.result as { secretKeyHex: string } | undefined;
+          if (existing) {
+            selectedSecretKeyHex = existing.secretKeyHex;
+          } else {
+            store.put(exportIdentity(candidate), KEY_NAME);
+          }
+        };
+        req.onerror = () => reject(req.error);
+        tx.oncomplete = () => resolve(selectedSecretKeyHex);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error ?? new Error("identity transaction aborted"));
+      });
+      return await importIdentity({
+        type: "fips-identity-v1",
+        secretKeyHex,
+      });
+    } finally {
+      db.close();
+    }
   }
 
   async importNsec(secretKeyHex: string): Promise<void> {

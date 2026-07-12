@@ -4,6 +4,7 @@
  * relay URL injected via the global `__fipsTestRelayUrl`.
  */
 
+import { IndexedDbIdentityStore } from "@fips/browser";
 import { FipsNode, generateIdentity, toHex } from "@fips/core";
 import { MemoryHub, MemoryTransport } from "@fips/transport-memory";
 import { WebRtcTransport } from "@fips/transport-webrtc";
@@ -483,6 +484,25 @@ async function echoWithRustWebRtcPeer(
   }
 }
 
+async function concurrentIdentityStoreCreate(dbName: string): Promise<{
+  first: string;
+  second: string;
+  persisted: string;
+}> {
+  const firstStore = new IndexedDbIdentityStore(dbName);
+  const secondStore = new IndexedDbIdentityStore(dbName);
+  const [first, second] = await Promise.all([
+    firstStore.getOrCreateIdentity(),
+    secondStore.getOrCreateIdentity(),
+  ]);
+  const persisted = await new IndexedDbIdentityStore(dbName).getOrCreateIdentity();
+  return {
+    first: toHex(first.publicKey),
+    second: toHex(second.publicKey),
+    persisted: toHex(persisted.publicKey),
+  };
+}
+
 export const harness = {
   makeWebRtcPair,
   autoConnectWebRtcPair,
@@ -495,4 +515,5 @@ export const harness = {
   echoOverPair,
   echoOverChain,
   echoWithRustWebRtcPeer,
+  concurrentIdentityStoreCreate,
 };
