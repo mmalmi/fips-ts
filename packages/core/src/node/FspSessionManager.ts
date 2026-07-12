@@ -14,6 +14,7 @@ import {
 } from "../fsp/wire.js";
 import type { FipsIdentity } from "../identity/index.js";
 import {
+  compareNodeAddr,
   deriveNodeAddr,
   nodeAddrToHex,
   type NodeAddr,
@@ -286,6 +287,23 @@ export class FspSessionManager {
       );
       session.pendingResponderFsp?.close();
       session.pendingResponderFsp = pending;
+    } else if (session?.fsp.state === "handshaking" && session.fsp.role === "initiator") {
+      const order = compareNodeAddr(this.cfg.identity.nodeAddr, srcNodeAddr);
+      if (order < 0) {
+        this.cfg.logger.debug("simultaneous FSP handshake: local initiator wins", srcNodeHex);
+        return;
+      }
+      if (order === 0) throw new Error("simultaneous FSP handshake with local identity");
+
+      this.cfg.logger.debug("simultaneous FSP handshake: remote initiator wins", srcNodeHex);
+      session.fsp.close();
+      const responder = new FspSession({ identity: this.cfg.identity, role: "responder" });
+      reply = responder.handleSessionSetup(
+        fspFrame,
+        (n) => this.cfg.random.bytes(n),
+        this.cfg.routing.coords,
+      );
+      session.fsp = responder;
     } else {
       const fsp = new FspSession({ identity: this.cfg.identity, role: "responder" });
       reply = fsp.handleSessionSetup(
@@ -330,6 +348,9 @@ export class FspSessionManager {
       remotePubkey: session.remotePubkeyHex ?? srcNodeHex,
       state: "established",
     });
+    session.setupResolve?.();
+    session.setupResolve = undefined;
+    session.setupReject = undefined;
   }
 
   private async ensureSession(remotePubkeyHex: string): Promise<Session> {

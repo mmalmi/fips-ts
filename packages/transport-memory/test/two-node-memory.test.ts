@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { FipsNode, generateIdentity, toHex } from "@fips/core";
+import {
+  FipsNode,
+  generateIdentity,
+  identityFromSecretKey,
+  toHex,
+  type Logger,
+} from "@fips/core";
 
 import { MemoryHub, MemoryTransport } from "../src/index.js";
 
@@ -92,6 +98,72 @@ describe("Two-node FIPS over MemoryTransport", () => {
     } finally {
       await aNode.stop();
       await bNode.stop();
+    }
+  });
+
+  it("keeps endpoint data flowing after simultaneous FSP session setup", async () => {
+    const a = await identityFromSecretKey(new Uint8Array(32).fill(0x32));
+    const b = await identityFromSecretKey(new Uint8Array(32).fill(0x76));
+    const hub = new MemoryHub();
+    const debugMessages: string[] = [];
+    const logger: Logger = {
+      debug: (message) => debugMessages.push(String(message)),
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    };
+    const aNode = new FipsNode({
+      identity: a,
+      transports: [new MemoryTransport({ hub })],
+      routingMode: "reply_learned",
+      logger,
+    });
+    const bNode = new FipsNode({
+      identity: b,
+      transports: [new MemoryTransport({ hub })],
+      routingMode: "reply_learned",
+      logger,
+    });
+
+    await Promise.all([aNode.start(), bNode.start()]);
+    try {
+      await aNode.connect({ transport: "memory", addr: toHex(b.publicKey) });
+      const receivedByA: string[] = [];
+      const receivedByB: string[] = [];
+      aNode.on("endpointData", (event) => {
+        receivedByA.push(new TextDecoder().decode((event as { payload: Uint8Array }).payload));
+      });
+      bNode.on("endpointData", (event) => {
+        receivedByB.push(new TextDecoder().decode((event as { payload: Uint8Array }).payload));
+      });
+
+      await Promise.all([
+        aNode.sendEndpointData({
+          dst: toHex(b.publicKey),
+          payload: new TextEncoder().encode("a-first"),
+        }),
+        bNode.sendEndpointData({
+          dst: toHex(a.publicKey),
+          payload: new TextEncoder().encode("b-first"),
+        }),
+      ]);
+      await Promise.all([
+        aNode.sendEndpointData({
+          dst: toHex(b.publicKey),
+          payload: new TextEncoder().encode("a-second"),
+        }),
+        bNode.sendEndpointData({
+          dst: toHex(a.publicKey),
+          payload: new TextEncoder().encode("b-second"),
+        }),
+      ]);
+
+      await expect.poll(() => receivedByA).toEqual(["b-first", "b-second"]);
+      await expect.poll(() => receivedByB).toEqual(["a-first", "a-second"]);
+      expect(debugMessages).toContain("simultaneous FSP handshake: local initiator wins");
+      expect(debugMessages).toContain("simultaneous FSP handshake: remote initiator wins");
+    } finally {
+      await Promise.all([aNode.stop(), bNode.stop()]);
     }
   });
 });
