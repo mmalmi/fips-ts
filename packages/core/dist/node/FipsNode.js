@@ -6,7 +6,7 @@ import { DirectFspTransportReassembler, isDirectFspTransportFragment, segmentDir
 import { FspSession } from "../fsp/session.js";
 import { decodeFmpMsg2, decodeFmpEstablished, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
 import { decodeFspEstablished, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_PHASE_ESTABLISHED, isDirectFspEstablished, peekFspPhase, } from "../fsp/wire.js";
-import { compressedPubkeyFromXOnly, signSchnorr, } from "../identity/index.js";
+import { compressedPubkeyFromXOnly, signSchnorr, verifySchnorr, } from "../identity/index.js";
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
 import { decodeSessionDatagramPayload, encodeSessionDatagram, LinkMessageType, } from "../protocol/link.js";
 import { decodeSessionAck, decodeSessionSetup } from "../protocol/session.js";
@@ -14,6 +14,7 @@ import { decodeTreeAnnouncePayload, encodeTreeAnnounce, verifyTreeAnnounce, } fr
 import { decodeLookupRequest, decodeLookupResponse, encodeLookupRequestPayload, encodeLookupResponsePayload, lookupResponseProofBytes, } from "../protocol/discovery.js";
 import { noopLogger, transportAddressKey, } from "../transport/types.js";
 import { LearnedRouteTable } from "./LearnedRouteTable.js";
+import { OriginLookupRegistry } from "./OriginLookupRegistry.js";
 import { TreeState } from "./TreeState.js";
 let sessionIdxCounter = 1;
 function nextSessionIdx() {
@@ -31,6 +32,9 @@ const ROUTE_RESOLUTION_TIMEOUT_MS = 5_000;
 const MAX_PENDING_ROUTE_RESOLUTIONS = 64;
 const LOOKUP_REVERSE_PATH_TTL_MS = 30_000;
 const MAX_LOOKUP_REVERSE_PATHS = 256;
+const LOOKUP_ORIGIN_TIMEOUT_MS = 5_000;
+const LOOKUP_ORIGIN_TTL = 8;
+const MAX_PENDING_ORIGIN_LOOKUPS = 64;
 const REPLY_LEARNED_ROUTE_TTL_SECONDS = 300;
 const MAX_REPLY_LEARNED_ROUTES_PER_DESTINATION = 4;
 const MAX_REPLY_LEARNED_LOOKUP_PEERS = 16;
@@ -50,6 +54,7 @@ export class FipsNode {
     pendingPeerConnects = new Map(); // by transportAddressKey
     pendingRouteResolutions = new Map(); // by NodeAddr hex
     lookupReversePaths = new Map();
+    originLookups = new OriginLookupRegistry(MAX_PENDING_ORIGIN_LOOKUPS);
     learnedRoutes = new LearnedRouteTable();
     treeState;
     coordCache = new Map();
@@ -139,6 +144,7 @@ export class FipsNode {
         for (const pending of this.pendingRouteResolutions.values()) {
             pending.abort.abort();
         }
+        this.originLookups.stop();
         for (const session of this.sessions.values()) {
             session.fsp.close();
             session.pendingResponderFsp?.close();
@@ -580,6 +586,8 @@ export class FipsNode {
             return;
         }
         if (msgType === LinkMessageType.LookupResponse) {
+            if (await this.handleOriginLookupResponse(peer, payload))
+                return;
             if (this.forwarding)
                 await this.forwardLookupResponse(peer, payload);
             return;
@@ -744,6 +752,29 @@ export class FipsNode {
         response.pathMtu = Math.min(response.pathMtu, reverse.peer.transport.mtu);
         await this.sendLinkMessage(reverse.peer, LinkMessageType.LookupResponse, encodeLookupResponsePayload(response));
         this.logger.debug("lookup response forwarded", nodeAddrToHex(response.target), reverse.peer.remoteAddr.transport, reverse.peer.remoteAddr.addr);
+    }
+    async handleOriginLookupResponse(sourcePeer, payload) {
+        const response = decodeLookupResponse(payload);
+        const pending = this.originLookups.findRequest(response.requestId);
+        if (!pending)
+            return false;
+        if (nodeAddrToHex(response.target) !== pending.targetHex)
+            return true;
+        const proofDigest = sha256(lookupResponseProofBytes(response.requestId, response.target, response.targetCoords));
+        const proofValid = verifySchnorr(response.proof, proofDigest, pending.targetPubkey.subarray(1));
+        if (!proofValid) {
+            this.logger.warn("lookup response proof verification failed", pending.targetHex);
+            return true;
+        }
+        if (!bytesEqual(response.targetCoords[0], response.target)) {
+            this.logger.warn("lookup response coordinates do not start at target", pending.targetHex);
+            return true;
+        }
+        this.cacheCoordinates(response.target, response.targetCoords);
+        this.learnReverseRoute(pending.targetHex, sourcePeer);
+        this.originLookups.complete(pending);
+        this.logger.debug("lookup response accepted", pending.targetHex);
+        return true;
     }
     async sendLinkMessage(peer, msgType, payload) {
         const frame = peer.link.encryptOutgoing(payload, msgType);
@@ -976,6 +1007,10 @@ export class FipsNode {
             });
             return session;
         }
+        const directPeer = this.peersByNodeAddr.get(remoteNodeHex);
+        if (directPeer?.link.state !== "established" && !this.coordCache.has(remoteNodeHex)) {
+            await this.ensureFirstContactRoute(remoteNodeAddr, remoteNodeHex, remotePubkey);
+        }
         const fsp = new FspSession({
             identity: this.identity,
             role: "initiator",
@@ -1000,6 +1035,47 @@ export class FipsNode {
                 clearTimeout(timer);
         }
         return session;
+    }
+    async ensureFirstContactRoute(target, targetHex, targetPubkey) {
+        const existing = this.originLookups.get(targetHex);
+        if (existing) {
+            await existing.promise;
+            return;
+        }
+        const peers = this.originLookupPeers();
+        if (peers.length === 0)
+            return;
+        const pending = this.originLookups.create({
+            targetHex,
+            targetPubkey,
+            randomBytes: () => this.random.bytes(8),
+            timeoutMs: LOOKUP_ORIGIN_TIMEOUT_MS,
+        });
+        const encoded = encodeLookupRequestPayload({
+            requestId: pending.requestId,
+            target,
+            origin: this.identity.nodeAddr,
+            ttl: LOOKUP_ORIGIN_TTL,
+            minMtu: 0,
+            originCoords: this.treeState.coords,
+        });
+        const results = await Promise.allSettled(peers.map((peer) => this.sendLinkMessage(peer, LinkMessageType.LookupRequest, encoded)));
+        if (results.every((result) => result.status === "rejected")) {
+            this.originLookups.fail(pending, new Error(`no route to ${targetHex}`));
+        }
+        await pending.promise;
+    }
+    originLookupPeers() {
+        const defaultPeer = this.defaultRoute ? this.peersByPubkey.get(this.defaultRoute) : undefined;
+        return [...this.peers.values()]
+            .filter((peer) => {
+            if (peer.link.state !== "established")
+                return false;
+            if (this.routingMode === "reply_learned")
+                return true;
+            return peer === defaultPeer || this.treeState.isTreePeer(deriveNodeAddr(peer.pubkey));
+        })
+            .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS);
     }
     /**
      * Wrap an FSP frame in a SessionDatagram and send it toward a remote NodeAddr.

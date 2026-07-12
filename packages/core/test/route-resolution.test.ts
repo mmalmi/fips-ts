@@ -3,8 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FipsNode,
   FMP_PHASE_ESTABLISHED,
-  LinkMessageType,
-  encodeLookupRequestPayload,
   identityFromSecretKey,
   nodeAddrToHex,
   peekFmpPhase,
@@ -88,24 +86,6 @@ function sendSessionDatagram(node: FipsNode, datagram: SessionDatagram): Promise
   ).sendSessionDatagram(datagram);
 }
 
-function sendLookupRequest(
-  node: FipsNode,
-  peerPubkey: string,
-  request: Parameters<typeof encodeLookupRequestPayload>[0],
-): Promise<void> {
-  const internals = node as unknown as {
-    peersByPubkey: Map<string, unknown>;
-    sendLinkMessage(peer: unknown, msgType: number, payload: Uint8Array): Promise<void>;
-  };
-  const peer = internals.peersByPubkey.get(peerPubkey);
-  if (!peer) throw new Error(`missing test peer ${peerPubkey}`);
-  return internals.sendLinkMessage(
-    peer,
-    LinkMessageType.LookupRequest,
-    encodeLookupRequestPayload(request),
-  );
-}
-
 afterEach(() => {
   registry.clear();
   vi.useRealTimers();
@@ -185,7 +165,7 @@ describe("FipsNode on-demand route resolution", () => {
     }
   });
 
-  it("uses Rust-compatible reply-learned lookup routing across a transit bridge", async () => {
+  it("discovers and warms a guest-to-target route before the first session datagram", async () => {
     const a = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
     const b = await identityFromSecretKey(new Uint8Array(32).fill(0x32));
     const c = await identityFromSecretKey(new Uint8Array(32).fill(0x33));
@@ -212,14 +192,10 @@ describe("FipsNode on-demand route resolution", () => {
       transports: [cWebRtc, cBackhaul],
       forwarding: true,
       routingMode: "reply_learned",
-      // This fixture has an extra transit hop; its planned backhaul route
-      // stands in for Rust tree routing. WebVM itself has no default route.
-      defaultRoute: toHex(b.publicKey),
     });
     const dNode = new FipsNode({
       identity: d,
       transports: [dBackhaul],
-      defaultRoute: toHex(c.publicKey),
     });
     let received: Uint8Array | undefined;
     dNode.registerService(8_080, ({ payload }) => {
@@ -243,18 +219,9 @@ describe("FipsNode on-demand route resolution", () => {
         transport: "backhaul-like",
         addr: toHex(d.publicKey),
       });
-      await sendLookupRequest(aNode, toHex(b.publicKey), {
-        requestId: 0x3132333435363738n,
-        target: d.nodeAddr,
-        origin: a.nodeAddr,
-        ttl: 8,
-        minMtu: 0,
-        originCoords: [a.nodeAddr],
-      });
       await vi.waitFor(() => {
-        const learnedRoutes = (bNode as unknown as { learnedRoutes: Map<string, unknown> })
-          .learnedRoutes;
-        expect(learnedRoutes.has(nodeAddrToHex(d.nodeAddr))).toBe(true);
+        const tree = (cNode as unknown as { treeState: { root: NodeAddr } }).treeState;
+        expect(nodeAddrToHex(tree.root)).toBe(nodeAddrToHex(a.nodeAddr));
       });
       await aNode.sendDatagram({
         dst: toHex(d.publicKey),
@@ -263,14 +230,21 @@ describe("FipsNode on-demand route resolution", () => {
       });
 
       expect(new TextDecoder().decode(received)).toBe("ethernet-to-webrtc");
+      expect(aEthernet.resolveCalls).toBe(0);
       expect(bWebRtc.resolveCalls).toBe(0);
+      const bLearnedRoutes = (bNode as unknown as { learnedRoutes: Map<string, unknown> })
+        .learnedRoutes;
+      expect(bLearnedRoutes.has(nodeAddrToHex(d.nodeAddr))).toBe(true);
+      const cDirectPeers = (cNode as unknown as { peersByNodeAddr: Map<string, unknown> })
+        .peersByNodeAddr;
+      expect(cDirectPeers.has(nodeAddrToHex(d.nodeAddr))).toBe(true);
     } finally {
       await aNode.stop();
       await bNode.stop();
       await cNode.stop();
       await dNode.stop();
     }
-  });
+  }, 10_000);
 
   it("never forwards a datagram back to the peer it arrived from", async () => {
     const a = await identityFromSecretKey(new Uint8Array(32).fill(0x41));

@@ -17,6 +17,7 @@ export declare class FipsNode {
     private pendingPeerConnects;
     private pendingRouteResolutions;
     private lookupReversePaths;
+    private readonly originLookups;
     private readonly learnedRoutes;
     private readonly treeState;
     private readonly coordCache;
@@ -67,6 +68,7 @@ export declare class FipsNode {
     private cacheCoordinates;
     private handleLookupRequest;
     private forwardLookupResponse;
+    private handleOriginLookupResponse;
     private sendLinkMessage;
     private pruneLookupReversePaths;
     private reserveLookupReversePath;
@@ -75,6 +77,8 @@ export declare class FipsNode {
     private pruneDrainingResponderLinks;
     private handleFspFromPeer;
     private ensureSession;
+    private ensureFirstContactRoute;
+    private originLookupPeers;
     /**
      * Wrap an FSP frame in a SessionDatagram and send it toward a remote NodeAddr.
      */
