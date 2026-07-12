@@ -167,4 +167,33 @@ describe("WebRtcTransport NodeAddr resolution", () => {
       await transport.stop();
     }
   });
+
+  it("rotates to another cached advert when an auto-connected candidate fails", async () => {
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x73));
+    const stale = await identityFromSecretKey(new Uint8Array(32).fill(0x74));
+    const live = await identityFromSecretKey(new Uint8Array(32).fill(0x75));
+    const relay = new FakeRelay();
+    const transport = new WebRtcTransport({
+      relays: [relay.url],
+      relayClients: [relayClient(relay)],
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+      autoConnect: true,
+      maxConnections: 1,
+    });
+
+    await transport.start(transportContext(local));
+    try {
+      const discovered = transport.discover()[Symbol.asyncIterator]();
+      relay.emit(advertEvent(stale));
+      relay.emit(advertEvent(live));
+      const first = await discovered.next();
+      expect(first.value?.remoteAddr.addr).toBe(toHex(stale.publicKey));
+
+      await transport.close(first.value!.remoteAddr);
+      const replacement = await discovered.next();
+      expect(replacement.value?.remoteAddr.addr).toBe(toHex(live.publicKey));
+    } finally {
+      await transport.stop();
+    }
+  });
 });
