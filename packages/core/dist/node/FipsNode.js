@@ -333,7 +333,9 @@ export class FipsNode {
                 this.peers.delete(key);
                 this.peersByPubkey.delete(peer.pubkeyHex);
                 if (peer.pubkey.length > 0) {
-                    this.peersByNodeAddr.delete(nodeAddrToHex(deriveNodeAddr(peer.pubkey)));
+                    const peerNodeAddr = deriveNodeAddr(peer.pubkey);
+                    this.peersByNodeAddr.delete(nodeAddrToHex(peerNodeAddr));
+                    this.routing.removePeer(peerNodeAddr);
                 }
                 this.sessionManager.closePeerSessions(peer.pubkeyHex);
                 this.emit("peer", {

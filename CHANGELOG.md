@@ -1,5 +1,11 @@
 # Changelog
 
+## @fips/core 0.0.23 - 2026-07-14
+
+- Remove a disconnected adjacent peer from the browser's spanning-tree state,
+  so a reconnect accepts the peer's initial TreeAnnounce immediately instead
+  of waiting for its periodic 60-second sequence refresh.
+
 ## @fips/core 0.0.22 - 2026-07-13
 
 - Promote an authenticated responder rekey as soon as its final XK message

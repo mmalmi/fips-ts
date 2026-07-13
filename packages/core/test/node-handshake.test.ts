@@ -50,6 +50,10 @@ class FlakyMemoryTransport implements Transport {
     this.ctx?.onConnectionState?.({ remoteAddr: addr, state: "connected" });
   }
 
+  disconnect(addr: TransportAddress): void {
+    this.ctx?.onConnectionState?.({ remoteAddr: addr, state: "disconnected" });
+  }
+
   async send(addr: TransportAddress, packet: Uint8Array): Promise<void> {
     if (packet.length > this.mtu) {
       throw new Error(`memory packet ${packet.length} exceeds MTU ${this.mtu}`);
@@ -82,6 +86,32 @@ class FlakyMemoryTransport implements Transport {
 }
 
 describe("FipsNode FMP handshake", () => {
+  it("forgets disconnected peers' tree state before reconnect", async () => {
+    const identityA = await identityFromSecretKey(new Uint8Array(32).fill(0x11));
+    const identityB = await identityFromSecretKey(new Uint8Array(32).fill(0x22));
+    const transportA = new FlakyMemoryTransport();
+    const transportB = new FlakyMemoryTransport();
+    const nodeA = new FipsNode({ identity: identityA, transports: [transportA] });
+    const nodeB = new FipsNode({ identity: identityB, transports: [transportB] });
+    const addressB = { transport: "memory", addr: toHex(identityB.publicKey) };
+
+    await nodeA.start();
+    await nodeB.start();
+    try {
+      await nodeA.connect(addressB);
+      await vi.waitFor(() => {
+        expect((nodeA as any).routing.treeState.peers.size).toBe(1);
+      });
+
+      transportA.disconnect(addressB);
+
+      expect((nodeA as any).routing.treeState.peers.size).toBe(0);
+    } finally {
+      await nodeA.stop();
+      await nodeB.stop();
+    }
+  });
+
   it("resolves simultaneous adjacent handshakes and keeps bidirectional service traffic", async () => {
     const identityA = await identityFromSecretKey(new Uint8Array(32).fill(0x21));
     const identityB = await identityFromSecretKey(new Uint8Array(32).fill(0x42));
