@@ -52,12 +52,14 @@ export class WebRtcTransport {
     advertRefreshTimer;
     stopping = true;
     constructor(config) {
+        const maxConnections = config.maxConnections ?? 32;
         this.cfg = {
             advertiseOnNostr: false,
             acceptConnections: true,
             autoConnect: false,
             mtu: 1200,
-            maxConnections: 32,
+            maxConnections,
+            maxAutoConnections: Math.min(maxConnections, Math.max(0, config.maxAutoConnections ?? maxConnections)),
             connectTimeoutMs: 30_000,
             relayConnectTimeoutMs: 5_000,
             iceGatherTimeoutMs: 10_000,
@@ -236,7 +238,7 @@ export class WebRtcTransport {
             return leftAttempt - rightAttempt || right.expiresAtMs - left.expiresAtMs;
         });
         for (const cached of candidates) {
-            if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections)
+            if (this.autoConnectCapacityUsed() >= this.cfg.maxAutoConnections)
                 return;
             if (this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects())
                 return;
@@ -706,6 +708,12 @@ export class WebRtcTransport {
     }
     speculativeAutoConnects() {
         return this.autoConnectPeers.size + this.pendingAutoConnects.size;
+    }
+    autoConnectCapacityUsed() {
+        return this.conns.size
+            + this.pendingDials.size
+            + this.pendingInbound.size
+            + this.autoConnectPeers.size;
     }
     maxSpeculativeAutoConnects() {
         return Math.max(1, Math.floor(this.cfg.maxConnections / 2));

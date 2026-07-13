@@ -315,4 +315,42 @@ describe("WebRtcTransport NodeAddr resolution", () => {
       await transport.stop();
     }
   });
+
+  it("reserves connection capacity for requested inbound peers", async () => {
+    vi.useFakeTimers();
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x51));
+    const candidates = await Promise.all([0x52, 0x53, 0x54, 0x55]
+      .map((byte) => identityFromSecretKey(new Uint8Array(32).fill(byte))));
+    const relay = new FakeRelay();
+    const queued: string[] = [];
+    const transport = new WebRtcTransport({
+      relays: [relay.url],
+      relayClients: [relayClient(relay)],
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+      autoConnect: true,
+      maxConnections: 4,
+      maxAutoConnections: 2,
+      logger: {
+        debug: (...args) => {
+          if (args[0] === "webrtc auto-connect queued" && typeof args[1] === "string") {
+            queued.push(args[1]);
+          }
+        },
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+    });
+
+    await transport.start(transportContext(local));
+    try {
+      transport.discover()[Symbol.asyncIterator]();
+      for (const candidate of candidates) relay.emit(advertEvent(candidate, 3_600));
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(queued).toHaveLength(2);
+    } finally {
+      await transport.stop();
+    }
+  });
 });

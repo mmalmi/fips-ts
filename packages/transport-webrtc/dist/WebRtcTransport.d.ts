@@ -11,6 +11,7 @@ export interface WebRtcTransportConfig {
     advertTtlMs?: number;
     mtu?: number;
     maxConnections?: number;
+    maxAutoConnections?: number;
     connectTimeoutMs?: number;
     relayConnectTimeoutMs?: number;
     iceGatherTimeoutMs?: number;
@@ -75,6 +76,7 @@ export declare class WebRtcTransport implements Transport {
     private handleAutoConnectFailure;
     private clearPendingInbound;
     private speculativeAutoConnects;
+    private autoConnectCapacityUsed;
     private maxSpeculativeAutoConnects;
 }
 //# sourceMappingURL=WebRtcTransport.d.ts.map

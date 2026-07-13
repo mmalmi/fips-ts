@@ -45,6 +45,7 @@ export interface WebRtcTransportConfig {
 
   mtu?: number;
   maxConnections?: number;
+  maxAutoConnections?: number;
   connectTimeoutMs?: number;
   relayConnectTimeoutMs?: number;
   iceGatherTimeoutMs?: number;
@@ -118,6 +119,7 @@ export class WebRtcTransport implements Transport {
       | "autoConnect"
       | "mtu"
       | "maxConnections"
+      | "maxAutoConnections"
       | "connectTimeoutMs"
       | "relayConnectTimeoutMs"
       | "iceGatherTimeoutMs"
@@ -154,12 +156,17 @@ export class WebRtcTransport implements Transport {
   private stopping = true;
 
   constructor(config: WebRtcTransportConfig) {
+    const maxConnections = config.maxConnections ?? 32;
     this.cfg = {
       advertiseOnNostr: false,
       acceptConnections: true,
       autoConnect: false,
       mtu: 1200,
-      maxConnections: 32,
+      maxConnections,
+      maxAutoConnections: Math.min(
+        maxConnections,
+        Math.max(0, config.maxAutoConnections ?? maxConnections),
+      ),
       connectTimeoutMs: 30_000,
       relayConnectTimeoutMs: 5_000,
       iceGatherTimeoutMs: 10_000,
@@ -341,7 +348,7 @@ export class WebRtcTransport implements Transport {
         return leftAttempt - rightAttempt || right.expiresAtMs - left.expiresAtMs;
       });
     for (const cached of candidates) {
-      if (this.conns.size + this.pendingDials.size + this.autoConnectPeers.size >= this.cfg.maxConnections) return;
+      if (this.autoConnectCapacityUsed() >= this.cfg.maxAutoConnections) return;
       if (this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects()) return;
       const remote = cached.peer.remoteAddr.addr;
       if (this.conns.has(remote) || this.pendingConnects.has(remote) || this.autoConnectPeers.has(remote)) continue;
@@ -826,6 +833,13 @@ export class WebRtcTransport implements Transport {
 
   private speculativeAutoConnects(): number {
     return this.autoConnectPeers.size + this.pendingAutoConnects.size;
+  }
+
+  private autoConnectCapacityUsed(): number {
+    return this.conns.size
+      + this.pendingDials.size
+      + this.pendingInbound.size
+      + this.autoConnectPeers.size;
   }
 
   private maxSpeculativeAutoConnects(): number {
