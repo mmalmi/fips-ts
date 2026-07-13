@@ -398,6 +398,47 @@ describe("WebRtcTransport NodeAddr resolution", () => {
     }
   });
 
+  it("retries a preferred ingress without the arbitrary-peer cooldown", async () => {
+    vi.useFakeTimers();
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x74));
+    const preferred = await identityFromSecretKey(new Uint8Array(32).fill(0x75));
+    const relay = new FakeRelay();
+    const queued: string[] = [];
+    const transport = new WebRtcTransport({
+      relays: [relay.url],
+      relayClients: [relayClient(relay)],
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+      autoConnect: true,
+      maxConnections: 1,
+      preferredAutoConnectPeers: [toHex(preferred.publicKey)],
+      logger: {
+        debug: (...args) => {
+          if (args[0] === "webrtc auto-connect queued" && typeof args[1] === "string") {
+            queued.push(args[1]);
+          }
+        },
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+    });
+
+    await transport.start(transportContext(local));
+    try {
+      const discovered = transport.discover()[Symbol.asyncIterator]();
+      relay.emit(advertEvent(preferred, 3_600));
+      await vi.advanceTimersByTimeAsync(2_500);
+      const first = await discovered.next();
+      expect(first.value?.remoteAddr.addr).toBe(toHex(preferred.publicKey));
+
+      await transport.close(first.value!.remoteAddr);
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(queued).toEqual([toHex(preferred.publicKey), toHex(preferred.publicKey)]);
+    } finally {
+      await transport.stop();
+    }
+  });
+
   it("reserves an auto-connect slot for a preferred ingress discovered later", async () => {
     vi.useFakeTimers();
     const local = await identityFromSecretKey(new Uint8Array(32).fill(0x74));

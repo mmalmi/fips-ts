@@ -8,6 +8,7 @@ import { validateWebRtcSignal, } from "./WebRtcSignal.js";
 const MAX_ADVERT_CACHE_ENTRIES = 256;
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
 const AUTO_RECONNECT_DELAY_MS = 500;
+const PREFERRED_AUTO_CONNECT_FAILURE_COOLDOWN_MS = 1_000;
 const AUTO_CONNECT_FAILURE_COOLDOWN_MS = 30_000;
 const AUTO_CONNECT_SETTLE_MS = 750;
 function randomId() {
@@ -695,7 +696,10 @@ export class WebRtcTransport {
         if (!this.cfg.autoConnect || this.stopping)
             return;
         this.autoConnectPeers.delete(remotePubkeyHex);
-        this.autoConnectCooldowns.set(remotePubkeyHex, Date.now() + AUTO_CONNECT_FAILURE_COOLDOWN_MS);
+        const cooldownMs = this.autoConnectPolicy.isPreferred(remotePubkeyHex)
+            ? PREFERRED_AUTO_CONNECT_FAILURE_COOLDOWN_MS
+            : AUTO_CONNECT_FAILURE_COOLDOWN_MS;
+        this.autoConnectCooldowns.set(remotePubkeyHex, Date.now() + cooldownMs);
         this.scheduleAutoReconnect(remotePubkeyHex);
         this.fillAutoConnectSlots();
     }
