@@ -6,6 +6,11 @@
   so a reconnect accepts the peer's initial TreeAnnounce immediately instead
   of waiting for its periodic 60-second sequence refresh.
 
+## Runtime packages - 2026-07-14
+
+- `@fips/transport-webrtc` 0.0.37 and `@fips/transport-ethernet` 0.0.22
+  pin `@fips/core` 0.0.23 in packed manifests.
+
 ## @fips/core 0.0.22 - 2026-07-13
 
 - Promote an authenticated responder rekey as soon as its final XK message
