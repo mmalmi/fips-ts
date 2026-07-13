@@ -16,7 +16,6 @@ export interface WebRtcTransportConfig {
   maxConnections?: number;
   maxAutoConnections?: number;
   preferredAutoConnectPeers?: string[];
-  preferredAutoConnectSignalRelays?: string[];
   connectTimeoutMs?: number;
   relayConnectTimeoutMs?: number;
   iceGatherTimeoutMs?: number;

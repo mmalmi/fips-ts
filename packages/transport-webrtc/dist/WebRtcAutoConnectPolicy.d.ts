@@ -5,16 +5,12 @@ interface AutoConnectCandidate {
 }
 export declare class WebRtcAutoConnectPolicy {
     private readonly preferredRanks;
-    private readonly configuredSignalRelays;
-    private readonly preferredSignalRelays;
-    constructor(configuredSignalRelays: string[], preferredPeers: string[], preferredSignalRelays: string[]);
+    constructor(preferredPeers: string[]);
     sort<T extends AutoConnectCandidate>(candidates: T[], attempts: ReadonlyMap<string, number>): T[];
     isPreferred(remote: string): boolean;
-    signalRelaysFor(remote: string, advertised: string[]): string[];
     shouldReserveSlot(cachedPeers: Iterable<string>, ...activePeerSets: Iterable<string>[]): boolean;
     connectionLimit(maximum: number, reservePreferredSlot: boolean, remote: string): number;
     private rank;
-    private usesConfiguredRelay;
 }
 export {};
 //# sourceMappingURL=WebRtcAutoConnectPolicy.d.ts.map

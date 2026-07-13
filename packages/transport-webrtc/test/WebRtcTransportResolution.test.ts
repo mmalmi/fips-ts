@@ -127,7 +127,7 @@ describe("WebRtcTransport NodeAddr resolution", () => {
     expect(relay.published).toHaveLength(2);
   });
 
-  it("resolves a cached signature-validated advert identity", async () => {
+  it("routes a validated advert through the relay that delivered it", async () => {
     const local = await identityFromSecretKey(new Uint8Array(32).fill(0x61));
     const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x62));
     const relay = new FakeRelay();
@@ -139,7 +139,7 @@ describe("WebRtcTransport NodeAddr resolution", () => {
 
     await transport.start(transportContext(local));
     try {
-      relay.emit(advertEvent(remote));
+      relay.emit(advertEvent(remote, 60, ["wss://stale.example"]));
       const resolved = await transport.resolve(remote.nodeAddr);
 
       expect(resolved).toEqual({
@@ -373,7 +373,6 @@ describe("WebRtcTransport NodeAddr resolution", () => {
       maxConnections: 4,
       maxAutoConnections: 1,
       preferredAutoConnectPeers: [toHex(preferred.publicKey)],
-      preferredAutoConnectSignalRelays: [relay.url],
       logger: {
         debug: (...args) => {
           if (args[0] === "webrtc auto-connect queued" && typeof args[1] === "string") {
@@ -390,12 +389,10 @@ describe("WebRtcTransport NodeAddr resolution", () => {
     try {
       transport.discover()[Symbol.asyncIterator]();
       relay.emit(advertEvent(arbitrary));
-      relay.emit(advertEvent(preferred, 60, ["wss://dead.example"]));
-      const resolved = await transport.resolve(preferred.nodeAddr);
+      relay.emit(advertEvent(preferred));
       await vi.advanceTimersByTimeAsync(2_000);
 
       expect(queued).toEqual([toHex(preferred.publicKey)]);
-      expect(resolved?.meta?.signalRelays).toEqual([new URL(relay.url).toString()]);
     } finally {
       await transport.stop();
     }
@@ -440,45 +437,6 @@ describe("WebRtcTransport NodeAddr resolution", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       expect(queued).toContain(toHex(preferred.publicKey));
       expect(queued).toHaveLength(2);
-    } finally {
-      await transport.stop();
-    }
-  });
-
-  it("prioritizes adverts using an already-configured signaling relay", async () => {
-    vi.useFakeTimers();
-    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x78));
-    const dynamicRelayPeer = await identityFromSecretKey(new Uint8Array(32).fill(0x79));
-    const configuredRelayPeer = await identityFromSecretKey(new Uint8Array(32).fill(0x7a));
-    const relay = new FakeRelay();
-    const queued: string[] = [];
-    const transport = new WebRtcTransport({
-      relays: [relay.url],
-      relayClients: [relayClient(relay)],
-      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
-      autoConnect: true,
-      maxConnections: 4,
-      maxAutoConnections: 1,
-      logger: {
-        debug: (...args) => {
-          if (args[0] === "webrtc auto-connect queued" && typeof args[1] === "string") {
-            queued.push(args[1]);
-          }
-        },
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined,
-      },
-    });
-
-    await transport.start(transportContext(local));
-    try {
-      transport.discover()[Symbol.asyncIterator]();
-      relay.emit(advertEvent(dynamicRelayPeer, 60, ["wss://dead.example"]));
-      relay.emit(advertEvent(configuredRelayPeer));
-      await vi.advanceTimersByTimeAsync(2_000);
-
-      expect(queued).toEqual([toHex(configuredRelayPeer.publicKey)]);
     } finally {
       await transport.stop();
     }

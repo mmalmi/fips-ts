@@ -7,14 +7,8 @@ interface AutoConnectCandidate {
 
 export class WebRtcAutoConnectPolicy {
   private readonly preferredRanks = new Map<string, number>();
-  private readonly configuredSignalRelays: Set<string>;
-  private readonly preferredSignalRelays: string[];
 
-  constructor(
-    configuredSignalRelays: string[],
-    preferredPeers: string[],
-    preferredSignalRelays: string[],
-  ) {
+  constructor(preferredPeers: string[]) {
     for (const [rank, peer] of preferredPeers.entries()) {
       const normalized = peer.toLowerCase();
       if (
@@ -22,11 +16,6 @@ export class WebRtcAutoConnectPolicy {
         && !this.preferredRanks.has(normalized)
       ) this.preferredRanks.set(normalized, rank);
     }
-    this.configuredSignalRelays = new Set(
-      configuredSignalRelays.map((relay) => new URL(relay).toString()),
-    );
-    this.preferredSignalRelays = preferredSignalRelays
-      .map((relay) => new URL(relay).toString());
   }
 
   sort<T extends AutoConnectCandidate>(
@@ -36,9 +25,6 @@ export class WebRtcAutoConnectPolicy {
     return candidates.sort((left, right) => {
       const preference = this.rank(left) - this.rank(right);
       if (preference !== 0) return preference;
-      const configuredRelayPreference = Number(this.usesConfiguredRelay(right.peer))
-        - Number(this.usesConfiguredRelay(left.peer));
-      if (configuredRelayPreference !== 0) return configuredRelayPreference;
       const leftAttempt = attempts.get(left.peer.remoteAddr.addr) ?? 0;
       const rightAttempt = attempts.get(right.peer.remoteAddr.addr) ?? 0;
       return leftAttempt - rightAttempt || right.expiresAtMs - left.expiresAtMs;
@@ -47,12 +33,6 @@ export class WebRtcAutoConnectPolicy {
 
   isPreferred(remote: string): boolean {
     return this.preferredRanks.has(remote);
-  }
-
-  signalRelaysFor(remote: string, advertised: string[]): string[] {
-    return this.isPreferred(remote) && this.preferredSignalRelays.length > 0
-      ? [...this.preferredSignalRelays]
-      : advertised;
   }
 
   shouldReserveSlot(
@@ -71,11 +51,5 @@ export class WebRtcAutoConnectPolicy {
 
   private rank(candidate: AutoConnectCandidate): number {
     return this.preferredRanks.get(candidate.peer.remoteAddr.addr) ?? Number.MAX_SAFE_INTEGER;
-  }
-
-  private usesConfiguredRelay(peer: DiscoveredPeer): boolean {
-    const relays = peer.meta?.signalRelays;
-    return Array.isArray(relays)
-      && relays.some((relay) => this.configuredSignalRelays.has(new URL(relay).toString()));
   }
 }

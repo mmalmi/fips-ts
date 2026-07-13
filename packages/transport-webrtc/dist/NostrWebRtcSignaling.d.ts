@@ -61,7 +61,7 @@ export declare class NostrWebRtcSignaling {
     publishAdvert(advert: FipsAdvertContent): Promise<void>;
     sendSignal(recipientXOnlyHex: string, signal: WebRtcSignal, relayUrls?: string[]): Promise<void>;
     /** Discover adverts (kind 37195) matching the d-tag. */
-    subscribeAdverts(cb: (ev: NostrEvent, advert: FipsAdvertContent) => void, extraFilter?: {
+    subscribeAdverts(cb: (ev: NostrEvent, advert: FipsAdvertContent, sourceRelayUrl: string) => void, extraFilter?: {
         authors?: string[];
     }): Promise<() => void>;
     private publishToRelays;

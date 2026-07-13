@@ -115,7 +115,7 @@ export class NostrWebRtcSignaling {
                             if (parsed.identifier !== FIPS_ADVERT_IDENTIFIER)
                                 return;
                             this.seenEventIds.add(ev.id);
-                            cb(ev, parsed);
+                            cb(ev, parsed, normalizeRelayUrl(relay.url));
                         }
                         catch {
                             /* malformed advert; ignore */

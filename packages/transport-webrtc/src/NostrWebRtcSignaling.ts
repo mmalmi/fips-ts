@@ -139,7 +139,7 @@ export class NostrWebRtcSignaling {
 
   /** Discover adverts (kind 37195) matching the d-tag. */
   async subscribeAdverts(
-    cb: (ev: NostrEvent, advert: FipsAdvertContent) => void,
+    cb: (ev: NostrEvent, advert: FipsAdvertContent, sourceRelayUrl: string) => void,
     extraFilter: { authors?: string[] } = {},
   ): Promise<() => void> {
     const localCleanups: Array<() => void> = [];
@@ -162,7 +162,7 @@ export class NostrWebRtcSignaling {
                 const parsed = JSON.parse(ev.content) as FipsAdvertContent;
                 if (parsed.identifier !== FIPS_ADVERT_IDENTIFIER) return;
                 this.seenEventIds.add(ev.id);
-                cb(ev, parsed);
+                cb(ev, parsed, normalizeRelayUrl(relay.url));
               } catch {
                 /* malformed advert; ignore */
               }

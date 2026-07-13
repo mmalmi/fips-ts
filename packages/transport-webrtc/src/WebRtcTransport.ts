@@ -55,7 +55,6 @@ interface CachedAdvert {
 
 interface WebRtcAdvert {
   endpoints: Array<{ transport: string; addr: string }>;
-  signalRelays: string[];
 }
 
 interface AdvertWaiter {
@@ -150,9 +149,7 @@ export class WebRtcTransport implements Transport {
       ...config,
     };
     this.autoConnectPolicy = new WebRtcAutoConnectPolicy(
-      config.relays,
       config.preferredAutoConnectPeers ?? [],
-      config.preferredAutoConnectSignalRelays ?? [],
     );
     this.mtu = this.cfg.mtu;
     this.logger = config.logger ?? noopLogger;
@@ -212,8 +209,8 @@ export class WebRtcTransport implements Transport {
     });
     await this.signaling.start();
 
-    this.advertCleanup = await this.signaling.subscribeAdverts((event, advert) => {
-      this.handleAdvert(event, advert).catch((err) => {
+    this.advertCleanup = await this.signaling.subscribeAdverts((event, advert, sourceRelayUrl) => {
+      this.handleAdvert(event, advert, sourceRelayUrl).catch((err) => {
         this.logger.warn("handleAdvert", err);
       });
     });
@@ -284,8 +281,9 @@ export class WebRtcTransport implements Transport {
   private async handleAdvert(
     event: NostrEvent,
     advert: WebRtcAdvert,
+    sourceRelayUrl: string,
   ): Promise<void> {
-    const signalRelays = normalizeSignalRelays(advert.signalRelays);
+    const signalRelays = normalizeSignalRelays([sourceRelayUrl]);
     if (signalRelays.length === 0) return;
     const localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : "";
     for (const endpoint of advert.endpoints) {
@@ -295,19 +293,15 @@ export class WebRtcTransport implements Transport {
       const remotePubkeyHex = endpoint.addr.toLowerCase();
       if (remotePubkeyHex.slice(2) !== event.pubkey.toLowerCase()) continue;
       if (remotePubkeyHex === localPubkeyHex) continue;
-      const connectSignalRelays = this.autoConnectPolicy.signalRelaysFor(
-        remotePubkeyHex,
-        signalRelays,
-      );
       const peer: DiscoveredPeer = {
         remoteAddr: { transport: this.type, addr: remotePubkeyHex },
         publicKey: fromHex(remotePubkeyHex),
-        meta: { source: "nostr-advert", signalRelays: connectSignalRelays },
+        meta: { source: "nostr-advert", signalRelays },
       };
       const nodeAddrHex = nodeAddrToHex(deriveNodeAddr(peer.publicKey!));
       const cached = this.cacheAdvert(nodeAddrHex, peer, event);
       if (!cached) continue;
-      this.peerSignalRelays.set(remotePubkeyHex, connectSignalRelays);
+      this.peerSignalRelays.set(remotePubkeyHex, signalRelays);
       const requested = this.resolveAdvertWaiters(nodeAddrHex, cached);
       if (this.cfg.autoConnect && !requested && !this.autoConnectFillTimer) {
         this.autoConnectFillTimer = setTimeout(() => {
