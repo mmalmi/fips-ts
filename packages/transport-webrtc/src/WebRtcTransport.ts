@@ -33,35 +33,7 @@ import {
   validateWebRtcSignal,
   type WebRtcSignal,
 } from "./WebRtcSignal.js";
-
-export interface WebRtcTransportConfig {
-  relays: string[];
-  relayClients?: NostrRelayClient[];
-  stunServers?: string[];
-  advertiseOnNostr?: boolean;
-  acceptConnections?: boolean;
-  autoConnect?: boolean;
-  discoveryApp?: string;
-  advertTtlMs?: number;
-
-  mtu?: number;
-  maxConnections?: number;
-  maxAutoConnections?: number;
-  preferredAutoConnectPeers?: string[];
-  connectTimeoutMs?: number;
-  relayConnectTimeoutMs?: number;
-  iceGatherTimeoutMs?: number;
-
-  dataChannelLabel?: string;
-  ordered?: boolean;
-  maxRetransmits?: number | null;
-
-  webSocket?: typeof WebSocket;
-  rtcPeerConnection?: typeof RTCPeerConnection;
-
-  debug?: boolean;
-  logger?: Logger;
-}
+import type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
 
 interface PendingDial {
   sessionId: string;
@@ -177,8 +149,11 @@ export class WebRtcTransport implements Transport {
       ordered: true,
       ...config,
     };
-    this.autoConnectPolicy = new WebRtcAutoConnectPolicy(config.relays,
-      config.preferredAutoConnectPeers ?? []);
+    this.autoConnectPolicy = new WebRtcAutoConnectPolicy(
+      config.relays,
+      config.preferredAutoConnectPeers ?? [],
+      config.preferredAutoConnectSignalRelays ?? [],
+    );
     this.mtu = this.cfg.mtu;
     this.logger = config.logger ?? noopLogger;
     this.RTCPC =
@@ -320,15 +295,19 @@ export class WebRtcTransport implements Transport {
       const remotePubkeyHex = endpoint.addr.toLowerCase();
       if (remotePubkeyHex.slice(2) !== event.pubkey.toLowerCase()) continue;
       if (remotePubkeyHex === localPubkeyHex) continue;
+      const connectSignalRelays = this.autoConnectPolicy.signalRelaysFor(
+        remotePubkeyHex,
+        signalRelays,
+      );
       const peer: DiscoveredPeer = {
         remoteAddr: { transport: this.type, addr: remotePubkeyHex },
         publicKey: fromHex(remotePubkeyHex),
-        meta: { source: "nostr-advert", signalRelays: [...signalRelays] },
+        meta: { source: "nostr-advert", signalRelays: connectSignalRelays },
       };
       const nodeAddrHex = nodeAddrToHex(deriveNodeAddr(peer.publicKey!));
       const cached = this.cacheAdvert(nodeAddrHex, peer, event);
       if (!cached) continue;
-      this.peerSignalRelays.set(remotePubkeyHex, [...signalRelays]);
+      this.peerSignalRelays.set(remotePubkeyHex, connectSignalRelays);
       const requested = this.resolveAdvertWaiters(nodeAddrHex, cached);
       if (this.cfg.autoConnect && !requested && !this.autoConnectFillTimer) {
         this.autoConnectFillTimer = setTimeout(() => {
@@ -690,7 +669,6 @@ export class WebRtcTransport implements Transport {
       seenSessionIds: this.seenSessionIds,
       nowMs: Date.now(),
     });
-    // Pubkey continuity: inner.sender (33-byte) must match outer xOnly.
     if (valid.sender.slice(2) !== senderXOnlyHex) {
       this.logger.warn("inner sender does not match outer xOnly", valid.sender);
       return;

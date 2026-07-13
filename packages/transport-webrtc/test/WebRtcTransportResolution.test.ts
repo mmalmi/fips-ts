@@ -373,6 +373,7 @@ describe("WebRtcTransport NodeAddr resolution", () => {
       maxConnections: 4,
       maxAutoConnections: 1,
       preferredAutoConnectPeers: [toHex(preferred.publicKey)],
+      preferredAutoConnectSignalRelays: [relay.url],
       logger: {
         debug: (...args) => {
           if (args[0] === "webrtc auto-connect queued" && typeof args[1] === "string") {
@@ -389,10 +390,12 @@ describe("WebRtcTransport NodeAddr resolution", () => {
     try {
       transport.discover()[Symbol.asyncIterator]();
       relay.emit(advertEvent(arbitrary));
-      relay.emit(advertEvent(preferred));
+      relay.emit(advertEvent(preferred, 60, ["wss://dead.example"]));
+      const resolved = await transport.resolve(preferred.nodeAddr);
       await vi.advanceTimersByTimeAsync(2_000);
 
       expect(queued).toEqual([toHex(preferred.publicKey)]);
+      expect(resolved?.meta?.signalRelays).toEqual([new URL(relay.url).toString()]);
     } finally {
       await transport.stop();
     }

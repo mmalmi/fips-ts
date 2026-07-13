@@ -1,7 +1,8 @@
 export class WebRtcAutoConnectPolicy {
     preferredRanks = new Map();
     configuredSignalRelays;
-    constructor(configuredSignalRelays, preferredPeers) {
+    preferredSignalRelays;
+    constructor(configuredSignalRelays, preferredPeers, preferredSignalRelays) {
         for (const [rank, peer] of preferredPeers.entries()) {
             const normalized = peer.toLowerCase();
             if (/^(02|03)[0-9a-f]{64}$/.test(normalized)
@@ -9,6 +10,8 @@ export class WebRtcAutoConnectPolicy {
                 this.preferredRanks.set(normalized, rank);
         }
         this.configuredSignalRelays = new Set(configuredSignalRelays.map((relay) => new URL(relay).toString()));
+        this.preferredSignalRelays = preferredSignalRelays
+            .map((relay) => new URL(relay).toString());
     }
     sort(candidates, attempts) {
         return candidates.sort((left, right) => {
@@ -26,6 +29,11 @@ export class WebRtcAutoConnectPolicy {
     }
     isPreferred(remote) {
         return this.preferredRanks.has(remote);
+    }
+    signalRelaysFor(remote, advertised) {
+        return this.isPreferred(remote) && this.preferredSignalRelays.length > 0
+            ? [...this.preferredSignalRelays]
+            : advertised;
     }
     shouldReserveSlot(cachedPeers, ...activePeerSets) {
         if (this.preferredRanks.size === 0)

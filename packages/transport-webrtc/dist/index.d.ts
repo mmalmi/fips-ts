@@ -1,4 +1,5 @@
-export { WebRtcTransport, type WebRtcTransportConfig, } from "./WebRtcTransport.js";
+export { WebRtcTransport, } from "./WebRtcTransport.js";
+export type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
 export { WebRtcConnection } from "./WebRtcConnection.js";
 export { NostrWebRtcSignaling, FIPS_ADVERT_KIND, FIPS_SIGNAL_KIND, FIPS_ADVERT_D_TAG, FIPS_DEFAULT_DISCOVERY_APP, FIPS_PROTOCOL_VERSION, DEFAULT_FIPS_ADVERT_TTL_MS, type FipsAdvertContent, type NostrWebRtcSignalingOptions, } from "./NostrWebRtcSignaling.js";
 export { NostrRelayClient, type NostrEvent, type NostrFilter, type NostrRelayClientOptions, } from "./NostrRelayClient.js";

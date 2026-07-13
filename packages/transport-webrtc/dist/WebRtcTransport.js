@@ -69,7 +69,7 @@ export class WebRtcTransport {
             ordered: true,
             ...config,
         };
-        this.autoConnectPolicy = new WebRtcAutoConnectPolicy(config.relays, config.preferredAutoConnectPeers ?? []);
+        this.autoConnectPolicy = new WebRtcAutoConnectPolicy(config.relays, config.preferredAutoConnectPeers ?? [], config.preferredAutoConnectSignalRelays ?? []);
         this.mtu = this.cfg.mtu;
         this.logger = config.logger ?? noopLogger;
         this.RTCPC =
@@ -206,16 +206,17 @@ export class WebRtcTransport {
                 continue;
             if (remotePubkeyHex === localPubkeyHex)
                 continue;
+            const connectSignalRelays = this.autoConnectPolicy.signalRelaysFor(remotePubkeyHex, signalRelays);
             const peer = {
                 remoteAddr: { transport: this.type, addr: remotePubkeyHex },
                 publicKey: fromHex(remotePubkeyHex),
-                meta: { source: "nostr-advert", signalRelays: [...signalRelays] },
+                meta: { source: "nostr-advert", signalRelays: connectSignalRelays },
             };
             const nodeAddrHex = nodeAddrToHex(deriveNodeAddr(peer.publicKey));
             const cached = this.cacheAdvert(nodeAddrHex, peer, event);
             if (!cached)
                 continue;
-            this.peerSignalRelays.set(remotePubkeyHex, [...signalRelays]);
+            this.peerSignalRelays.set(remotePubkeyHex, connectSignalRelays);
             const requested = this.resolveAdvertWaiters(nodeAddrHex, cached);
             if (this.cfg.autoConnect && !requested && !this.autoConnectFillTimer) {
                 this.autoConnectFillTimer = setTimeout(() => {
@@ -558,7 +559,6 @@ export class WebRtcTransport {
             seenSessionIds: this.seenSessionIds,
             nowMs: Date.now(),
         });
-        // Pubkey continuity: inner.sender (33-byte) must match outer xOnly.
         if (valid.sender.slice(2) !== senderXOnlyHex) {
             this.logger.warn("inner sender does not match outer xOnly", valid.sender);
             return;

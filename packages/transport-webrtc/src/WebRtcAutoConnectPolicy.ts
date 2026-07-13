@@ -8,8 +8,13 @@ interface AutoConnectCandidate {
 export class WebRtcAutoConnectPolicy {
   private readonly preferredRanks = new Map<string, number>();
   private readonly configuredSignalRelays: Set<string>;
+  private readonly preferredSignalRelays: string[];
 
-  constructor(configuredSignalRelays: string[], preferredPeers: string[]) {
+  constructor(
+    configuredSignalRelays: string[],
+    preferredPeers: string[],
+    preferredSignalRelays: string[],
+  ) {
     for (const [rank, peer] of preferredPeers.entries()) {
       const normalized = peer.toLowerCase();
       if (
@@ -20,6 +25,8 @@ export class WebRtcAutoConnectPolicy {
     this.configuredSignalRelays = new Set(
       configuredSignalRelays.map((relay) => new URL(relay).toString()),
     );
+    this.preferredSignalRelays = preferredSignalRelays
+      .map((relay) => new URL(relay).toString());
   }
 
   sort<T extends AutoConnectCandidate>(
@@ -40,6 +47,12 @@ export class WebRtcAutoConnectPolicy {
 
   isPreferred(remote: string): boolean {
     return this.preferredRanks.has(remote);
+  }
+
+  signalRelaysFor(remote: string, advertised: string[]): string[] {
+    return this.isPreferred(remote) && this.preferredSignalRelays.length > 0
+      ? [...this.preferredSignalRelays]
+      : advertised;
   }
 
   shouldReserveSlot(

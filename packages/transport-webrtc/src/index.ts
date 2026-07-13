@@ -1,7 +1,7 @@
 export {
   WebRtcTransport,
-  type WebRtcTransportConfig,
 } from "./WebRtcTransport.js";
+export type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
 
 export { WebRtcConnection } from "./WebRtcConnection.js";
 

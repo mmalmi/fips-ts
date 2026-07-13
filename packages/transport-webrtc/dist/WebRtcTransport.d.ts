@@ -1,29 +1,5 @@
-import { type DiscoveredPeer, type Logger, type NodeAddr, type Transport, type TransportAddress, type TransportContext } from "@fips/core";
-import { NostrRelayClient } from "./NostrRelayClient.js";
-export interface WebRtcTransportConfig {
-    relays: string[];
-    relayClients?: NostrRelayClient[];
-    stunServers?: string[];
-    advertiseOnNostr?: boolean;
-    acceptConnections?: boolean;
-    autoConnect?: boolean;
-    discoveryApp?: string;
-    advertTtlMs?: number;
-    mtu?: number;
-    maxConnections?: number;
-    maxAutoConnections?: number;
-    preferredAutoConnectPeers?: string[];
-    connectTimeoutMs?: number;
-    relayConnectTimeoutMs?: number;
-    iceGatherTimeoutMs?: number;
-    dataChannelLabel?: string;
-    ordered?: boolean;
-    maxRetransmits?: number | null;
-    webSocket?: typeof WebSocket;
-    rtcPeerConnection?: typeof RTCPeerConnection;
-    debug?: boolean;
-    logger?: Logger;
-}
+import { type DiscoveredPeer, type NodeAddr, type Transport, type TransportAddress, type TransportContext } from "@fips/core";
+import type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
 export declare class WebRtcTransport implements Transport {
     readonly type = "webrtc";
     readonly mtu: number;
