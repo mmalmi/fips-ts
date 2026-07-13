@@ -81,6 +81,13 @@ function randomId(): string {
   return toHex(a);
 }
 
+export function incomingOfferReplacesPendingDial(
+  localPubkeyHex: string,
+  remotePubkeyHex: string,
+): boolean {
+  return localPubkeyHex > remotePubkeyHex;
+}
+
 export class WebRtcTransport implements Transport {
   readonly type = "webrtc";
   readonly mtu: number;
@@ -673,6 +680,21 @@ export class WebRtcTransport implements Transport {
     if (valid.kind === "offer") {
       if (!this.cfg.acceptConnections) return;
       if (this.pendingInbound.has(valid.sessionId)) return;
+      const competingDial = [...this.pendingDials.values()]
+        .find((dial) => dial.remotePubkeyHex === valid.sender);
+      if (competingDial) {
+        if (!incomingOfferReplacesPendingDial(localPubkeyHex, valid.sender)) {
+          await this.rejectIncomingOffer(valid, senderXOnlyHex, sourceRelayUrl, localPubkeyHex);
+          return;
+        }
+        clearTimeout(competingDial.timer);
+        this.pendingDials.delete(competingDial.sessionId);
+        competingDial.pc.close();
+        competingDial.reject(new Error("incoming WebRTC offer won simultaneous dial"));
+      } else if (this.conns.has(valid.sender)) {
+        await this.rejectIncomingOffer(valid, senderXOnlyHex, sourceRelayUrl, localPubkeyHex);
+        return;
+      }
       if (
         this.conns.size + this.pendingDials.size + this.pendingInbound.size
         >= this.cfg.maxConnections
@@ -814,6 +836,24 @@ export class WebRtcTransport implements Transport {
     const timer = this.pendingInbound.get(sessionId);
     if (timer) clearTimeout(timer);
     this.pendingInbound.delete(sessionId);
+  }
+
+  private async rejectIncomingOffer(
+    offer: WebRtcSignal,
+    senderXOnlyHex: string,
+    sourceRelayUrl: string,
+    localPubkeyHex: string,
+  ): Promise<void> {
+    await this.signaling!.sendSignal(senderXOnlyHex, {
+      protocol: "fips-webrtc-v1",
+      version: 1,
+      sessionId: offer.sessionId,
+      kind: "reject",
+      sender: localPubkeyHex,
+      recipient: offer.sender,
+      createdAtMs: Date.now(),
+      expiresAtMs: Date.now() + 60_000,
+    }, [sourceRelayUrl]);
   }
 
   private speculativeAutoConnects(): number {

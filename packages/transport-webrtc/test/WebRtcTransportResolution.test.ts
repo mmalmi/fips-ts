@@ -22,6 +22,7 @@ import {
   type NostrRelayClient,
 } from "../src/index.js";
 import { advertExpiryMs } from "../src/WebRtcTransportSupport.js";
+import { incomingOfferReplacesPendingDial } from "../src/WebRtcTransport.js";
 
 class FakeRelay {
   readonly url = "ws://resolver.test";
@@ -95,6 +96,14 @@ afterEach(() => {
 });
 
 describe("WebRtcTransport NodeAddr resolution", () => {
+  it("resolves simultaneous WebRTC dials to the lower public-key initiator", () => {
+    const lower = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const higher = "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    expect(incomingOfferReplacesPendingDial(higher, lower)).toBe(true);
+    expect(incomingOfferReplacesPendingDial(lower, higher)).toBe(false);
+  });
+
   it("honors the Rust-compatible one-hour advert freshness window", () => {
     const now = Date.now();
     const createdAt = Math.floor((now - 45 * 60 * 1_000) / 1_000);

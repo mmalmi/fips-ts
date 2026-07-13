@@ -1,5 +1,11 @@
 # Changelog
 
+## @fips/transport-webrtc 0.0.38 - 2026-07-14
+
+- Resolve simultaneous browser/native offers deterministically so the lower
+  public key remains initiator and the losing dial is rejected immediately.
+- Reject replacement offers while an existing peer connection is still live.
+
 ## @fips/core 0.0.23 - 2026-07-14
 
 - Remove a disconnected adjacent peer from the browser's spanning-tree state,
