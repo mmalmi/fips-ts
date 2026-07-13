@@ -1,5 +1,19 @@
 # Changelog
 
+## @fips/core 0.0.22 - 2026-07-13
+
+- Promote an authenticated responder rekey as soon as its final XK message
+  arrives, so browser-to-peer traffic uses the new K-bit epoch immediately.
+- Keep the previous receive epoch draining for delayed packets after cutover.
+- Detect a same-identity peer restart from its Noise epoch and reset the session
+  K bit to zero instead of treating the fresh process as an ordinary rekey.
+
+## Runtime packages - 2026-07-13
+
+- `@fips/transport-webrtc` 0.0.32, `@fips/transport-ethernet` 0.0.21,
+  `@fips/transport-memory` 0.0.3, and `@fips/browser` 0.0.5 pin
+  `@fips/core` 0.0.22 in packed manifests.
+
 ## @fips/transport-webrtc 0.0.30 - 2026-07-12
 
 - Preserve speculative auto-connect reservations when concurrent route

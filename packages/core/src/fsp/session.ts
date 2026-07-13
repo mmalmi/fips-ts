@@ -50,19 +50,18 @@ export interface FspSessionInit {
   remotePubkey?: Uint8Array; // 33 compressed; initiator must supply
   role: FspRole;
   ephemeralOverride?: Uint8Array;
+  localEpoch?: Uint8Array;
 }
 
 const EPOCH_LEN = 8;
-
-function epoch(): Uint8Array {
-  return new Uint8Array(EPOCH_LEN);
-}
 
 export class FspSession {
   readonly identity: FipsIdentity;
   readonly role: FspRole;
   remotePubkey?: Uint8Array;
+  remoteEpoch?: Uint8Array;
 
+  private readonly localEpoch: Uint8Array;
   private hs?: NoiseHandshake;
   private tx?: CipherState;
   private rx?: CipherState;
@@ -79,6 +78,12 @@ export class FspSession {
   constructor(init: FspSessionInit) {
     this.identity = init.identity;
     this.role = init.role;
+    this.localEpoch = init.localEpoch
+      ? new Uint8Array(init.localEpoch)
+      : new Uint8Array(EPOCH_LEN);
+    if (this.localEpoch.length !== EPOCH_LEN) {
+      throw new Error(`FSP local epoch must be ${EPOCH_LEN} bytes`);
+    }
     if (init.remotePubkey) this.remotePubkey = init.remotePubkey;
     this.hs = new NoiseHandshake({
       pattern: "XK",
@@ -130,7 +135,7 @@ export class FspSession {
     if (frame.phase !== 1) throw new Error("expected XK msg1");
     const payload = this.hs.readMessage(frame.noiseMsg);
     if (payload.length !== 0) throw new Error("XK msg1 inner payload must be empty");
-    const noiseMsg = this.hs.writeMessage(epoch());
+    const noiseMsg = this.hs.writeMessage(this.localEpoch);
     if (noiseMsg.length !== NOISE_XK_MSG2_LEN) {
       throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
     }
@@ -156,7 +161,7 @@ export class FspSession {
     }
     const payload = this.hs.readMessage(setup.handshakePayload);
     if (payload.length !== 0) throw new Error("XK msg1 inner payload must be empty");
-    const noiseMsg = this.hs.writeMessage(epoch());
+    const noiseMsg = this.hs.writeMessage(this.localEpoch);
     if (noiseMsg.length !== NOISE_XK_MSG2_LEN) {
       throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
     }
@@ -185,7 +190,8 @@ export class FspSession {
     if (frame.noiseMsg.length !== NOISE_XK_MSG2_LEN) throw new Error("bad XK msg2 length");
     const payload = this.hs.readMessage(frame.noiseMsg);
     if (payload.length !== EPOCH_LEN) throw new Error("XK msg2 inner payload must be 8 bytes");
-    const noiseMsg = this.hs.writeMessage(epoch());
+    this.remoteEpoch = new Uint8Array(payload);
+    const noiseMsg = this.hs.writeMessage(this.localEpoch);
     if (noiseMsg.length !== NOISE_XK_MSG3_LEN) {
       throw new Error(`XK msg3 size ${noiseMsg.length} != ${NOISE_XK_MSG3_LEN}`);
     }
@@ -206,7 +212,8 @@ export class FspSession {
     if (ack.handshakePayload.length !== NOISE_XK_MSG2_LEN) throw new Error("bad XK msg2 length");
     const payload = this.hs.readMessage(ack.handshakePayload);
     if (payload.length !== EPOCH_LEN) throw new Error("XK msg2 inner payload must be 8 bytes");
-    const noiseMsg = this.hs.writeMessage(epoch());
+    this.remoteEpoch = new Uint8Array(payload);
+    const noiseMsg = this.hs.writeMessage(this.localEpoch);
     if (noiseMsg.length !== NOISE_XK_MSG3_LEN) {
       throw new Error(`XK msg3 size ${noiseMsg.length} != ${NOISE_XK_MSG3_LEN}`);
     }
@@ -229,6 +236,7 @@ export class FspSession {
     if (frame.noiseMsg.length !== NOISE_XK_MSG3_LEN) throw new Error("bad XK msg3 length");
     const payload = this.hs.readMessage(frame.noiseMsg);
     if (payload.length !== EPOCH_LEN) throw new Error("XK msg3 inner payload must be 8 bytes");
+    this.remoteEpoch = new Uint8Array(payload);
     const rs = this.hs.getRemoteStatic();
     if (!rs) throw new Error("XK responder did not capture remote static");
     this.remotePubkey = rs;
@@ -247,6 +255,7 @@ export class FspSession {
     if (msg3.handshakePayload.length !== NOISE_XK_MSG3_LEN) throw new Error("bad XK msg3 length");
     const payload = this.hs.readMessage(msg3.handshakePayload);
     if (payload.length !== EPOCH_LEN) throw new Error("XK msg3 inner payload must be 8 bytes");
+    this.remoteEpoch = new Uint8Array(payload);
     const rs = this.hs.getRemoteStatic();
     if (!rs) throw new Error("XK responder did not capture remote static");
     this.remotePubkey = rs;

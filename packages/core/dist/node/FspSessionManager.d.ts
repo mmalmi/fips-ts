@@ -18,6 +18,7 @@ export declare class FspSessionManager {
     private readonly cfg;
     private readonly services;
     private readonly sessions;
+    private readonly localEpoch;
     constructor(cfg: FspSessionManagerConfig);
     registerService(port: number, handler: FipsServiceHandler): () => void;
     stop(): void;
@@ -38,6 +39,7 @@ export declare class FspSessionManager {
     private deliverDatagram;
     private handleSessionSetup;
     private handleSessionMsg3;
+    private replaceRestartedSession;
     private ensureSession;
     private prunePreviousFsp;
     private directPeerForSession;

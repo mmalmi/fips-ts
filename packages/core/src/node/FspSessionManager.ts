@@ -61,8 +61,12 @@ const FSP_DEFAULT_PATH_MTU = 1_200;
 export class FspSessionManager {
   private readonly services = new Map<number, FipsServiceHandler>();
   private readonly sessions = new Map<string, Session>();
+  private readonly localEpoch: Uint8Array;
 
-  constructor(private readonly cfg: FspSessionManagerConfig) {}
+  constructor(private readonly cfg: FspSessionManagerConfig) {
+    this.localEpoch = cfg.random.bytes(8);
+    if (this.localEpoch.length !== 8) throw new Error("FSP random source returned a bad epoch");
+  }
 
   registerService(port: number, handler: FipsServiceHandler): () => void {
     this.services.set(port, handler);
@@ -279,7 +283,11 @@ export class FspSessionManager {
         this.cfg.routing.coords,
       );
     } else if (session?.fsp.state === "established") {
-      const pending = new FspSession({ identity: this.cfg.identity, role: "responder" });
+      const pending = new FspSession({
+        identity: this.cfg.identity,
+        role: "responder",
+        localEpoch: this.localEpoch,
+      });
       reply = pending.handleSessionSetup(
         fspFrame,
         (n) => this.cfg.random.bytes(n),
@@ -297,7 +305,11 @@ export class FspSessionManager {
 
       this.cfg.logger.debug("simultaneous FSP handshake: remote initiator wins", srcNodeHex);
       session.fsp.close();
-      const responder = new FspSession({ identity: this.cfg.identity, role: "responder" });
+      const responder = new FspSession({
+        identity: this.cfg.identity,
+        role: "responder",
+        localEpoch: this.localEpoch,
+      });
       reply = responder.handleSessionSetup(
         fspFrame,
         (n) => this.cfg.random.bytes(n),
@@ -305,7 +317,11 @@ export class FspSessionManager {
       );
       session.fsp = responder;
     } else {
-      const fsp = new FspSession({ identity: this.cfg.identity, role: "responder" });
+      const fsp = new FspSession({
+        identity: this.cfg.identity,
+        role: "responder",
+        localEpoch: this.localEpoch,
+      });
       reply = fsp.handleSessionSetup(
         fspFrame,
         (n) => this.cfg.random.bytes(n),
@@ -326,7 +342,12 @@ export class FspSessionManager {
     fspFrame: Uint8Array,
   ): void {
     const handshakeFsp = session.pendingResponderFsp ?? session.fsp;
+    const promotesPendingEpoch = session.pendingResponderFsp === handshakeFsp;
     handshakeFsp.handleSessionMsg3(fspFrame);
+    const remoteRestarted = promotesPendingEpoch
+      && session.fsp.remoteEpoch !== undefined
+      && handshakeFsp.remoteEpoch !== undefined
+      && !bytesEqual(session.fsp.remoteEpoch, handshakeFsp.remoteEpoch);
     if (handshakeFsp.remotePubkey) {
       if (!bytesEqual(deriveNodeAddr(handshakeFsp.remotePubkey), srcNodeAddr)) {
         handshakeFsp.close();
@@ -343,6 +364,18 @@ export class FspSessionManager {
       session.remotePubkey = handshakeFsp.remotePubkey;
       session.remotePubkeyHex = toHex(handshakeFsp.remotePubkey);
     }
+    if (promotesPendingEpoch) {
+      if (remoteRestarted) {
+        this.replaceRestartedSession(session, handshakeFsp, srcNodeHex);
+      } else {
+        this.promotePendingSession(
+          session,
+          handshakeFsp,
+          !session.currentKBit,
+          srcNodeHex,
+        );
+      }
+    }
     this.cfg.routing.learnReverseRoute(srcNodeHex, peer);
     this.cfg.emitSession({
       remotePubkey: session.remotePubkeyHex ?? srcNodeHex,
@@ -351,6 +384,24 @@ export class FspSessionManager {
     session.setupResolve?.();
     session.setupResolve = undefined;
     session.setupReject = undefined;
+  }
+
+  private replaceRestartedSession(
+    session: Session,
+    replacement: FspSession,
+    srcNodeHex: string,
+  ): void {
+    session.previousFsp?.fsp.close();
+    session.fsp.close();
+    session.fsp = replacement;
+    session.currentKBit = false;
+    session.pendingResponderFsp = undefined;
+    session.previousFsp = undefined;
+    if (replacement.remotePubkey) {
+      session.remotePubkey = replacement.remotePubkey;
+      session.remotePubkeyHex = toHex(replacement.remotePubkey);
+    }
+    this.cfg.logger.debug("replaced restarted FSP session", srcNodeHex);
   }
 
   private async ensureSession(remotePubkeyHex: string): Promise<Session> {
@@ -379,6 +430,7 @@ export class FspSessionManager {
       identity: this.cfg.identity,
       role: "initiator",
       remotePubkey,
+      localEpoch: this.localEpoch,
     });
     session = { remoteNodeAddr, remotePubkeyHex, remotePubkey, fsp, currentKBit: false };
     this.sessions.set(remoteNodeHex, session);

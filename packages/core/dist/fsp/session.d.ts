@@ -13,11 +13,14 @@ export interface FspSessionInit {
     remotePubkey?: Uint8Array;
     role: FspRole;
     ephemeralOverride?: Uint8Array;
+    localEpoch?: Uint8Array;
 }
 export declare class FspSession {
     readonly identity: FipsIdentity;
     readonly role: FspRole;
     remotePubkey?: Uint8Array;
+    remoteEpoch?: Uint8Array;
+    private readonly localEpoch;
     private hs?;
     private tx?;
     private rx?;
