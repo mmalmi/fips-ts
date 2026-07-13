@@ -12,6 +12,7 @@ export interface WebRtcTransportConfig {
     mtu?: number;
     maxConnections?: number;
     maxAutoConnections?: number;
+    preferredAutoConnectPeers?: string[];
     connectTimeoutMs?: number;
     relayConnectTimeoutMs?: number;
     iceGatherTimeoutMs?: number;
@@ -48,6 +49,7 @@ export declare class WebRtcTransport implements Transport {
     private readonly autoReconnectTimers;
     private readonly autoConnectCooldowns;
     private readonly autoConnectAttempts;
+    private readonly autoConnectPolicy;
     private autoConnectAttemptSequence;
     private autoConnectFillTimer?;
     private discoveryStream?;

@@ -13,6 +13,7 @@ import {
 } from "@fips/core";
 
 import { NostrRelayClient } from "./NostrRelayClient.js";
+import { WebRtcAutoConnectPolicy } from "./WebRtcAutoConnectPolicy.js";
 import {
   DEFAULT_FIPS_ADVERT_TTL_MS,
   FIPS_ADVERT_D_TAG,
@@ -46,6 +47,7 @@ export interface WebRtcTransportConfig {
   mtu?: number;
   maxConnections?: number;
   maxAutoConnections?: number;
+  preferredAutoConnectPeers?: string[];
   connectTimeoutMs?: number;
   relayConnectTimeoutMs?: number;
   iceGatherTimeoutMs?: number;
@@ -148,6 +150,7 @@ export class WebRtcTransport implements Transport {
   private readonly autoReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly autoConnectCooldowns = new Map<string, number>();
   private readonly autoConnectAttempts = new Map<string, number>();
+  private readonly autoConnectPolicy: WebRtcAutoConnectPolicy;
   private autoConnectAttemptSequence = 0;
   private autoConnectFillTimer?: ReturnType<typeof setTimeout>;
   private discoveryStream?: AsyncEventStream<DiscoveredPeer>;
@@ -174,6 +177,8 @@ export class WebRtcTransport implements Transport {
       ordered: true,
       ...config,
     };
+    this.autoConnectPolicy = new WebRtcAutoConnectPolicy(config.relays,
+      config.preferredAutoConnectPeers ?? []);
     this.mtu = this.cfg.mtu;
     this.logger = config.logger ?? noopLogger;
     this.RTCPC =
@@ -341,16 +346,20 @@ export class WebRtcTransport implements Transport {
     for (const [remote, until] of this.autoConnectCooldowns) {
       if (until <= now) this.autoConnectCooldowns.delete(remote);
     }
-    const candidates = [...this.advertCache.values()]
-      .sort((left, right) => {
-        const leftAttempt = this.autoConnectAttempts.get(left.peer.remoteAddr.addr) ?? 0;
-        const rightAttempt = this.autoConnectAttempts.get(right.peer.remoteAddr.addr) ?? 0;
-        return leftAttempt - rightAttempt || right.expiresAtMs - left.expiresAtMs;
-      });
+    const candidates = this.autoConnectPolicy.sort(
+      [...this.advertCache.values()],
+      this.autoConnectAttempts,
+    );
+    const reservePreferredSlot = this.autoConnectPolicy.shouldReserveSlot(
+      candidates.map((cached) => cached.peer.remoteAddr.addr),
+      this.conns.keys(), this.pendingConnects.keys(), this.autoConnectPeers,
+    );
     for (const cached of candidates) {
-      if (this.autoConnectCapacityUsed() >= this.cfg.maxAutoConnections) return;
-      if (this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects()) return;
       const remote = cached.peer.remoteAddr.addr;
+      const autoConnectLimit = this.autoConnectPolicy.connectionLimit(
+        this.cfg.maxAutoConnections, reservePreferredSlot, remote);
+      if (this.autoConnectCapacityUsed() >= autoConnectLimit) continue;
+      if (this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects()) return;
       if (this.conns.has(remote) || this.pendingConnects.has(remote) || this.autoConnectPeers.has(remote)) continue;
       if ((this.autoConnectCooldowns.get(remote) ?? 0) > now) continue;
       this.autoConnectAttempts.set(remote, ++this.autoConnectAttemptSequence);
