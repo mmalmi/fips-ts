@@ -68,14 +68,12 @@ function transportContext(identity: FipsIdentity): TransportContext {
 function advertEvent(
   identity: FipsIdentity,
   expirationOffsetSeconds = 60,
-  signalRelays = ["ws://resolver.test"],
 ): NostrEvent {
   const now = Math.floor(Date.now() / 1_000);
   const advert: FipsAdvertContent = {
     identifier: FIPS_ADVERT_D_TAG,
     version: 1,
     endpoints: [{ transport: "webrtc", addr: toHex(identity.publicKey) }],
-    signalRelays,
     stunServers: [],
   };
   return signEvent(identity, {
@@ -148,7 +146,7 @@ describe("WebRtcTransport NodeAddr resolution", () => {
 
     await transport.start(transportContext(local));
     try {
-      relay.emit(advertEvent(remote, 60, ["wss://stale.example"]));
+      relay.emit(advertEvent(remote, 60));
       const resolved = await transport.resolve(remote.nodeAddr);
 
       expect(resolved).toEqual({
@@ -156,7 +154,7 @@ describe("WebRtcTransport NodeAddr resolution", () => {
         publicKey: remote.publicKey,
         meta: {
           source: "nostr-advert",
-          signalRelays: ["ws://resolver.test/"],
+          relayUrl: "ws://resolver.test/",
         },
       });
     } finally {

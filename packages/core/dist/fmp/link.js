@@ -4,7 +4,7 @@
  * Wire frames match Rust FIPS byte layout (FMP Msg1/Msg2/Established with
  * 4-byte common prefix and fixed Noise IK payload sizes 106/57). The inner
  * handshake is the real Noise_IK_secp256k1_ChaChaPoly_SHA256 pattern with an
- * 8-byte epoch payload (currently zero; in Rust this is a u64 LE epoch).
+ * 8-byte startup epoch payload used for restart detection.
  *
  * The link's job:
  *   - Noise IK handshake (msg1/msg2)
@@ -17,17 +17,14 @@ import { NoiseHandshake } from "../noise/index.js";
 import { decodeFmpEstablished, decodeFmpInner, decodeFmpMsg1, decodeFmpMsg2, encodeFmpEstablished, encodeFmpEstablishedHeader, encodeFmpInner, encodeFmpMsg1, encodeFmpMsg2, FMP_INNER_DATA, FMP_INNER_KEEPALIVE, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, NOISE_IK_MSG1_LEN, NOISE_IK_MSG2_LEN, } from "./wire.js";
 /** 8-byte epoch payload carried inside each FMP handshake step. */
 const EPOCH_PAYLOAD_LEN = 8;
-function epochPayload() {
-    // The Rust implementation carries a u64-LE epoch here; for now we emit
-    // zeros to match the byte length. Wire layout is preserved.
-    return new Uint8Array(EPOCH_PAYLOAD_LEN);
-}
 export class FmpLink {
     role;
     localSessionIdx;
     identity;
+    localEpoch;
     remotePubkey;
     remoteSessionIdx;
+    remoteEpoch;
     hs;
     tx;
     rx;
@@ -40,6 +37,10 @@ export class FmpLink {
         this.identity = init.identity;
         this.role = init.role;
         this.localSessionIdx = init.sessionIdx;
+        if (init.localEpoch.length !== EPOCH_PAYLOAD_LEN) {
+            throw new Error("FMP local epoch must be 8 bytes");
+        }
+        this.localEpoch = new Uint8Array(init.localEpoch);
         if (init.remotePubkey)
             this.remotePubkey = init.remotePubkey;
         this.hs = new NoiseHandshake({
@@ -58,7 +59,7 @@ export class FmpLink {
         if (!this.hs)
             throw new Error("noise handshake state missing");
         this.state = "handshaking";
-        const noiseMsg1 = this.hs.writeMessage(epochPayload());
+        const noiseMsg1 = this.hs.writeMessage(this.localEpoch);
         if (noiseMsg1.length !== NOISE_IK_MSG1_LEN) {
             throw new Error(`noise IK msg1 size ${noiseMsg1.length} != ${NOISE_IK_MSG1_LEN}`);
         }
@@ -91,12 +92,13 @@ export class FmpLink {
         if (payload.length !== EPOCH_PAYLOAD_LEN) {
             throw new Error("noise IK msg1 inner payload must be 8 bytes");
         }
+        this.remoteEpoch = new Uint8Array(payload);
         this.remoteSessionIdx = msg1.senderIdx;
         const rs = this.hs.getRemoteStatic();
         if (!rs)
             throw new Error("noise IK responder did not capture remote static");
         this.remotePubkey = rs;
-        const noiseMsg2 = this.hs.writeMessage(epochPayload());
+        const noiseMsg2 = this.hs.writeMessage(this.localEpoch);
         if (noiseMsg2.length !== NOISE_IK_MSG2_LEN) {
             throw new Error(`noise IK msg2 size ${noiseMsg2.length} != ${NOISE_IK_MSG2_LEN}`);
         }
@@ -129,6 +131,7 @@ export class FmpLink {
         if (payload.length !== EPOCH_PAYLOAD_LEN) {
             throw new Error("noise IK msg2 inner payload must be 8 bytes");
         }
+        this.remoteEpoch = new Uint8Array(payload);
         this.remoteSessionIdx = msg2.senderIdx;
         this.establishedMsg2 = new Uint8Array(packet);
         this.finalize();

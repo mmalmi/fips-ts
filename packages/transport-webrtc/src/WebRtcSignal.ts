@@ -29,6 +29,14 @@ export interface WebRtcSignalValidationContext {
 
 export class SignalValidationError extends Error {}
 
+export function decodeWebRtcSignalPayload(payload: Uint8Array): WebRtcSignal {
+  try {
+    return JSON.parse(new TextDecoder().decode(payload)) as WebRtcSignal;
+  } catch {
+    throw new SignalValidationError("invalid WebRTC FSP signal JSON");
+  }
+}
+
 export function validateWebRtcSignal(
   s: unknown,
   ctx: WebRtcSignalValidationContext,

@@ -7,11 +7,13 @@ import type { AdjacentPeer } from "./PeerState.js";
 interface FspSessionManagerConfig {
     identity: FipsIdentity;
     random: RandomSource;
+    localEpoch: Uint8Array;
     logger: Logger;
     routing: FipsRouting;
     getPeerByNodeAddr: (nodeAddrHex: string) => AdjacentPeer | undefined;
     emitDatagram: (event: DatagramEvent) => void;
     emitEndpointData: (event: EndpointDataEvent) => void;
+    emitSessionMessage: (remotePubkeyHex: string, msgType: number, payload: Uint8Array) => void;
     emitSession: (event: SessionEvent) => void;
 }
 export declare class FspSessionManager {
@@ -33,6 +35,7 @@ export declare class FspSessionManager {
         dst: string;
         payload: Uint8Array;
     }): Promise<void>;
+    sendSessionMessage(remotePubkeyHex: string, msgType: number, payload: Uint8Array): Promise<void>;
     handleFromPeer(peer: AdjacentPeer, srcNodeAddr: NodeAddr, fspFrame: Uint8Array): Promise<void>;
     private handleEstablished;
     private promotePendingSession;

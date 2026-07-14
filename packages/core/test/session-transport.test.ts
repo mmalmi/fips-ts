@@ -135,6 +135,31 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
     expect(result.data).toBeUndefined();
   });
 
+  it("FspSession carries WebRTC negotiation as an authenticated generic message", async () => {
+    const { FspSession, FSP_MSG_WEBRTC_SIGNAL } = await import("../src/index.js");
+    const a = await identityFromSecretKey(new Uint8Array(32).fill(0x36));
+    const b = await identityFromSecretKey(new Uint8Array(32).fill(0x54));
+    const initiator = new FspSession({
+      identity: a,
+      role: "initiator",
+      remotePubkey: b.publicKey,
+    });
+    const responder = new FspSession({ identity: b, role: "responder" });
+    const msg1 = initiator.buildMsg1(() => new Uint8Array(0));
+    const msg2 = responder.handleMsg1(msg1, () => new Uint8Array(0));
+    const msg3 = initiator.handleMsg2(msg2, () => new Uint8Array(0));
+    responder.handleMsg3(msg3);
+
+    const payload = new TextEncoder().encode('{"kind":"offer"}');
+    const frame = initiator.encryptMessage(FSP_MSG_WEBRTC_SIGNAL, payload);
+    const result = responder.decryptIncoming(frame);
+
+    expect(result.msgType).toBe(FSP_MSG_WEBRTC_SIGNAL);
+    expect(result.payload).toEqual(payload);
+    expect(result.data).toBeUndefined();
+    expect(result.endpointData).toBeUndefined();
+  });
+
   it("FspSession accepts only an exact SessionMsg3 replay after establishment", async () => {
     const { FspSession } = await import("../src/fsp/session.js");
     const a = await identityFromSecretKey(new Uint8Array(32).fill(0x61));

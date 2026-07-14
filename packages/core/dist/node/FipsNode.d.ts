@@ -7,6 +7,7 @@ export declare class FipsNode {
     private readonly routingMode;
     private readonly transports;
     private readonly random;
+    private readonly startupEpoch;
     private readonly logger;
     private readonly defaultRoute?;
     private readonly heartbeatIntervalMs;
@@ -19,9 +20,9 @@ export declare class FipsNode {
     private discoveryConnectTasks;
     private discoveryGeneration;
     private heartbeatTimer?;
-    private readonly directFspReassembler;
     private readonly routing;
     private readonly sessionManager;
+    private readonly packetProcessor;
     private started;
     constructor(cfg: FipsNodeConfig);
     start(): Promise<void>;
@@ -52,10 +53,9 @@ export declare class FipsNode {
     private emit;
     private onTransportConn;
     private rememberPeer;
-    private onTransportPacket;
+    private removePeerPath;
     private sendLinkMessage;
     private sendHeartbeats;
-    private stageResponderReplacement;
     private pruneDrainingResponderLinks;
 }
 //# sourceMappingURL=FipsNode.d.ts.map

@@ -1,5 +1,13 @@
 export class SignalValidationError extends Error {
 }
+export function decodeWebRtcSignalPayload(payload) {
+    try {
+        return JSON.parse(new TextDecoder().decode(payload));
+    }
+    catch {
+        throw new SignalValidationError("invalid WebRTC FSP signal JSON");
+    }
+}
 export function validateWebRtcSignal(s, ctx) {
     if (typeof s !== "object" || s === null) {
         throw new SignalValidationError("signal must be a JSON object");

@@ -9,6 +9,7 @@ import {
   FSP_FLAG_K,
   FSP_MSG_DATA,
   FSP_MSG_ENDPOINT_DATA,
+  FSP_MSG_KEEPALIVE,
   FSP_PHASE_ESTABLISHED,
   peekFspPhase,
 } from "../fsp/wire.js";
@@ -47,11 +48,13 @@ interface Session {
 interface FspSessionManagerConfig {
   identity: FipsIdentity;
   random: RandomSource;
+  localEpoch: Uint8Array;
   logger: Logger;
   routing: FipsRouting;
   getPeerByNodeAddr: (nodeAddrHex: string) => AdjacentPeer | undefined;
   emitDatagram: (event: DatagramEvent) => void;
   emitEndpointData: (event: EndpointDataEvent) => void;
+  emitSessionMessage: (remotePubkeyHex: string, msgType: number, payload: Uint8Array) => void;
   emitSession: (event: SessionEvent) => void;
 }
 
@@ -64,8 +67,8 @@ export class FspSessionManager {
   private readonly localEpoch: Uint8Array;
 
   constructor(private readonly cfg: FspSessionManagerConfig) {
-    this.localEpoch = cfg.random.bytes(8);
-    if (this.localEpoch.length !== 8) throw new Error("FSP random source returned a bad epoch");
+    if (cfg.localEpoch.length !== 8) throw new Error("FSP local epoch must be 8 bytes");
+    this.localEpoch = new Uint8Array(cfg.localEpoch);
   }
 
   registerService(port: number, handler: FipsServiceHandler): () => void {
@@ -87,6 +90,9 @@ export class FspSessionManager {
   closePeerSessions(remotePubkeyHex: string): void {
     for (const [nodeHex, session] of this.sessions) {
       if (session.remotePubkeyHex !== remotePubkeyHex) continue;
+      session.fsp.close();
+      session.pendingResponderFsp?.close();
+      session.previousFsp?.fsp.close();
       this.sessions.delete(nodeHex);
       this.cfg.emitSession({ remotePubkey: remotePubkeyHex, state: "closed" });
     }
@@ -122,6 +128,23 @@ export class FspSessionManager {
     const epochFlag = session.currentKBit ? FSP_FLAG_K : 0;
     const fspFrame = session.fsp.encryptEndpointData(
       args.payload,
+      epochFlag | (directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0),
+    );
+    if (directPeer) await this.sendDirectFsp(directPeer, fspFrame);
+    else await this.cfg.routing.sendFspToward(session.remoteNodeAddr, fspFrame);
+  }
+
+  async sendSessionMessage(
+    remotePubkeyHex: string,
+    msgType: number,
+    payload: Uint8Array,
+  ): Promise<void> {
+    const session = await this.ensureSession(remotePubkeyHex);
+    const directPeer = this.directPeerForSession(session);
+    const epochFlag = session.currentKBit ? FSP_FLAG_K : 0;
+    const fspFrame = session.fsp.encryptMessage(
+      msgType,
+      payload,
       epochFlag | (directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0),
     );
     if (directPeer) await this.sendDirectFsp(directPeer, fspFrame);
@@ -206,6 +229,10 @@ export class FspSessionManager {
         dst: toHex(this.cfg.identity.publicKey),
         payload: result.endpointData,
       });
+      return;
+    }
+    if (result.msgType !== FSP_MSG_KEEPALIVE && result.payload) {
+      this.cfg.emitSessionMessage(srcHex, result.msgType, result.payload);
     }
   }
 

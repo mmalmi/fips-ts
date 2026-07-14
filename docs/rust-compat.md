@@ -114,7 +114,9 @@ byte-for-byte modulo the epoch field.
 ## Nostr
 
 - Advert kind: 37195 (parameterized replaceable)
-- Signaling kind: 21059 (NIP-59 gift-wrap, NIP-44 encrypted)
+- Relay datagram kind: 21060 (targeted ephemeral, one `p` tag)
+- Relay event content: unpadded base64url of an already encrypted FIPS wire datagram
+- WebRTC negotiation: FSP message type `0x18` over the established relay path
 - Advert tags: `d=<app-scope>`, `protocol=<app-scope>`, `version=1`
 
 Advert content (JSON):
@@ -123,11 +125,17 @@ Advert content (JSON):
 {
   "identifier": "fips-overlay-v1",
   "version": 1,
-  "endpoints": [{ "transport": "webrtc", "addr": "<pubkey-hex>" }],
-  "signalRelays": ["wss://..."],
+  "endpoints": [
+    { "transport": "webrtc", "addr": "<pubkey-hex>" },
+    { "transport": "nostr_relay", "addr": "<npub>" }
+  ],
   "stunServers": ["stun:..."]
 }
 ```
+
+The Playwright Rust interop test starts a local relay and verifies the complete
+kind-21060 FMP/FSP bootstrap, FSP-carried WebRTC negotiation, direct-link
+promotion, endpoint echo, disconnect, and replacement-browser reconnect.
 
 ## Signatures
 

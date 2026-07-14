@@ -35,6 +35,7 @@ describe("FMP interop: TS initiator ↔ Rust responder", () => {
         remotePubkey: responderStatic,
         role: "initiator",
         sessionIdx: 0x01020304,
+        localEpoch: new Uint8Array(8).fill(0x44),
       });
 
       const msg1 = link.buildMsg1(() => new Uint8Array(0)).packet;
@@ -45,6 +46,7 @@ describe("FMP interop: TS initiator ↔ Rust responder", () => {
       const handshake = link.handleMsg2(msg2);
       expect(handshake.established).toBe(true);
       expect(toHex(handshake.remotePubkey)).toBe(toHex(responderStatic));
+      expect(link.remoteEpoch).toEqual(new Uint8Array(8));
 
       const payload = new TextEncoder().encode("hello-rust-fmp");
       await bridge.writeFrame(link.encryptOutgoing(payload, FMP_INNER_DATA));

@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run --poolOptions.forks.singleFork"
   },
   "dependencies": {
     "@noble/ciphers": "^1.1.3",

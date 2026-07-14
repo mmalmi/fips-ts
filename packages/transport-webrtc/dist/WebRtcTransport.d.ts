@@ -8,7 +8,8 @@ export declare class WebRtcTransport implements Transport {
     private readonly cfg;
     private readonly logger;
     private readonly RTCPC;
-    private signaling?;
+    private peerDiscovery?;
+    private readonly relayFallback;
     private relayClients;
     private ownsRelayClients;
     private readonly conns;
@@ -21,7 +22,6 @@ export declare class WebRtcTransport implements Transport {
     private readonly knownSessionIds;
     private readonly seenSessionIds;
     private readonly advertCache;
-    private readonly peerSignalRelays;
     private readonly peersWithTraffic;
     private readonly advertWaiters;
     private readonly autoReconnectTimers;
@@ -35,6 +35,7 @@ export declare class WebRtcTransport implements Transport {
     private advertRefreshTimer?;
     private stopping;
     constructor(config: WebRtcTransportConfig);
+    companionTransports(): Transport[];
     start(ctx: TransportContext): Promise<void>;
     stop(): Promise<void>;
     private handleAdvert;
@@ -55,6 +56,8 @@ export declare class WebRtcTransport implements Transport {
     private handleAutoConnectFailure;
     private clearPendingInbound;
     private rejectIncomingOffer;
+    handleSessionMessage(remotePubkeyHex: string, msgType: number, payload: Uint8Array): Promise<void>;
+    private sendWebRtcSignal;
     private speculativeAutoConnects;
     private autoConnectCapacityUsed;
     private maxSpeculativeAutoConnects;

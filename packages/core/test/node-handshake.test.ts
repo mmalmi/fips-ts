@@ -239,6 +239,54 @@ describe("FipsNode FMP handshake", () => {
     }
   }, 10_000);
 
+  it("replaces an established initiator link when the remote startup epoch changes", async () => {
+    const survivorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x11));
+    const restartedIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x12));
+    const survivorTransport = new FlakyMemoryTransport();
+    const originalTransport = new FlakyMemoryTransport();
+    const survivor = new FipsNode({
+      identity: survivorIdentity,
+      transports: [survivorTransport],
+    });
+    const original = new FipsNode({
+      identity: restartedIdentity,
+      transports: [originalTransport],
+    });
+    const restartedAddr = {
+      transport: "memory",
+      addr: toHex(restartedIdentity.publicKey),
+    };
+
+    await original.start();
+    await survivor.start();
+    try {
+      await survivor.connect(restartedAddr);
+      await original.stop();
+
+      const replacementTransport = new FlakyMemoryTransport();
+      const replacement = new FipsNode({
+        identity: restartedIdentity,
+        transports: [replacementTransport],
+      });
+      await replacement.start();
+      try {
+        await replacement.connect({
+          transport: "memory",
+          addr: toHex(survivorIdentity.publicKey),
+        });
+        const survivorPeer = [...(survivor as any).peers.values()][0];
+        expect(survivorPeer.pendingResponderLink).toBeUndefined();
+        expect(survivorPeer.link.role).toBe("responder");
+        expect(survivorPeer.link.remoteEpoch).toEqual((replacement as any).startupEpoch);
+      } finally {
+        await replacement.stop();
+      }
+    } finally {
+      await survivor.stop();
+      await original.stop();
+    }
+  }, 10_000);
+
   it("drains the old receiver index until a replacement sends authenticated traffic", async () => {
     const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x91));
     const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xa2));
@@ -276,9 +324,10 @@ describe("FipsNode FMP handshake", () => {
         remotePubkey: responderIdentity.publicKey,
         role: "initiator",
         sessionIdx: 0x5151,
+        localEpoch: (initiator as any).startupEpoch,
       });
       responderTransport.dropNextMsg2 = true;
-      (responder as any).onTransportPacket(responderTransport, {
+      (responder as any).packetProcessor.process(responderTransport, {
         transportType: "memory",
         remoteAddr: { transport: "memory", addr: toHex(initiatorIdentity.publicKey) },
         data: replacement.buildMsg1((length) => new Uint8Array(length)).packet,

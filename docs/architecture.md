@@ -11,18 +11,19 @@
 │ FMP — mesh/link layer (Noise IK over secp256k1, forwarding)     │
 ├─────────────────────────────────────────────────────────────────┤
 │ Transport  ── adjacent only ──                                  │
+│   • NostrRelayTransport (kind 21060, MTU 1280, low priority)     │
 │   • WebRtcTransport (RTCDataChannel, MTU 1200, unordered)       │
 │   • MemoryTransport (tests/demo)                                │
 ├─────────────────────────────────────────────────────────────────┤
-│ Discovery / Signaling                                           │
-│   • Nostr advert kind 37195                                     │
-│   • Nostr signaling kind 21059 (NIP-44 gift-wrap)               │
+│ Discovery / Negotiation                                         │
+│   • Public Nostr peer advert kind 37195                         │
+│   • WebRTC offer/answer inside authenticated FSP message 0x18   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Layering rules
 
-- **Transport** moves opaque bytes between adjacent peers (a transport address is `webrtc:<remote-pubkey>` or `memory:<pubkey>`, NOT a session id).
+- **Transport** moves opaque bytes between adjacent peers (for example `nostr_relay:<remote-pubkey>`, `webrtc:<remote-pubkey>`, or `memory:<pubkey>`; never a session id).
 - **FMP** is responsible for link encryption (IK), framing, replay protection, link-state, mesh forwarding.
 - **FSP** is end-to-end encrypted (XK), independent of the path the FMP frames take.
 - **EndpointData** carries app-owned opaque bytes without service ports.
@@ -35,4 +36,6 @@ Browser default: `forwarding: false`. Tabs are not reliable transit. Enable for 
 
 ## What the browser cannot do
 
-UDP, TCP listening sockets, Tor sockets, BLE L2CAP, TUN, raw packet capture. Therefore FIPS-in-browser is WebRTC-only at the transport layer. There is no browser IPv6 shim.
+UDP, TCP listening sockets, Tor sockets, BLE L2CAP, TUN, raw packet capture.
+Browsers can still carry FIPS over configured Nostr WebSocket relays and
+promote the path to WebRTC when available. There is no browser IPv6 shim.

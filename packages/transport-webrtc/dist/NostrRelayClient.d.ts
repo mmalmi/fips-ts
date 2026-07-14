@@ -1,6 +1,5 @@
 /**
- * Minimal Nostr relay WebSocket client — only what the FIPS WebRTC signaling
- * path needs:
+ * Minimal Nostr relay WebSocket client for FIPS peerfinding and datagrams:
  *   - publish an EVENT
  *   - REQ a single filter with a callback for matched events
  *   - close subscriptions / disconnect

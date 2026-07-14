@@ -32,6 +32,10 @@ export interface TransportContext {
     localIdentity: FipsIdentity;
     onPacket(packet: ReceivedTransportPacket): void;
     onConnectionState?: (event: TransportConnectionStateEvent) => void;
+    /** Establish another configured transport path to the same identity. */
+    connectTransport?: (addr: TransportAddress) => Promise<void>;
+    /** Carry a transport-negotiation message inside an authenticated FSP session. */
+    sendSessionMessage?: (remotePubkeyHex: string, msgType: number, payload: Uint8Array) => Promise<void>;
     logger?: Logger;
 }
 export interface Transport {
@@ -45,6 +49,10 @@ export interface Transport {
     discover?(): AsyncIterable<DiscoveredPeer>;
     /** Resolve a FIPS NodeAddr to an authenticated transport identity hint. */
     resolve?(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined>;
+    /** Application-owned fallback transports enabled with this transport. */
+    companionTransports?(): Transport[];
+    /** Receive authenticated end-to-end FSP transport-negotiation messages. */
+    handleSessionMessage?(remotePubkeyHex: string, msgType: number, payload: Uint8Array): Promise<void> | void;
 }
 export interface Logger {
     debug(...args: unknown[]): void;

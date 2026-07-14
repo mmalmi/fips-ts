@@ -59,7 +59,56 @@ class DiscoveringTransport implements Transport {
   }
 }
 
+class LifecycleTransport implements Transport {
+  readonly mtu = 1_200;
+  starts = 0;
+  stops = 0;
+
+  constructor(
+    readonly type: string,
+    private readonly companions: Transport[] = [],
+  ) {}
+
+  companionTransports(): Transport[] {
+    return this.companions;
+  }
+
+  async start(): Promise<void> {
+    this.starts++;
+  }
+
+  async stop(): Promise<void> {
+    this.stops++;
+  }
+
+  async connect(): Promise<void> {}
+  async send(): Promise<void> {}
+}
+
 describe("FipsNode transport discovery", () => {
+  it("starts an automatic companion unless that transport type is explicit", async () => {
+    const local = await generateIdentity();
+    const automatic = new LifecycleTransport("nostr_relay");
+    const webrtc = new LifecycleTransport("webrtc", [automatic]);
+    const first = new FipsNode({ identity: local, transports: [webrtc] });
+
+    await first.start();
+    await first.stop();
+    expect(automatic.starts).toBe(1);
+    expect(automatic.stops).toBe(1);
+
+    const explicit = new LifecycleTransport("nostr_relay");
+    const skipped = new LifecycleTransport("nostr_relay");
+    const second = new FipsNode({
+      identity: local,
+      transports: [new LifecycleTransport("webrtc", [skipped]), explicit],
+    });
+    await second.start();
+    await second.stop();
+    expect(explicit.starts).toBe(1);
+    expect(skipped.starts).toBe(0);
+  });
+
   it("turns a discovered identity hint into a real FMP connection", async () => {
     const local = await generateIdentity();
     const remote = await generateIdentity();
@@ -70,6 +119,7 @@ describe("FipsNode transport discovery", () => {
         identity: remote,
         role: "responder",
         sessionIdx: 42,
+        localEpoch: new Uint8Array(8).fill(0x42),
       }),
     );
     const node = new FipsNode({ identity: local, transports: [transport] });

@@ -1,6 +1,18 @@
-import type { DiscoveredPeer } from "@fips/core";
+import { toHex, type DiscoveredPeer } from "@fips/core";
 
 import type { NostrEvent } from "./NostrRelayClient.js";
+
+export function randomId(): string {
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index++) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  return toHex(bytes);
+}
 
 export function waitForIceGatheringComplete(
   pc: RTCPeerConnection,
@@ -60,23 +72,6 @@ export class AsyncEventStream<T> implements AsyncIterable<T> {
 
 export async function* emptyAsyncIterable<T>(): AsyncIterable<T> {
   return;
-}
-
-export function normalizeSignalRelays(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const relays: string[] = [];
-  for (const candidate of value.slice(0, 8)) {
-    if (typeof candidate !== "string") continue;
-    try {
-      const parsed = new URL(candidate);
-      if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") continue;
-      const normalized = parsed.toString();
-      if (!relays.includes(normalized)) relays.push(normalized);
-    } catch {
-      /* Invalid advertised relay URL. */
-    }
-  }
-  return relays;
 }
 
 export function cloneDiscoveredPeer(peer: DiscoveredPeer): DiscoveredPeer {

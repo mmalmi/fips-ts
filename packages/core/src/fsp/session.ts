@@ -288,11 +288,18 @@ export class FspSession {
   }
 
   encryptEndpointData(payload: Uint8Array, flags = 0): Uint8Array {
+    return this.encryptMessage(FSP_MSG_ENDPOINT_DATA, payload, flags);
+  }
+
+  encryptMessage(msgType: number, payload: Uint8Array, flags = 0): Uint8Array {
     if (this.state !== "established" || !this.tx) throw new Error("FSP not established");
+    if (!Number.isInteger(msgType) || msgType < 0 || msgType > 0xff) {
+      throw new Error("FSP message type must be one byte");
+    }
     const counter = this.txCounter++;
     const inner = encodeFspInner({
       timestamp: Math.floor(Date.now() / 1000),
-      msgType: FSP_MSG_ENDPOINT_DATA,
+      msgType,
       innerFlags: 0,
       payload,
     });
@@ -319,7 +326,7 @@ export class FspSession {
 
   decryptIncoming(
     packet: Uint8Array,
-  ): { msgType: number; data?: DataPacket; endpointData?: Uint8Array } {
+  ): { msgType: number; data?: DataPacket; endpointData?: Uint8Array; payload?: Uint8Array } {
     if (this.state !== "established" || !this.rx) throw new Error("FSP not established");
     const est = decodeFspEstablished(packet);
     if (!this.replay.check(est.counter)) {
@@ -340,9 +347,9 @@ export class FspSession {
       return { msgType: inner.msgType, data: decodeDataPacket(inner.payload) };
     }
     if (inner.msgType === FSP_MSG_ENDPOINT_DATA) {
-      return { msgType: inner.msgType, endpointData: inner.payload };
+      return { msgType: inner.msgType, endpointData: inner.payload, payload: inner.payload };
     }
-    return { msgType: inner.msgType };
+    return { msgType: inner.msgType, payload: inner.payload };
   }
 
   close(): void {

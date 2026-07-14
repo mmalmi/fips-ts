@@ -82,15 +82,19 @@ describe("FipsNode exact FMP handshake replay", () => {
       remotePubkey: responderIdentity.publicKey,
       role: "initiator",
       sessionIdx: 10,
+      localEpoch: new Uint8Array(8).fill(0x11),
     });
     const responder = new FmpLink({
       identity: responderIdentity,
       role: "responder",
       sessionIdx: 20,
+      localEpoch: new Uint8Array(8).fill(0x22),
     });
     const msg1 = initiator.buildMsg1(() => new Uint8Array(32)).packet;
     const msg2 = responder.handleMsg1(msg1, () => new Uint8Array(32)).reply!;
     initiator.handleMsg2(msg2);
+    expect(responder.remoteEpoch).toEqual(new Uint8Array(8).fill(0x11));
+    expect(initiator.remoteEpoch).toEqual(new Uint8Array(8).fill(0x22));
 
     expect(responder.handleMsg1(msg1, () => new Uint8Array(32)).reply).toEqual(msg2);
     expect(initiator.handleMsg2(msg2).established).toBe(true);

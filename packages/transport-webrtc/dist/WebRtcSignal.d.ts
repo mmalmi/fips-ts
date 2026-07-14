@@ -25,5 +25,6 @@ export interface WebRtcSignalValidationContext {
 }
 export declare class SignalValidationError extends Error {
 }
+export declare function decodeWebRtcSignalPayload(payload: Uint8Array): WebRtcSignal;
 export declare function validateWebRtcSignal(s: unknown, ctx: WebRtcSignalValidationContext): WebRtcSignal;
 //# sourceMappingURL=WebRtcSignal.d.ts.map

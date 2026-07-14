@@ -176,6 +176,7 @@ describe("VirtualEthernetTransport Rust frame compatibility", () => {
       identity: remote,
       role: "responder",
       sessionIdx: 77,
+      localEpoch: new Uint8Array(8).fill(0x77),
     });
     const transport = new VirtualEthernetTransport({
       port,

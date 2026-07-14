@@ -4,7 +4,7 @@
  * Wire frames match Rust FIPS byte layout (FMP Msg1/Msg2/Established with
  * 4-byte common prefix and fixed Noise IK payload sizes 106/57). The inner
  * handshake is the real Noise_IK_secp256k1_ChaChaPoly_SHA256 pattern with an
- * 8-byte epoch payload (currently zero; in Rust this is a u64 LE epoch).
+ * 8-byte startup epoch payload used for restart detection.
  *
  * The link's job:
  *   - Noise IK handshake (msg1/msg2)
@@ -19,6 +19,8 @@ export interface FmpLinkInit {
     remotePubkey?: Uint8Array;
     role: FmpRole;
     sessionIdx: number;
+    /** Process-local startup epoch shared by every FMP/FSP handshake. */
+    localEpoch: Uint8Array;
     /** Optional deterministic ephemeral for vectors/tests. */
     ephemeralOverride?: Uint8Array;
 }
@@ -34,8 +36,10 @@ export declare class FmpLink {
     readonly role: FmpRole;
     readonly localSessionIdx: number;
     readonly identity: FipsIdentity;
+    readonly localEpoch: Uint8Array;
     remotePubkey?: Uint8Array;
     remoteSessionIdx?: number;
+    remoteEpoch?: Uint8Array;
     private hs?;
     private tx?;
     private rx?;

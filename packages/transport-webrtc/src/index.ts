@@ -6,16 +6,21 @@ export type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
 export { WebRtcConnection } from "./WebRtcConnection.js";
 
 export {
-  NostrWebRtcSignaling,
+  NostrPeerDiscovery,
   FIPS_ADVERT_KIND,
-  FIPS_SIGNAL_KIND,
   FIPS_ADVERT_D_TAG,
   FIPS_DEFAULT_DISCOVERY_APP,
   FIPS_PROTOCOL_VERSION,
   DEFAULT_FIPS_ADVERT_TTL_MS,
   type FipsAdvertContent,
-  type NostrWebRtcSignalingOptions,
-} from "./NostrWebRtcSignaling.js";
+  type NostrPeerDiscoveryOptions,
+} from "./NostrPeerDiscovery.js";
+
+export {
+  NostrRelayTransport,
+  NOSTR_RELAY_DATAGRAM_KIND,
+  type NostrRelayTransportConfig,
+} from "./NostrRelayTransport.js";
 
 export {
   NostrRelayClient,
@@ -31,20 +36,6 @@ export {
   serializeForId,
   type UnsignedEvent,
 } from "./nostrEvent.js";
-
-export {
-  encryptSignalContent,
-  decryptSignalContent,
-} from "./signalEncryption.js";
-
-export {
-  buildGiftWrap,
-  unwrapGiftWrap,
-  FIPS_SIGNAL_WRAP_KIND,
-  FIPS_SIGNAL_RUMOR_KIND,
-  NIP59_SEAL_KIND,
-  type UnwrappedRumor,
-} from "./giftWrap.js";
 
 export {
   validateWebRtcSignal,

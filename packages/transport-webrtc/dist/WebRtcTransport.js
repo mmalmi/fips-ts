@@ -1,27 +1,17 @@
-import { fromHex, deriveNodeAddr, nodeAddrToHex, toHex, noopLogger, } from "@fips/core";
+import { FSP_MSG_WEBRTC_SIGNAL, encodeNpub, fromHex, deriveNodeAddr, nodeAddrToHex, toHex, noopLogger, } from "@fips/core";
 import { NostrRelayClient } from "./NostrRelayClient.js";
 import { WebRtcAutoConnectPolicy } from "./WebRtcAutoConnectPolicy.js";
-import { DEFAULT_FIPS_ADVERT_TTL_MS, FIPS_ADVERT_D_TAG, NostrWebRtcSignaling, } from "./NostrWebRtcSignaling.js";
+import { DEFAULT_FIPS_ADVERT_TTL_MS, FIPS_ADVERT_D_TAG, NostrPeerDiscovery, } from "./NostrPeerDiscovery.js";
+import { NostrRelayTransport } from "./NostrRelayTransport.js";
 import { WebRtcConnection } from "./WebRtcConnection.js";
 import { WebRtcAdvertCache } from "./WebRtcAdvertCache.js";
-import { AsyncEventStream, cloneDiscoveredPeer, emptyAsyncIterable, normalizeSignalRelays, waitForIceGatheringComplete, } from "./WebRtcTransportSupport.js";
-import { validateWebRtcSignal, } from "./WebRtcSignal.js";
+import { AsyncEventStream, cloneDiscoveredPeer, emptyAsyncIterable, randomId, waitForIceGatheringComplete, } from "./WebRtcTransportSupport.js";
+import { decodeWebRtcSignalPayload, validateWebRtcSignal, } from "./WebRtcSignal.js";
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
 const AUTO_RECONNECT_DELAY_MS = 500;
 const PREFERRED_AUTO_CONNECT_FAILURE_COOLDOWN_MS = 1_000;
 const AUTO_CONNECT_FAILURE_COOLDOWN_MS = 30_000;
 const AUTO_CONNECT_SETTLE_MS = 750;
-function randomId() {
-    const a = new Uint8Array(16);
-    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-        crypto.getRandomValues(a);
-    }
-    else {
-        for (let i = 0; i < a.length; i++)
-            a[i] = Math.floor(Math.random() * 256);
-    }
-    return toHex(a);
-}
 export function incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex) {
     return localPubkeyHex > remotePubkeyHex;
 }
@@ -32,7 +22,8 @@ export class WebRtcTransport {
     cfg;
     logger;
     RTCPC;
-    signaling;
+    peerDiscovery;
+    relayFallback;
     relayClients = [];
     ownsRelayClients = false;
     conns = new Map(); // by pubkeyHex
@@ -45,7 +36,6 @@ export class WebRtcTransport {
     knownSessionIds = new Set();
     seenSessionIds = new Set();
     advertCache;
-    peerSignalRelays = new Map(); // by compressed pubkey hex
     peersWithTraffic = new Set();
     advertWaiters = new Map(); // by NodeAddr hex
     autoReconnectTimers = new Map();
@@ -85,6 +75,16 @@ export class WebRtcTransport {
         if (!this.RTCPC) {
             throw new Error("RTCPeerConnection not available in this environment");
         }
+        this.relayFallback = new NostrRelayTransport({
+            relays: this.cfg.relays,
+            relayClients: this.cfg.relayClients,
+            webSocket: this.cfg.webSocket,
+            relayConnectTimeoutMs: this.cfg.relayConnectTimeoutMs,
+            logger: this.logger,
+        });
+    }
+    companionTransports() {
+        return [this.relayFallback];
     }
     async start(ctx) {
         this.stopping = false;
@@ -111,24 +111,14 @@ export class WebRtcTransport {
             }));
             this.ownsRelayClients = true;
         }
-        this.signaling = new NostrWebRtcSignaling({
+        this.peerDiscovery = new NostrPeerDiscovery({
             identity: ctx.localIdentity,
             relays: this.relayClients,
-            relayFactory: (url) => new NostrRelayClient({
-                url,
-                webSocket: this.cfg.webSocket,
-                connectTimeoutMs: this.cfg.relayConnectTimeoutMs,
-                logger: this.logger,
-            }),
             discoveryApp: this.cfg.discoveryApp,
             advertTtlMs: this.cfg.advertTtlMs,
             logger: this.logger,
-            onSignal: (signal, senderXOnly, sourceRelayUrl) => this.handleIncomingSignal(signal, senderXOnly, sourceRelayUrl).catch((err) => {
-                this.logger.warn("handleIncomingSignal", err);
-            }),
         });
-        await this.signaling.start();
-        this.advertCleanup = await this.signaling.subscribeAdverts((event, advert, sourceRelayUrl) => {
+        this.advertCleanup = await this.peerDiscovery.subscribeAdverts((event, advert, sourceRelayUrl) => {
             this.handleAdvert(event, advert, sourceRelayUrl).catch((err) => {
                 this.logger.warn("handleAdvert", err);
             });
@@ -161,7 +151,7 @@ export class WebRtcTransport {
         this.autoConnectFillTimer = undefined;
         this.advertCleanup?.();
         this.advertCleanup = undefined;
-        this.signaling?.stop();
+        this.peerDiscovery?.stop();
         for (const c of this.conns.values())
             c.close();
         this.conns.clear();
@@ -185,7 +175,6 @@ export class WebRtcTransport {
         this.knownSessionIds.clear();
         this.seenSessionIds.clear();
         this.advertCache.clear();
-        this.peerSignalRelays.clear();
         this.peersWithTraffic.clear();
         for (const [nodeAddrHex, waiters] of this.advertWaiters) {
             for (const waiter of [...waiters]) {
@@ -195,13 +184,10 @@ export class WebRtcTransport {
         this.advertWaiters.clear();
         this.discoveryStream?.close();
         this.discoveryStream = undefined;
-        this.signaling = undefined;
+        this.peerDiscovery = undefined;
         this.ctx = undefined;
     }
     async handleAdvert(event, advert, sourceRelayUrl) {
-        const signalRelays = normalizeSignalRelays([sourceRelayUrl]);
-        if (signalRelays.length === 0)
-            return;
         const localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : "";
         for (const endpoint of advert.endpoints) {
             if (endpoint.transport !== "webrtc" || !/^(02|03)[0-9a-fA-F]{64}$/.test(endpoint.addr)) {
@@ -212,16 +198,16 @@ export class WebRtcTransport {
                 continue;
             if (remotePubkeyHex === localPubkeyHex)
                 continue;
+            this.relayFallback.recordAdvertSource(remotePubkeyHex, sourceRelayUrl);
             const peer = {
                 remoteAddr: { transport: this.type, addr: remotePubkeyHex },
                 publicKey: fromHex(remotePubkeyHex),
-                meta: { source: "nostr-advert", signalRelays },
+                meta: { source: "nostr-advert", relayUrl: sourceRelayUrl },
             };
             const nodeAddrHex = nodeAddrToHex(deriveNodeAddr(peer.publicKey));
             const cached = this.advertCache.store(nodeAddrHex, peer, event);
             if (!cached)
                 continue;
-            this.peerSignalRelays.set(remotePubkeyHex, signalRelays);
             const requested = this.resolveAdvertWaiters(nodeAddrHex, cached);
             if (this.cfg.autoConnect && !requested && !this.autoConnectFillTimer) {
                 this.autoConnectFillTimer = setTimeout(() => {
@@ -270,13 +256,15 @@ export class WebRtcTransport {
         }
     }
     async publishLocalAdvert() {
-        if (!this.ctx || !this.signaling)
+        if (!this.ctx || !this.peerDiscovery)
             return;
-        await this.signaling.publishAdvert({
+        await this.peerDiscovery.publishAdvert({
             identifier: FIPS_ADVERT_D_TAG,
             version: 1,
-            endpoints: [{ transport: "webrtc", addr: toHex(this.ctx.localIdentity.publicKey) }],
-            signalRelays: this.cfg.relays,
+            endpoints: [
+                { transport: "webrtc", addr: toHex(this.ctx.localIdentity.publicKey) },
+                { transport: "nostr_relay", addr: encodeNpub(this.ctx.localIdentity.xOnlyPubkey) },
+            ],
             stunServers: this.cfg.stunServers ?? [],
         });
     }
@@ -352,8 +340,10 @@ export class WebRtcTransport {
         }
         if (isAutoConnect)
             this.pendingAutoConnects.add(remotePubkeyHex);
-        const remoteXOnlyHex = remotePubkeyHex.slice(2); // strip 02/03 parity
-        const signalRelays = this.peerSignalRelays.get(remotePubkeyHex) ?? this.cfg.relays;
+        if (!this.ctx?.connectTransport || !this.ctx.sendSessionMessage) {
+            throw new Error("WebRTC negotiation requires a FIPS transport context");
+        }
+        await this.ctx.connectTransport({ transport: "nostr_relay", addr: remotePubkeyHex });
         const sessionId = randomId();
         this.knownSessionIds.add(sessionId);
         this.logger.debug("webrtc connect start", remotePubkeyHex, sessionId);
@@ -384,7 +374,6 @@ export class WebRtcTransport {
             const dial = {
                 sessionId,
                 remotePubkeyHex,
-                remoteXOnlyHex,
                 phase: "starting",
                 pc,
                 dataChannel,
@@ -393,7 +382,7 @@ export class WebRtcTransport {
                 timer,
             };
             this.pendingDials.set(sessionId, dial);
-            this.startInitiatorHandshake(dial, addr, signalRelays).catch((err) => {
+            this.startInitiatorHandshake(dial, addr).catch((err) => {
                 clearTimeout(timer);
                 this.pendingDials.delete(sessionId);
                 pc.close();
@@ -443,7 +432,7 @@ export class WebRtcTransport {
         }
         this.handleAutoConnectFailure(addr.addr);
     }
-    async startInitiatorHandshake(dial, addr, signalRelays) {
+    async startInitiatorHandshake(dial, addr) {
         dial.phase = "creating-offer";
         const offer = await dial.pc.createOffer();
         dial.phase = "gathering-ice";
@@ -461,8 +450,8 @@ export class WebRtcTransport {
             createdAtMs: Date.now(),
             expiresAtMs: Date.now() + 60_000,
         };
-        dial.phase = "publishing-offer";
-        await this.signaling.sendSignal(dial.remoteXOnlyHex, signal, signalRelays);
+        dial.phase = "sending-offer";
+        await this.sendWebRtcSignal(dial.remotePubkeyHex, signal);
         dial.phase = "awaiting-answer";
         this.logger.debug("webrtc offer sent", dial.remotePubkeyHex, dial.sessionId);
         // Wire connection state to dialer promise once data channel opens.
@@ -505,25 +494,21 @@ export class WebRtcTransport {
             logger: this.logger,
         });
     }
-    async handleIncomingSignal(signal, senderXOnlyHex, sourceRelayUrl) {
+    async handleIncomingSignal(signal, remotePubkeyHex) {
         if (!this.ctx)
             return;
         this.logger.debug("webrtc signal received", signal.kind, signal.sessionId, signal.sender);
         const localPubkeyHex = toHex(this.ctx.localIdentity.publicKey);
         const valid = validateWebRtcSignal(signal, {
             localPubkeyHex,
-            outerSenderPubkeyHex: signal.sender,
+            outerSenderPubkeyHex: remotePubkeyHex,
             knownSessionIds: this.knownSessionIds,
             seenSessionIds: this.seenSessionIds,
             nowMs: Date.now(),
         });
-        if (valid.sender.slice(2) !== senderXOnlyHex) {
-            this.logger.warn("inner sender does not match outer xOnly", valid.sender);
-            return;
-        }
         this.seenSessionIds.add(`${valid.sessionId}:${valid.kind}`);
         if (valid.kind === "offer") {
-            await this.handleIncomingOffer(valid, senderXOnlyHex, sourceRelayUrl, localPubkeyHex);
+            await this.handleIncomingOffer(valid, localPubkeyHex);
             return;
         }
         if (valid.kind === "answer") {
@@ -547,14 +532,14 @@ export class WebRtcTransport {
         }
         // "candidate" not used in non-trickle v1.
     }
-    async handleIncomingOffer(offer, senderXOnlyHex, sourceRelayUrl, localPubkeyHex) {
+    async handleIncomingOffer(offer, localPubkeyHex) {
         if (!this.cfg.acceptConnections || this.pendingInbound.has(offer.sessionId))
             return;
         const competingDial = [...this.pendingDials.values()]
             .find((dial) => dial.remotePubkeyHex === offer.sender);
         if (competingDial) {
             if (!incomingOfferReplacesPendingDial(localPubkeyHex, offer.sender)) {
-                await this.rejectIncomingOffer(offer, senderXOnlyHex, sourceRelayUrl, localPubkeyHex);
+                await this.rejectIncomingOffer(offer, localPubkeyHex);
                 return;
             }
             clearTimeout(competingDial.timer);
@@ -564,12 +549,11 @@ export class WebRtcTransport {
         }
         else if (this.retireExistingConnection(offer.sender)
             && !incomingOfferReplacesPendingDial(localPubkeyHex, offer.sender)) {
-            await this.rejectIncomingOffer(offer, senderXOnlyHex, sourceRelayUrl, localPubkeyHex);
-            this.peerSignalRelays.set(offer.sender, [sourceRelayUrl]);
+            await this.rejectIncomingOffer(offer, localPubkeyHex);
             this.discoveryStream?.push({
                 remoteAddr: { transport: "webrtc", addr: offer.sender },
                 publicKey: fromHex(offer.sender),
-                meta: { source: "webrtc-replacement", signalRelays: [sourceRelayUrl] },
+                meta: { source: "webrtc-replacement" },
             });
             return;
         }
@@ -595,7 +579,7 @@ export class WebRtcTransport {
             await pc.setLocalDescription(answer);
             await waitForIceGatheringComplete(pc, this.cfg.iceGatherTimeoutMs);
             this.knownSessionIds.add(offer.sessionId);
-            await this.signaling.sendSignal(senderXOnlyHex, {
+            await this.sendWebRtcSignal(offer.sender, {
                 protocol: "fips-webrtc-v1",
                 version: 1,
                 sessionId: offer.sessionId,
@@ -605,7 +589,7 @@ export class WebRtcTransport {
                 sdp: pc.localDescription.sdp,
                 createdAtMs: Date.now(),
                 expiresAtMs: Date.now() + 60_000,
-            }, [sourceRelayUrl]);
+            });
             this.logger.debug("webrtc answer sent", offer.sender, offer.sessionId);
         }
         catch (err) {
@@ -701,8 +685,8 @@ export class WebRtcTransport {
             clearTimeout(timer);
         this.pendingInbound.delete(sessionId);
     }
-    async rejectIncomingOffer(offer, senderXOnlyHex, sourceRelayUrl, localPubkeyHex) {
-        await this.signaling.sendSignal(senderXOnlyHex, {
+    async rejectIncomingOffer(offer, localPubkeyHex) {
+        await this.sendWebRtcSignal(offer.sender, {
             protocol: "fips-webrtc-v1",
             version: 1,
             sessionId: offer.sessionId,
@@ -711,7 +695,18 @@ export class WebRtcTransport {
             recipient: offer.sender,
             createdAtMs: Date.now(),
             expiresAtMs: Date.now() + 60_000,
-        }, [sourceRelayUrl]);
+        });
+    }
+    async handleSessionMessage(remotePubkeyHex, msgType, payload) {
+        if (msgType !== FSP_MSG_WEBRTC_SIGNAL)
+            return;
+        await this.handleIncomingSignal(decodeWebRtcSignalPayload(payload), remotePubkeyHex);
+    }
+    async sendWebRtcSignal(remotePubkeyHex, signal) {
+        if (!this.ctx?.sendSessionMessage) {
+            throw new Error("WebRTC negotiation requires authenticated FSP messaging");
+        }
+        await this.ctx.sendSessionMessage(remotePubkeyHex, FSP_MSG_WEBRTC_SIGNAL, new TextEncoder().encode(JSON.stringify(signal)));
     }
     speculativeAutoConnects() {
         return this.autoConnectPeers.size + this.pendingAutoConnects.size;

@@ -1,42 +1,49 @@
-# WebRTC signaling protocol
+# WebRTC negotiation over FIPS
 
 Protocol id: `fips-webrtc-v1`. Version: 1.
 
-## Advert (Nostr kind 37195, public, parameterized replaceable)
+## Public peer advert (Nostr kind 37195)
 
-```
+```json
 {
   "identifier": "fips-overlay-v1",
   "version": 1,
-  "endpoints": [{ "transport": "webrtc", "addr": "<local-pubkey-hex>" }],
-  "signalRelays": ["wss://relay.example.com"],
+  "endpoints": [
+    { "transport": "webrtc", "addr": "<compressed-pubkey-hex>" },
+    { "transport": "nostr_relay", "addr": "<npub>" }
+  ],
   "stunServers": ["stun:stun.l.google.com:19302"]
 }
 ```
 
-`d`-tag = the app discovery scope, for example `hashtree-v1`, to make
-adverts replaceable per identity and per app.
-Content `identifier` remains `fips-overlay-v1`.
-`protocol` tag = the same app discovery scope.
-`version` tag = `1`.
+The parameterized-replaceable event has `d=<app discovery scope>`,
+`protocol=<same scope>`, `version=1`, and an `expiration` tag. It is the only
+public peerfinding message. Relay selection stays in local configuration; the
+configured Nostr peerfinding relays are also available to the relay transport.
 
-## Signal (Nostr kind 21059, NIP-59 gift-wrapped)
+## Nostr relay transport (kind 21060)
 
-Each signal is published as a **kind 21059 NIP-59 gift wrap**. Three layers:
+Kind `21060` is a targeted ephemeral event carrying one ordinary FIPS wire
+datagram. Its single `p` tag is the destination x-only key. `content` is the
+FIPS datagram encoded as unpadded base64url. FMP and FSP already authenticate
+and encrypt the datagram, so this Nostr envelope adds no private-message
+protocol.
 
-```
-gift-wrap (kind 21059)                     ← signed by random ephemeral key
-  content: NIP-44 v2 ciphertext of …
-    └─ seal (kind 13)                      ← signed by sender's real key
-       content: NIP-44 v2 ciphertext of …
-          └─ rumor (kind 21059, unsigned)  ← carries the WebRtcSignal as JSON
-```
+Implementations reject invalid signatures, multiple recipients, events older
+than 60 seconds, events more than 30 seconds in the future, and decoded
+datagrams above the transport MTU (1280 bytes by default). A relay that
+delivered a peer's advert is preferred for that peer; otherwise all configured
+relay connections are eligible.
 
-`p` tag = recipient xOnly hex. The outer event's pubkey is a fresh one-time
-key, so the sender's real identity is only revealed after the recipient
-decrypts the outer layer.
+`WebRtcTransport` enables this low-priority companion transport automatically.
+Supplying an explicit transport with type `nostr_relay` overrides the companion.
+The relay path remains usable when WebRTC cannot be established.
 
-The rumor's content is a JSON `WebRtcSignal`:
+## Authenticated WebRTC negotiation (FSP message 0x18)
+
+After FMP and FSP establish over the relay transport, WebRTC offers, answers,
+and rejections travel as encrypted FSP message type `0x18`. Its payload is the
+UTF-8 JSON form of:
 
 ```ts
 interface WebRtcSignal {
@@ -44,8 +51,8 @@ interface WebRtcSignal {
   version: 1;
   sessionId: string;
   kind: "offer" | "answer" | "candidate" | "reject";
-  sender: string;      // hex pubkey
-  recipient: string;   // hex pubkey
+  sender: string;
+  recipient: string;
   sdp?: string;
   candidates?: IceCandidateJson[];
   createdAtMs: number;
@@ -53,36 +60,10 @@ interface WebRtcSignal {
 }
 ```
 
-## Validation rules (reject the signal if any fail)
+The authenticated FSP peer must equal `sender`; `recipient` must equal the
+local identity. Expired, future-dated, duplicate, malformed, and unknown-session
+messages are rejected. Non-trickle ICE is used in version 1.
 
-- `protocol !== "fips-webrtc-v1"` or `version !== 1`
-- `expiresAtMs < now`
-- `recipient !== localPubkey`
-- `sender` does not match the outer gift-wrap author
-- `sessionId` is unknown for `answer`/`candidate`
-- `offer`/`answer` missing `sdp`
-- `sessionId` already seen within the replay window (dedupe)
-
-## Negotiation (non-trickle ICE for v1)
-
-```
-1. initiator: createOffer
-2. setLocalDescription
-3. wait for iceGatheringState === "complete" (or 10 s timeout)
-4. publish offer signal
-5. wait for answer signal
-6. setRemoteDescription
-7. wait for datachannel `open` and connectionState `connected`
-```
-
-`candidate` messages are part of the schema for forward compatibility but unused in v1.
-
-## Kind choice (21059 vs 1059)
-
-Standard NIP-59 uses kind **1059** for gift wraps (regular event — relays
-store them). FIPS uses kind **21059**, which is in the 20000–29999 ephemeral
-range, so relays broadcast and drop them. This matches Rust FIPS and keeps
-signaling state out of relay storage.
-
-Inner rumor kind is also 21059 (same number, internal). The seal stays at the
-NIP-59 standard kind 13.
+The successful RTCDataChannel then establishes a higher-priority FMP link.
+FIPS uses that direct path automatically while retaining the relay transport
+as bootstrap and fallback connectivity.

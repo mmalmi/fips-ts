@@ -260,12 +260,18 @@ export class FspSession {
         return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
     }
     encryptEndpointData(payload, flags = 0) {
+        return this.encryptMessage(FSP_MSG_ENDPOINT_DATA, payload, flags);
+    }
+    encryptMessage(msgType, payload, flags = 0) {
         if (this.state !== "established" || !this.tx)
             throw new Error("FSP not established");
+        if (!Number.isInteger(msgType) || msgType < 0 || msgType > 0xff) {
+            throw new Error("FSP message type must be one byte");
+        }
         const counter = this.txCounter++;
         const inner = encodeFspInner({
             timestamp: Math.floor(Date.now() / 1000),
-            msgType: FSP_MSG_ENDPOINT_DATA,
+            msgType,
             innerFlags: 0,
             payload,
         });
@@ -304,9 +310,9 @@ export class FspSession {
             return { msgType: inner.msgType, data: decodeDataPacket(inner.payload) };
         }
         if (inner.msgType === FSP_MSG_ENDPOINT_DATA) {
-            return { msgType: inner.msgType, endpointData: inner.payload };
+            return { msgType: inner.msgType, endpointData: inner.payload, payload: inner.payload };
         }
-        return { msgType: inner.msgType };
+        return { msgType: inner.msgType, payload: inner.payload };
     }
     close() {
         this.state = "closed";

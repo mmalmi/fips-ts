@@ -12,7 +12,7 @@ test.afterAll(async () => {
   await relay.close();
 });
 
-test("Three-node FIPS routing A -> B -> C over REAL WebRTC + Nostr signaling", async ({ page }) => {
+test("Three-node FIPS routing A -> B -> C over real WebRTC + Nostr relay bootstrap", async ({ page }) => {
   await page.addInitScript((url) => {
     window.__fipsTestRelayUrl = url;
   }, relay.url);

@@ -45,11 +45,13 @@ export declare class FspSession {
     private finalize;
     encryptDatagram(data: DataPacket, flags?: number): Uint8Array;
     encryptEndpointData(payload: Uint8Array, flags?: number): Uint8Array;
+    encryptMessage(msgType: number, payload: Uint8Array, flags?: number): Uint8Array;
     encryptKeepalive(flags?: number): Uint8Array;
     decryptIncoming(packet: Uint8Array): {
         msgType: number;
         data?: DataPacket;
         endpointData?: Uint8Array;
+        payload?: Uint8Array;
     };
     close(): void;
 }

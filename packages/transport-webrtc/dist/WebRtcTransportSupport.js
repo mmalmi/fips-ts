@@ -1,3 +1,16 @@
+import { toHex } from "@fips/core";
+export function randomId() {
+    const bytes = new Uint8Array(16);
+    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+        crypto.getRandomValues(bytes);
+    }
+    else {
+        for (let index = 0; index < bytes.length; index++) {
+            bytes[index] = Math.floor(Math.random() * 256);
+        }
+    }
+    return toHex(bytes);
+}
 export function waitForIceGatheringComplete(pc, timeoutMs) {
     if (pc.iceGatheringState === "complete")
         return Promise.resolve();
@@ -55,27 +68,6 @@ export class AsyncEventStream {
 }
 export async function* emptyAsyncIterable() {
     return;
-}
-export function normalizeSignalRelays(value) {
-    if (!Array.isArray(value))
-        return [];
-    const relays = [];
-    for (const candidate of value.slice(0, 8)) {
-        if (typeof candidate !== "string")
-            continue;
-        try {
-            const parsed = new URL(candidate);
-            if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:")
-                continue;
-            const normalized = parsed.toString();
-            if (!relays.includes(normalized))
-                relays.push(normalized);
-        }
-        catch {
-            /* Invalid advertised relay URL. */
-        }
-    }
-    return relays;
 }
 export function cloneDiscoveredPeer(peer) {
     return {

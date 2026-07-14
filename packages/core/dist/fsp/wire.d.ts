@@ -32,6 +32,7 @@ export declare const FSP_FLAG_DIRECT_TRANSPORT = 8;
 export declare const FSP_MSG_KEEPALIVE = 0;
 export declare const FSP_MSG_DATA = 16;
 export declare const FSP_MSG_ENDPOINT_DATA = 21;
+export declare const FSP_MSG_WEBRTC_SIGNAL = 24;
 export interface FspCommonPrefix {
     version: number;
     phase: number;

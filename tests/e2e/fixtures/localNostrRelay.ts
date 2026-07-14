@@ -1,6 +1,6 @@
 /**
  * Minimal in-process Nostr relay for Playwright tests. Implements the bits
- * the FIPS WebRTC signaling path needs:
+ * the FIPS Nostr peerfinding and relay transport paths need:
  *   - EVENT: store and rebroadcast to matching subscribers
  *   - REQ filter (kinds, authors, #p, #d, since/until/limit)
  *   - CLOSED

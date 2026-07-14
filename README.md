@@ -1,6 +1,6 @@
 # fips-ts
 
-Browser TypeScript implementation of [FIPS](https://github.com/jmcorgan/fips) — node identity, FMP / FSP, WebRTC and virtual-Ethernet transports, Nostr signaling (NIP-44 v2 + NIP-59 gift wrap), endpoint bytes, service-port datagrams, and browser endpoint helpers.
+Browser TypeScript implementation of [FIPS](https://github.com/jmcorgan/fips) — node identity, FMP / FSP, WebRTC, Nostr-relay, and virtual-Ethernet transports, endpoint bytes, service-port datagrams, and browser endpoint helpers.
 
 The Rust reference lives at **[jmcorgan/fips](https://github.com/jmcorgan/fips)** (canonical) with a mirror at **[mmalmi/fips](https://github.com/mmalmi/fips)**. This package targets byte-for-byte wire compatibility with that codebase and ships a live interop test that drives the Rust Noise responder over stdio from TS — see [`interop/`](interop/) and [`docs/rust-compat.md`](docs/rust-compat.md).
 
@@ -12,9 +12,8 @@ packages/core              FipsNode, identity, NIP-19 npub, FMP / FSP codecs,
 packages/transport-memory  In-process transport for tests and same-page peers
 packages/transport-ethernet  Full-frame virtual Ethernet transport for browser
                            VMs and virtual NICs (EtherType 0x2121)
-packages/transport-webrtc  RTCDataChannel transport with Nostr signaling
-                           (kind 37195 adverts, kind 21059 NIP-59 wraps over
-                           NIP-44 v2 content)
+packages/transport-webrtc  RTCDataChannel transport, kind 37195 Nostr peer
+                           adverts, and automatic kind 21060 FIPS relay fallback
 packages/browser           IndexedDB identity store + createBrowserFipsNode
 apps/demo                  Vanilla-TS Vite demo
 tests/e2e                  Playwright acceptance tests
@@ -43,9 +42,12 @@ pnpm --filter '@fips/core' test:unit  # the interop tests now run
 application endpoint bytes or service-port datagrams
   → FSP end-to-end session (Noise XK over secp256k1)
   → FMP mesh / link layer (Noise IK over secp256k1)
-  → WebRTC datachannel, virtual Ethernet, or MemoryTransport in tests
-  → Nostr signaling (NIP-59 gift wrap, NIP-44 v2 content)
+  → Nostr relay bootstrap/fallback, WebRTC datachannel, virtual Ethernet,
+    or MemoryTransport in tests
 ```
+
+WebRTC offer/answer JSON is FSP message `0x18`, negotiated only after the
+kind-21060 relay path has established authenticated FMP and FSP sessions.
 
 The invariant: **WebRTC connects adjacent peers. FIPS routes opaque bytes to node identities. Applications route their own content.** Don't push content hashes into FIPS.
 

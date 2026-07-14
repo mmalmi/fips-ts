@@ -1,5 +1,5 @@
 /**
- * Lightweight Nostr event builder and verifier — kind 1/37195/21059 etc.
+ * Lightweight Nostr event builder and verifier for adverts and relay datagrams.
  * Signs with BIP-340 Schnorr. The event id is SHA-256 of the canonical
  * serialization (NIP-01).
  */
