@@ -7,7 +7,7 @@
 import { IndexedDbIdentityStore } from "@fips/browser";
 import { FipsNode, generateIdentity, toHex } from "@fips/core";
 import { MemoryHub, MemoryTransport } from "@fips/transport-memory";
-import { WebRtcTransport } from "@fips/transport-webrtc";
+import { NostrRelayClient, WebRtcTransport } from "@fips/transport-webrtc";
 
 interface NodePair {
   a: FipsNode;
@@ -159,6 +159,72 @@ async function autoConnectWebRtcReconnect(relayUrl: string): Promise<{ first: st
   } finally {
     await a.stop();
     await b.stop();
+  }
+}
+
+async function autoConnectWebRtcPeerRestart(
+  initialRelayUrl: string,
+  replacementRelayUrl: string,
+  listenerAcceptsIncoming: boolean,
+): Promise<{ first: string; second: string }> {
+  const discoveryApp = `fips-peer-restart-${crypto.randomUUID()}`;
+  const firstIdentity = await generateIdentity();
+  const secondIdentity = await generateIdentity();
+  const [lowerIdentity, higherIdentity] =
+    toHex(firstIdentity.publicKey) < toHex(secondIdentity.publicKey)
+      ? [firstIdentity, secondIdentity]
+      : [secondIdentity, firstIdentity];
+  const [aId, bId] = listenerAcceptsIncoming
+    ? [higherIdentity, lowerIdentity]
+    : [lowerIdentity, higherIdentity];
+  const options = {
+    advertiseOnNostr: true,
+    autoConnect: true,
+    maxConnections: 1,
+    discoveryApp,
+  };
+  const a = new FipsNode({
+    identity: aId,
+    transports: [new WebRtcTransport({
+      ...options,
+      relays: [initialRelayUrl, replacementRelayUrl],
+    })],
+  });
+  const originalRelay = new NostrRelayClient({ url: initialRelayUrl });
+  const createB = (relayUrl: string, relayClients?: NostrRelayClient[]) => {
+    const node = new FipsNode({
+      identity: bId,
+      transports: [new WebRtcTransport({
+        ...options,
+        relays: [relayUrl],
+        relayClients,
+      })],
+    });
+    node.registerService(9000, async ({ payload, reply }) => reply(payload));
+    return node;
+  };
+  const originalB = createB(initialRelayUrl, [originalRelay]);
+  let replacementB: FipsNode | undefined;
+  const aPub = toHex(aId.publicKey);
+  const bPub = toHex(bId.publicKey);
+
+  await a.start();
+  const initiallyConnected = waitForPeerState(a, bPub, "connected");
+  await originalB.start();
+  await initiallyConnected;
+  try {
+    const first = await echoOverPair({ a, b: originalB, aPub, bPub }, "before-peer-restart");
+    originalRelay.close();
+    replacementB = createB(replacementRelayUrl);
+    const replacementConnected = waitForPeerState(replacementB, aPub, "connected");
+    await replacementB.start();
+    await replacementConnected;
+    const second = await echoOverPair({ a, b: replacementB, aPub, bPub }, "after-peer-restart");
+    return { first, second };
+  } finally {
+    await replacementB?.stop();
+    await originalB.stop();
+    await a.stop();
   }
 }
 
@@ -602,6 +668,7 @@ export const harness = {
   makeWebRtcPair,
   autoConnectWebRtcPair,
   autoConnectWebRtcReconnect,
+  autoConnectWebRtcPeerRestart,
   connectThroughStaleAdvertBacklog,
   duplicateWebRtcConnect,
   makeWebRtcChain,

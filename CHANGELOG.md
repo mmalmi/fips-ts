@@ -1,5 +1,13 @@
 # Changelog
 
+## @fips/transport-webrtc 0.0.39 - 2026-07-14
+
+- Replace a stale same-identity WebRTC connection when a restarted peer sends
+  a fresh offer, using the deterministic public-key ordering to converge on
+  one initiator.
+- Route replacement redials back through `FipsNode` so the new data channel
+  also establishes an authenticated FMP link and immediately carries traffic.
+
 ## @fips/transport-webrtc 0.0.38 - 2026-07-14
 
 - Resolve simultaneous browser/native offers deterministically so the lower

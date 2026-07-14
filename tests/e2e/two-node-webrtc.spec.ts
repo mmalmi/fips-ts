@@ -3,13 +3,17 @@ import { test, expect } from "@playwright/test";
 import { startLocalNostrRelay, type LocalNostrRelay } from "./fixtures/localNostrRelay.js";
 
 let relay: LocalNostrRelay;
+let replacementRelay: LocalNostrRelay;
 
 test.beforeAll(async () => {
-  relay = await startLocalNostrRelay();
+  [relay, replacementRelay] = await Promise.all([
+    startLocalNostrRelay(),
+    startLocalNostrRelay(),
+  ]);
 });
 
 test.afterAll(async () => {
-  await relay.close();
+  await Promise.all([relay.close(), replacementRelay.close()]);
 });
 
 test("Two-node FIPS over WebRTC + local Nostr relay (in-page, native browser RTCPeerConnection)", async ({ page }) => {
@@ -101,5 +105,39 @@ test("Nostr advert auto-connect replaces a disconnected WebRTC peer", async ({ p
   expect(result).toEqual({
     first: "before-auto-reconnect",
     second: "after-auto-reconnect",
+  });
+});
+
+test("a restarted peer with the same identity replaces its stale WebRTC session", async ({ page }) => {
+  await page.addInitScript((url) => {
+    window.__fipsTestRelayUrl = url;
+  }, relay.url);
+
+  await page.goto("/");
+  await page.waitForFunction(() => !!window.__fipsHarness);
+
+  const result = await page.evaluate(async (replacementRelayUrl) => {
+    const incomingAccepted = await window.__fipsHarness.autoConnectWebRtcPeerRestart(
+      window.__fipsTestRelayUrl!,
+      replacementRelayUrl,
+      true,
+    );
+    const redialConverged = await window.__fipsHarness.autoConnectWebRtcPeerRestart(
+      window.__fipsTestRelayUrl!,
+      replacementRelayUrl,
+      false,
+    );
+    return { incomingAccepted, redialConverged };
+  }, replacementRelay.url);
+
+  expect(result).toEqual({
+    incomingAccepted: {
+      first: "before-peer-restart",
+      second: "after-peer-restart",
+    },
+    redialConverged: {
+      first: "before-peer-restart",
+      second: "after-peer-restart",
+    },
   });
 });

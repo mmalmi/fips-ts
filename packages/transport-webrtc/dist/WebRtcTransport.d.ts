@@ -12,6 +12,7 @@ export declare class WebRtcTransport implements Transport {
     private relayClients;
     private ownsRelayClients;
     private readonly conns;
+    private readonly supersededConnections;
     private readonly pendingDials;
     private readonly pendingInbound;
     private readonly pendingConnects;
@@ -40,9 +41,6 @@ export declare class WebRtcTransport implements Transport {
     private fillAutoConnectSlots;
     private publishLocalAdvert;
     resolve(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined>;
-    private cacheAdvert;
-    private getCachedAdvert;
-    private pruneAdvertCache;
     private resolveAdvertWaiters;
     private settleAdvertWaiter;
     discover(): AsyncIterable<DiscoveredPeer>;
@@ -51,7 +49,9 @@ export declare class WebRtcTransport implements Transport {
     close(addr: TransportAddress): Promise<void>;
     private startInitiatorHandshake;
     private handleIncomingSignal;
+    private handleIncomingOffer;
     private scheduleAutoReconnect;
+    private retireExistingConnection;
     private handleAutoConnectFailure;
     private clearPendingInbound;
     private rejectIncomingOffer;
