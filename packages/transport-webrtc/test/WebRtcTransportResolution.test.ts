@@ -6,6 +6,7 @@ import {
   nodeAddrToHex,
   toHex,
   type FipsIdentity,
+  type LinkNegotiationMessage,
   type TransportContext,
 } from "@fips/core";
 
@@ -21,8 +22,10 @@ import {
   type NostrFilter,
   type NostrRelayClient,
 } from "../src/index.js";
-import { advertExpiryMs } from "../src/WebRtcTransportSupport.js";
-import { incomingOfferReplacesPendingDial } from "../src/WebRtcTransport.js";
+import {
+  advertExpiryMs,
+  incomingOfferReplacesPendingDial,
+} from "../src/WebRtcTransportSupport.js";
 
 class FakeRelay {
   readonly url = "ws://resolver.test";
@@ -94,6 +97,85 @@ afterEach(() => {
 });
 
 describe("WebRtcTransport NodeAddr resolution", () => {
+  it("rejects an unsolicited offer when inbound acceptance was not enabled", async () => {
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x58));
+    const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x59));
+    const relay = new FakeRelay();
+    const replies: LinkNegotiationMessage[] = [];
+    const transport = new WebRtcTransport({
+      relays: [relay.url],
+      relayClients: [relayClient(relay)],
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+    });
+    await transport.start({
+      localIdentity: local,
+      onPacket: () => undefined,
+      sendLinkNegotiation: async (_peer, message) => {
+        replies.push(message);
+      },
+    });
+    try {
+      const now = Date.now();
+      await transport.handleLinkNegotiation(toHex(remote.publicKey), {
+        version: 1,
+        negotiationId: "unsolicited",
+        linkType: "webrtc",
+        kind: "offer",
+        createdAtMs: now,
+        expiresAtMs: now + 60_000,
+        payload: { sdp: "v=0" },
+      });
+
+      expect(replies).toMatchObject([{
+        negotiationId: "unsolicited",
+        linkType: "webrtc",
+        kind: "reject",
+      }]);
+    } finally {
+      await transport.stop();
+    }
+  });
+
+  it("applies application peer authorization before allocating inbound WebRTC", async () => {
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x5a));
+    const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x5b));
+    const relay = new FakeRelay();
+    const replies: LinkNegotiationMessage[] = [];
+    const transport = new WebRtcTransport({
+      relays: [relay.url],
+      relayClients: [relayClient(relay)],
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+      acceptConnections: true,
+      allowIncomingPeer: () => false,
+    });
+    await transport.start({
+      localIdentity: local,
+      onPacket: () => undefined,
+      sendLinkNegotiation: async (_peer, message) => {
+        replies.push(message);
+      },
+    });
+    try {
+      const now = Date.now();
+      await transport.handleLinkNegotiation(toHex(remote.publicKey), {
+        version: 1,
+        negotiationId: "unauthorized",
+        linkType: "webrtc",
+        kind: "offer",
+        createdAtMs: now,
+        expiresAtMs: now + 60_000,
+        payload: { sdp: "v=0" },
+      });
+
+      expect(replies[0]).toMatchObject({
+        negotiationId: "unauthorized",
+        kind: "reject",
+      });
+    } finally {
+      await transport.stop();
+    }
+  });
+
   it("resolves simultaneous WebRTC dials to the lower public-key initiator", () => {
     const lower = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const higher = "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

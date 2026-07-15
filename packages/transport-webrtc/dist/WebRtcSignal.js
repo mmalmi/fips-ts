@@ -1,83 +1,55 @@
 export class SignalValidationError extends Error {
 }
-export function decodeWebRtcSignalPayload(payload) {
-    try {
-        return JSON.parse(new TextDecoder().decode(payload));
+const MAX_SDP_LENGTH = 48 * 1_024;
+const MAX_CANDIDATES = 32;
+const MAX_CANDIDATE_LENGTH = 2_048;
+export function validateWebRtcSignal(message, ctx) {
+    if (message.linkType !== "webrtc") {
+        throw new SignalValidationError(`bad link type ${message.linkType}`);
     }
-    catch {
-        throw new SignalValidationError("invalid WebRTC FSP signal JSON");
-    }
-}
-export function validateWebRtcSignal(s, ctx) {
-    if (typeof s !== "object" || s === null) {
-        throw new SignalValidationError("signal must be a JSON object");
-    }
-    const obj = s;
-    validateEnvelope(obj, ctx);
-    validateSignalBody(obj);
-    validateSignalSession(obj, ctx);
-    return obj;
-}
-function validateEnvelope(obj, ctx) {
-    if (obj.protocol !== "fips-webrtc-v1") {
-        throw new SignalValidationError(`bad protocol ${String(obj.protocol)}`);
-    }
-    if (obj.version !== 1) {
-        throw new SignalValidationError(`bad version ${String(obj.version)}`);
-    }
-    if (typeof obj.sessionId !== "string" || obj.sessionId.length === 0) {
-        throw new SignalValidationError("missing sessionId");
-    }
-    if (typeof obj.sender !== "string" || obj.sender.length !== 66) {
-        throw new SignalValidationError("bad sender pubkey");
-    }
-    if (typeof obj.recipient !== "string" || obj.recipient.length !== 66) {
-        throw new SignalValidationError("bad recipient pubkey");
-    }
-    if (obj.recipient !== ctx.localPubkeyHex) {
-        throw new SignalValidationError("recipient is not us");
-    }
-    if (obj.sender !== ctx.outerSenderPubkeyHex) {
-        throw new SignalValidationError("inner sender ≠ outer event author");
-    }
-    const now = ctx.nowMs;
-    if (typeof obj.expiresAtMs !== "number" || obj.expiresAtMs < now) {
+    if (message.expiresAtMs < ctx.nowMs) {
         throw new SignalValidationError("signal expired");
     }
-    if (typeof obj.createdAtMs !== "number" || obj.createdAtMs > now + 60_000) {
+    if (message.createdAtMs > ctx.nowMs + 60_000) {
         throw new SignalValidationError("signal createdAtMs in future");
     }
+    if (typeof message.payload !== "object" || message.payload === null) {
+        throw new SignalValidationError("WebRTC negotiation payload must be an object");
+    }
+    const signal = message;
+    validateSignalBody(signal);
+    validateSignalSession(signal, ctx);
+    return signal;
 }
-function validateSignalBody(obj) {
-    if (obj.kind === "offer" || obj.kind === "answer") {
-        if (typeof obj.sdp !== "string" || obj.sdp.length === 0) {
+function validateSignalBody(signal) {
+    if (signal.kind === "offer" || signal.kind === "answer") {
+        if (typeof signal.payload.sdp !== "string" || signal.payload.sdp.length === 0) {
             throw new SignalValidationError("offer/answer requires sdp");
         }
+        if (signal.payload.sdp.length > MAX_SDP_LENGTH) {
+            throw new SignalValidationError("offer/answer SDP is too large");
+        }
     }
-    else if (obj.kind === "candidate") {
-        if (!Array.isArray(obj.candidates) || obj.candidates.length === 0) {
+    else if (signal.kind === "candidate") {
+        if (!Array.isArray(signal.payload.candidates) || signal.payload.candidates.length === 0) {
             throw new SignalValidationError("candidate signal requires candidates[]");
         }
-    }
-    else if (obj.kind === "reject") {
-        /* no extra body required */
-    }
-    else {
-        throw new SignalValidationError(`bad kind ${String(obj.kind)}`);
-    }
-}
-function validateSignalSession(obj, ctx) {
-    if (typeof obj.sessionId !== "string") {
-        throw new SignalValidationError("missing sessionId");
-    }
-    if (obj.kind === "answer" ||
-        obj.kind === "candidate" ||
-        obj.kind === "reject") {
-        if (!ctx.knownSessionIds.has(obj.sessionId)) {
-            throw new SignalValidationError("unknown sessionId for answer/candidate");
+        if (signal.payload.candidates.length > MAX_CANDIDATES
+            || signal.payload.candidates.some((candidate) => candidate.candidate.length > MAX_CANDIDATE_LENGTH)) {
+            throw new SignalValidationError("candidate signal exceeds limits");
         }
     }
-    if (ctx.seenSessionIds.has(`${obj.sessionId}:${obj.kind}`)) {
+}
+function validateSignalSession(signal, ctx) {
+    if (signal.kind === "answer"
+        || signal.kind === "candidate"
+        || signal.kind === "reject") {
+        if (!ctx.knownNegotiationIds.has(signal.negotiationId)) {
+            throw new SignalValidationError("unknown negotiationId for answer/candidate");
+        }
+    }
+    const replayKey = `${signal.negotiationId}:${signal.kind}`;
+    if (ctx.seenNegotiationIds.has(replayKey)) {
         throw new SignalValidationError("duplicate signal in replay window");
     }
 }

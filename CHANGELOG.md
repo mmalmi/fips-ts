@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Carry generic link negotiation through the existing FSP DataPacket service
+  on port 257. Remove the accidental WebRTC-specific FSP message type `0x18`.
+- Dispatch negotiations only to enabled matching adapters. WebRTC rejects
+  unsolicited offers unless inbound acceptance is enabled, which defaults to
+  public WebRTC advertisement; correlated simultaneous dials remain eligible.
+
 ## @fips/transport-webrtc 0.0.39 - 2026-07-14
 
 - Replace a stale same-identity WebRTC connection when a restarted peer sends

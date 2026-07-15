@@ -135,8 +135,12 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
     expect(result.data).toBeUndefined();
   });
 
-  it("FspSession carries WebRTC negotiation as an authenticated generic message", async () => {
-    const { FspSession, FSP_MSG_WEBRTC_SIGNAL } = await import("../src/index.js");
+  it("carries link negotiation through the existing DataPacket service", async () => {
+    const {
+      FspSession,
+      FSP_MSG_DATA,
+      LINK_NEGOTIATION_SERVICE_PORT,
+    } = await import("../src/index.js");
     const a = await identityFromSecretKey(new Uint8Array(32).fill(0x36));
     const b = await identityFromSecretKey(new Uint8Array(32).fill(0x54));
     const initiator = new FspSession({
@@ -151,12 +155,19 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
     responder.handleMsg3(msg3);
 
     const payload = new TextEncoder().encode('{"kind":"offer"}');
-    const frame = initiator.encryptMessage(FSP_MSG_WEBRTC_SIGNAL, payload);
+    const frame = initiator.encryptDatagram({
+      srcPort: LINK_NEGOTIATION_SERVICE_PORT,
+      dstPort: LINK_NEGOTIATION_SERVICE_PORT,
+      payload,
+    });
     const result = responder.decryptIncoming(frame);
 
-    expect(result.msgType).toBe(FSP_MSG_WEBRTC_SIGNAL);
-    expect(result.payload).toEqual(payload);
-    expect(result.data).toBeUndefined();
+    expect(result.msgType).toBe(FSP_MSG_DATA);
+    expect(result.data).toEqual({
+      srcPort: LINK_NEGOTIATION_SERVICE_PORT,
+      dstPort: LINK_NEGOTIATION_SERVICE_PORT,
+      payload,
+    });
     expect(result.endpointData).toBeUndefined();
   });
 

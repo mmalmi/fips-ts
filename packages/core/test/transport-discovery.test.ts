@@ -86,6 +86,16 @@ class LifecycleTransport implements Transport {
 }
 
 describe("FipsNode transport discovery", () => {
+  it("keeps standard FIPS service ports out of application registration", async () => {
+    const node = new FipsNode({
+      identity: await generateIdentity(),
+      transports: [new LifecycleTransport("memory")],
+    });
+
+    expect(() => node.registerService(256, () => undefined)).toThrow(/reserved/u);
+    expect(() => node.registerService(257, () => undefined)).toThrow(/reserved/u);
+  });
+
   it("starts an automatic companion unless that transport type is explicit", async () => {
     const local = await generateIdentity();
     const automatic = new LifecycleTransport("nostr_relay");

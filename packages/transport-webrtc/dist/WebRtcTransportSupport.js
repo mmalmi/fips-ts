@@ -11,6 +11,12 @@ export function randomId() {
     }
     return toHex(bytes);
 }
+export function incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex) {
+    return localPubkeyHex > remotePubkeyHex;
+}
+export function hasPendingInboundForPeer(pending, remotePubkeyHex) {
+    return [...pending].some((item) => item.remotePubkeyHex === remotePubkeyHex);
+}
 export function waitForIceGatheringComplete(pc, timeoutMs) {
     if (pc.iceGatheringState === "complete")
         return Promise.resolve();

@@ -1,6 +1,5 @@
-import { type DiscoveredPeer, type NodeAddr, type Transport, type TransportAddress, type TransportContext } from "@fips/core";
+import { type DiscoveredPeer, type LinkNegotiationMessage, type NodeAddr, type Transport, type TransportAddress, type TransportContext } from "@fips/core";
 import type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
-export declare function incomingOfferReplacesPendingDial(localPubkeyHex: string, remotePubkeyHex: string): boolean;
 export declare class WebRtcTransport implements Transport {
     readonly type = "webrtc";
     readonly mtu: number;
@@ -56,7 +55,7 @@ export declare class WebRtcTransport implements Transport {
     private handleAutoConnectFailure;
     private clearPendingInbound;
     private rejectIncomingOffer;
-    handleSessionMessage(remotePubkeyHex: string, msgType: number, payload: Uint8Array): Promise<void>;
+    handleLinkNegotiation(remotePubkeyHex: string, message: LinkNegotiationMessage): Promise<void>;
     private sendWebRtcSignal;
     private speculativeAutoConnects;
     private autoConnectCapacityUsed;

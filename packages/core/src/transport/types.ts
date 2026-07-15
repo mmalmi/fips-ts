@@ -1,4 +1,5 @@
 import type { FipsIdentity } from "../identity/index.js";
+import type { LinkNegotiationMessage } from "../linkNegotiation.js";
 import type { NodeAddr } from "../nodeaddr/index.js";
 
 /**
@@ -42,11 +43,10 @@ export interface TransportContext {
   onConnectionState?: (event: TransportConnectionStateEvent) => void;
   /** Establish another configured transport path to the same identity. */
   connectTransport?: (addr: TransportAddress) => Promise<void>;
-  /** Carry a transport-negotiation message inside an authenticated FSP session. */
-  sendSessionMessage?: (
+  /** Carry link negotiation through the existing FSP DataPacket service. */
+  sendLinkNegotiation?: (
     remotePubkeyHex: string,
-    msgType: number,
-    payload: Uint8Array,
+    message: LinkNegotiationMessage,
   ) => Promise<void>;
   logger?: Logger;
 }
@@ -66,11 +66,10 @@ export interface Transport {
   resolve?(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined>;
   /** Application-owned fallback transports enabled with this transport. */
   companionTransports?(): Transport[];
-  /** Receive authenticated end-to-end FSP transport-negotiation messages. */
-  handleSessionMessage?(
+  /** Receive authenticated link negotiation addressed to this adapter type. */
+  handleLinkNegotiation?(
     remotePubkeyHex: string,
-    msgType: number,
-    payload: Uint8Array,
+    message: LinkNegotiationMessage,
   ): Promise<void> | void;
 }
 

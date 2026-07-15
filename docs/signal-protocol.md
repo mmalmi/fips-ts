@@ -1,6 +1,4 @@
-# WebRTC negotiation over FIPS
-
-Protocol id: `fips-webrtc-v1`. Version: 1.
+# Link negotiation over FIPS
 
 ## Public peer advert (Nostr kind 37195)
 
@@ -39,30 +37,39 @@ relay connections are eligible.
 Supplying an explicit transport with type `nostr_relay` overrides the companion.
 The relay path remains usable when WebRTC cannot be established.
 
-## Authenticated WebRTC negotiation (FSP message 0x18)
+## Generic link-negotiation service
 
-After FMP and FSP establish over the relay transport, WebRTC offers, answers,
-and rejections travel as encrypted FSP message type `0x18`. Its payload is the
-UTF-8 JSON form of:
+After FMP and FSP establish over any transport, link offers and answers travel
+as the existing FSP DataPacket message (`0x10`) with source and destination
+service port 257. No FSP message type, flag, or handshake field is added.
+
+The service payload is UTF-8 JSON:
 
 ```ts
-interface WebRtcSignal {
-  protocol: "fips-webrtc-v1";
+interface LinkNegotiationMessage {
   version: 1;
-  sessionId: string;
+  negotiationId: string;
+  linkType: "webrtc" | string;
   kind: "offer" | "answer" | "candidate" | "reject";
-  sender: string;
-  recipient: string;
-  sdp?: string;
-  candidates?: IceCandidateJson[];
   createdAtMs: number;
   expiresAtMs: number;
+  payload: unknown; // owned and validated by the selected adapter
 }
 ```
 
-The authenticated FSP peer must equal `sender`; `recipient` must equal the
-local identity. Expired, future-dated, duplicate, malformed, and unknown-session
-messages are rejected. Non-trickle ICE is used in version 1.
+FSP supplies the peer identity, encryption, routing, and replay protection, so
+the envelope carries no redundant sender or recipient. Core drops malformed,
+expired, future-dated, unsupported, and disabled-adapter negotiations. WebRTC's
+payload contains its SDP or ICE candidates; non-trickle ICE is used initially.
+
+Responses are accepted only for known negotiation IDs. An unsolicited offer
+requires the adapter and inbound acceptance to be enabled. Inbound WebRTC
+acceptance defaults to public WebRTC advertisement, but can be explicitly
+enabled for a private deployment or disabled despite advertising. Capacity,
+one pending inbound negotiation per peer, expiry, and deterministic
+simultaneous-dial resolution are checked before retaining a connection. An
+application can additionally supply `allowIncomingPeer` for allowlist, Web of
+Trust, or other local authorization policy.
 
 The successful RTCDataChannel then establishes a higher-priority FMP link.
 FIPS uses that direct path automatically while retaining the relay transport

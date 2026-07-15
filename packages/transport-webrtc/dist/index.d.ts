@@ -5,5 +5,5 @@ export { NostrPeerDiscovery, FIPS_ADVERT_KIND, FIPS_ADVERT_D_TAG, FIPS_DEFAULT_D
 export { NostrRelayTransport, NOSTR_RELAY_DATAGRAM_KIND, type NostrRelayTransportConfig, } from "./NostrRelayTransport.js";
 export { NostrRelayClient, type NostrEvent, type NostrFilter, type NostrRelayClientOptions, } from "./NostrRelayClient.js";
 export { signEvent, verifyEvent, computeEventId, serializeForId, type UnsignedEvent, } from "./nostrEvent.js";
-export { validateWebRtcSignal, SignalValidationError, type WebRtcSignal, type WebRtcSignalKind, type WebRtcSignalValidationContext, type IceCandidateJson, } from "./WebRtcSignal.js";
+export { validateWebRtcSignal, SignalValidationError, type WebRtcSignal, type WebRtcSignalPayload, type WebRtcSignalValidationContext, type IceCandidateJson, } from "./WebRtcSignal.js";
 //# sourceMappingURL=index.d.ts.map

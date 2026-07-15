@@ -1,6 +1,10 @@
 import { type DiscoveredPeer } from "@fips/core";
 import type { NostrEvent } from "./NostrRelayClient.js";
 export declare function randomId(): string;
+export declare function incomingOfferReplacesPendingDial(localPubkeyHex: string, remotePubkeyHex: string): boolean;
+export declare function hasPendingInboundForPeer(pending: Iterable<{
+    remotePubkeyHex: string;
+}>, remotePubkeyHex: string): boolean;
 export declare function waitForIceGatheringComplete(pc: RTCPeerConnection, timeoutMs: number): Promise<void>;
 export declare class AsyncEventStream<T> implements AsyncIterable<T> {
     private readonly values;

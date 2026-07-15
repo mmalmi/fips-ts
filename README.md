@@ -46,8 +46,9 @@ application endpoint bytes or service-port datagrams
     or MemoryTransport in tests
 ```
 
-WebRTC offer/answer JSON is FSP message `0x18`, negotiated only after the
-kind-21060 relay path has established authenticated FMP and FSP sessions.
+Link offers and answers use the generic service on FSP DataPacket port 257;
+they do not allocate an FSP message type. WebRTC negotiation starts only after
+the kind-21060 relay path has established authenticated FMP and FSP sessions.
 
 The invariant: **WebRTC connects adjacent peers. FIPS routes opaque bytes to node identities. Applications route their own content.** Don't push content hashes into FIPS.
 

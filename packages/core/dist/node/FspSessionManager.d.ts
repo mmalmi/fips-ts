@@ -1,3 +1,4 @@
+import { type LinkNegotiationMessage } from "../linkNegotiation.js";
 import type { FipsIdentity } from "../identity/index.js";
 import { type NodeAddr } from "../nodeaddr/index.js";
 import type { Logger } from "../transport/types.js";
@@ -13,7 +14,7 @@ interface FspSessionManagerConfig {
     getPeerByNodeAddr: (nodeAddrHex: string) => AdjacentPeer | undefined;
     emitDatagram: (event: DatagramEvent) => void;
     emitEndpointData: (event: EndpointDataEvent) => void;
-    emitSessionMessage: (remotePubkeyHex: string, msgType: number, payload: Uint8Array) => void;
+    handleLinkNegotiation: (remotePubkeyHex: string, message: LinkNegotiationMessage) => Promise<void>;
     emitSession: (event: SessionEvent) => void;
 }
 export declare class FspSessionManager {
@@ -35,7 +36,7 @@ export declare class FspSessionManager {
         dst: string;
         payload: Uint8Array;
     }): Promise<void>;
-    sendSessionMessage(remotePubkeyHex: string, msgType: number, payload: Uint8Array): Promise<void>;
+    sendLinkNegotiation(remotePubkeyHex: string, message: LinkNegotiationMessage): Promise<void>;
     handleFromPeer(peer: AdjacentPeer, srcNodeAddr: NodeAddr, fspFrame: Uint8Array): Promise<void>;
     private handleEstablished;
     private promotePendingSession;

@@ -1,7 +1,8 @@
 import { bytesEqual, toHex } from "../codec/hex.js";
+import { decodeLinkNegotiationMessage, encodeLinkNegotiationMessage, LINK_NEGOTIATION_SERVICE_PORT, } from "../linkNegotiation.js";
 import { segmentDirectFspTransportRecord, } from "../fsp/directTransport.js";
 import { FspSession } from "../fsp/session.js";
-import { decodeFspEstablished, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_KEEPALIVE, FSP_PHASE_ESTABLISHED, peekFspPhase, } from "../fsp/wire.js";
+import { decodeFspEstablished, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_PHASE_ESTABLISHED, peekFspPhase, } from "../fsp/wire.js";
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
 const FSP_REKEY_DRAIN_MS = 45_000;
 const FSP_DEFAULT_PATH_MTU = 1_200;
@@ -17,6 +18,9 @@ export class FspSessionManager {
         this.localEpoch = new Uint8Array(cfg.localEpoch);
     }
     registerService(port, handler) {
+        if (port === 256 || port === LINK_NEGOTIATION_SERVICE_PORT) {
+            throw new Error(`FSP service port ${port} is reserved`);
+        }
         this.services.set(port, handler);
         return () => {
             if (this.services.get(port) === handler)
@@ -66,15 +70,13 @@ export class FspSessionManager {
         else
             await this.cfg.routing.sendFspToward(session.remoteNodeAddr, fspFrame);
     }
-    async sendSessionMessage(remotePubkeyHex, msgType, payload) {
-        const session = await this.ensureSession(remotePubkeyHex);
-        const directPeer = this.directPeerForSession(session);
-        const epochFlag = session.currentKBit ? FSP_FLAG_K : 0;
-        const fspFrame = session.fsp.encryptMessage(msgType, payload, epochFlag | (directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0));
-        if (directPeer)
-            await this.sendDirectFsp(directPeer, fspFrame);
-        else
-            await this.cfg.routing.sendFspToward(session.remoteNodeAddr, fspFrame);
+    async sendLinkNegotiation(remotePubkeyHex, message) {
+        await this.sendDatagram({
+            dst: remotePubkeyHex,
+            srcPort: LINK_NEGOTIATION_SERVICE_PORT,
+            dstPort: LINK_NEGOTIATION_SERVICE_PORT,
+            payload: encodeLinkNegotiationMessage(message),
+        });
     }
     async handleFromPeer(peer, srcNodeAddr, fspFrame) {
         const phase = peekFspPhase(fspFrame);
@@ -149,9 +151,6 @@ export class FspSessionManager {
             });
             return;
         }
-        if (result.msgType !== FSP_MSG_KEEPALIVE && result.payload) {
-            this.cfg.emitSessionMessage(srcHex, result.msgType, result.payload);
-        }
     }
     promotePendingSession(session, receiveFsp, receivedKBit, srcNodeHex) {
         session.previousFsp?.fsp.close();
@@ -170,6 +169,10 @@ export class FspSessionManager {
         this.cfg.logger.debug("promoted authenticated FSP rekey epoch", srcNodeHex, receivedKBit);
     }
     async deliverDatagram(srcHex, datagram) {
+        if (datagram.dstPort === LINK_NEGOTIATION_SERVICE_PORT) {
+            await this.cfg.handleLinkNegotiation(srcHex, decodeLinkNegotiationMessage(datagram.payload));
+            return;
+        }
         const handler = this.services.get(datagram.dstPort);
         const reply = async (data, replyPort) => {
             await this.sendDatagram({

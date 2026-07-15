@@ -41,7 +41,7 @@ export {
   validateWebRtcSignal,
   SignalValidationError,
   type WebRtcSignal,
-  type WebRtcSignalKind,
+  type WebRtcSignalPayload,
   type WebRtcSignalValidationContext,
   type IceCandidateJson,
 } from "./WebRtcSignal.js";

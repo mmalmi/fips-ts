@@ -1,123 +1,92 @@
+import type { LinkNegotiationMessage } from "@fips/core";
+
 export interface IceCandidateJson {
   candidate: string;
   sdpMid?: string | null;
   sdpMLineIndex?: number | null;
 }
 
-export type WebRtcSignalKind = "offer" | "answer" | "candidate" | "reject";
-
-export interface WebRtcSignal {
-  protocol: "fips-webrtc-v1";
-  version: 1;
-  sessionId: string;
-  kind: WebRtcSignalKind;
-  sender: string;     // 33-byte hex pubkey
-  recipient: string;  // 33-byte hex pubkey
+export interface WebRtcSignalPayload {
   sdp?: string;
   candidates?: IceCandidateJson[];
-  createdAtMs: number;
-  expiresAtMs: number;
 }
 
+export type WebRtcSignal = LinkNegotiationMessage<WebRtcSignalPayload> & {
+  linkType: "webrtc";
+};
+
 export interface WebRtcSignalValidationContext {
-  localPubkeyHex: string;
-  outerSenderPubkeyHex: string;
-  knownSessionIds: Set<string>;
-  seenSessionIds: Set<string>;
+  knownNegotiationIds: Set<string>;
+  seenNegotiationIds: Set<string>;
   nowMs: number;
 }
 
 export class SignalValidationError extends Error {}
 
-export function decodeWebRtcSignalPayload(payload: Uint8Array): WebRtcSignal {
-  try {
-    return JSON.parse(new TextDecoder().decode(payload)) as WebRtcSignal;
-  } catch {
-    throw new SignalValidationError("invalid WebRTC FSP signal JSON");
-  }
-}
+const MAX_SDP_LENGTH = 48 * 1_024;
+const MAX_CANDIDATES = 32;
+const MAX_CANDIDATE_LENGTH = 2_048;
 
 export function validateWebRtcSignal(
-  s: unknown,
+  message: LinkNegotiationMessage,
   ctx: WebRtcSignalValidationContext,
 ): WebRtcSignal {
-  if (typeof s !== "object" || s === null) {
-    throw new SignalValidationError("signal must be a JSON object");
+  if (message.linkType !== "webrtc") {
+    throw new SignalValidationError(`bad link type ${message.linkType}`);
   }
-  const obj = s as Partial<WebRtcSignal>;
-  validateEnvelope(obj, ctx);
-  validateSignalBody(obj);
-  validateSignalSession(obj, ctx);
-  return obj as WebRtcSignal;
-}
-
-function validateEnvelope(
-  obj: Partial<WebRtcSignal>,
-  ctx: WebRtcSignalValidationContext,
-): void {
-  if (obj.protocol !== "fips-webrtc-v1") {
-    throw new SignalValidationError(`bad protocol ${String(obj.protocol)}`);
-  }
-  if (obj.version !== 1) {
-    throw new SignalValidationError(`bad version ${String(obj.version)}`);
-  }
-  if (typeof obj.sessionId !== "string" || obj.sessionId.length === 0) {
-    throw new SignalValidationError("missing sessionId");
-  }
-  if (typeof obj.sender !== "string" || obj.sender.length !== 66) {
-    throw new SignalValidationError("bad sender pubkey");
-  }
-  if (typeof obj.recipient !== "string" || obj.recipient.length !== 66) {
-    throw new SignalValidationError("bad recipient pubkey");
-  }
-  if (obj.recipient !== ctx.localPubkeyHex) {
-    throw new SignalValidationError("recipient is not us");
-  }
-  if (obj.sender !== ctx.outerSenderPubkeyHex) {
-    throw new SignalValidationError("inner sender ≠ outer event author");
-  }
-  const now = ctx.nowMs;
-  if (typeof obj.expiresAtMs !== "number" || obj.expiresAtMs < now) {
+  if (message.expiresAtMs < ctx.nowMs) {
     throw new SignalValidationError("signal expired");
   }
-  if (typeof obj.createdAtMs !== "number" || obj.createdAtMs > now + 60_000) {
+  if (message.createdAtMs > ctx.nowMs + 60_000) {
     throw new SignalValidationError("signal createdAtMs in future");
   }
+  if (typeof message.payload !== "object" || message.payload === null) {
+    throw new SignalValidationError("WebRTC negotiation payload must be an object");
+  }
+  const signal = message as WebRtcSignal;
+  validateSignalBody(signal);
+  validateSignalSession(signal, ctx);
+  return signal;
 }
 
-function validateSignalBody(obj: Partial<WebRtcSignal>): void {
-  if (obj.kind === "offer" || obj.kind === "answer") {
-    if (typeof obj.sdp !== "string" || obj.sdp.length === 0) {
+function validateSignalBody(signal: WebRtcSignal): void {
+  if (signal.kind === "offer" || signal.kind === "answer") {
+    if (typeof signal.payload.sdp !== "string" || signal.payload.sdp.length === 0) {
       throw new SignalValidationError("offer/answer requires sdp");
     }
-  } else if (obj.kind === "candidate") {
-    if (!Array.isArray(obj.candidates) || obj.candidates.length === 0) {
+    if (signal.payload.sdp.length > MAX_SDP_LENGTH) {
+      throw new SignalValidationError("offer/answer SDP is too large");
+    }
+  } else if (signal.kind === "candidate") {
+    if (!Array.isArray(signal.payload.candidates) || signal.payload.candidates.length === 0) {
       throw new SignalValidationError("candidate signal requires candidates[]");
     }
-  } else if (obj.kind === "reject") {
-    /* no extra body required */
-  } else {
-    throw new SignalValidationError(`bad kind ${String(obj.kind)}`);
+    if (
+      signal.payload.candidates.length > MAX_CANDIDATES
+      || signal.payload.candidates.some(
+        (candidate) => candidate.candidate.length > MAX_CANDIDATE_LENGTH,
+      )
+    ) {
+      throw new SignalValidationError("candidate signal exceeds limits");
+    }
   }
 }
 
 function validateSignalSession(
-  obj: Partial<WebRtcSignal>,
+  signal: WebRtcSignal,
   ctx: WebRtcSignalValidationContext,
 ): void {
-  if (typeof obj.sessionId !== "string") {
-    throw new SignalValidationError("missing sessionId");
-  }
   if (
-    obj.kind === "answer" ||
-    obj.kind === "candidate" ||
-    obj.kind === "reject"
+    signal.kind === "answer"
+    || signal.kind === "candidate"
+    || signal.kind === "reject"
   ) {
-    if (!ctx.knownSessionIds.has(obj.sessionId)) {
-      throw new SignalValidationError("unknown sessionId for answer/candidate");
+    if (!ctx.knownNegotiationIds.has(signal.negotiationId)) {
+      throw new SignalValidationError("unknown negotiationId for answer/candidate");
     }
   }
-  if (ctx.seenSessionIds.has(`${obj.sessionId}:${obj.kind}`)) {
+  const replayKey = `${signal.negotiationId}:${signal.kind}`;
+  if (ctx.seenNegotiationIds.has(replayKey)) {
     throw new SignalValidationError("duplicate signal in replay window");
   }
 }

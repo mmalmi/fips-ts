@@ -8,6 +8,8 @@ export interface WebRtcTransportConfig {
   stunServers?: string[];
   advertiseOnNostr?: boolean;
   acceptConnections?: boolean;
+  /** Optional application/WoT admission check for unsolicited inbound offers. */
+  allowIncomingPeer?: (remotePubkeyHex: string) => boolean | Promise<boolean>;
   autoConnect?: boolean;
   discoveryApp?: string;
   advertTtlMs?: number;

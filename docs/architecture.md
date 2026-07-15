@@ -17,7 +17,7 @@
 ├─────────────────────────────────────────────────────────────────┤
 │ Discovery / Negotiation                                         │
 │   • Public Nostr peer advert kind 37195                         │
-│   • WebRTC offer/answer inside authenticated FSP message 0x18   │
+│   • Link negotiation via FSP DataPacket service port 257        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -27,7 +27,8 @@
 - **FMP** is responsible for link encryption (IK), framing, replay protection, link-state, mesh forwarding.
 - **FSP** is end-to-end encrypted (XK), independent of the path the FMP frames take.
 - **EndpointData** carries app-owned opaque bytes without service ports.
-- **Service ports** are u16 LE when an app wants local port dispatch; ports 1024–65535 are application; port 256 is reserved (IPv6 shim, not implemented in browser).
+- **Service ports** are u16 LE when an app wants local port dispatch; ports 1024–65535 are application. Port 256 is the IPv6 shim and port 257 is generic link negotiation.
+- **Link negotiation** is a service above unchanged FSP framing. Core dispatches an authenticated envelope only to an enabled adapter whose `linkType` matches.
 - Application protocols stay above FIPS. Hashtree integration lives in Hashtree as `@hashtree/fips-transport`, which sends `@hashtree/mesh` frames as EndpointData bytes.
 
 ## Forwarding

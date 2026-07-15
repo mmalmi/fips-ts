@@ -160,6 +160,15 @@ export {
 export { FmpLink } from "./fmp/link.js";
 
 export {
+  LINK_NEGOTIATION_SERVICE_PORT,
+  LINK_NEGOTIATION_VERSION,
+  decodeLinkNegotiationMessage,
+  encodeLinkNegotiationMessage,
+  type LinkNegotiationKind,
+  type LinkNegotiationMessage,
+} from "./linkNegotiation.js";
+
+export {
   FSP_ESTABLISHED_HEADER_LEN,
   FSP_FLAG_CP,
   FSP_FLAG_DIRECT_TRANSPORT,
@@ -169,7 +178,6 @@ export {
   FSP_MSG_DATA,
   FSP_MSG_ENDPOINT_DATA,
   FSP_MSG_KEEPALIVE,
-  FSP_MSG_WEBRTC_SIGNAL,
   FSP_PHASE_ESTABLISHED,
   FSP_PHASE_MSG1,
   FSP_PHASE_MSG2,

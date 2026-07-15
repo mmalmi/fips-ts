@@ -1,5 +1,4 @@
 import {
-  FSP_MSG_WEBRTC_SIGNAL,
   encodeNpub,
   fromHex,
   deriveNodeAddr,
@@ -7,6 +6,7 @@ import {
   toHex,
   type DiscoveredPeer,
   type Logger,
+  type LinkNegotiationMessage,
   type NodeAddr,
   type Transport,
   type TransportAddress,
@@ -29,11 +29,12 @@ import {
   AsyncEventStream,
   cloneDiscoveredPeer,
   emptyAsyncIterable,
+  hasPendingInboundForPeer,
+  incomingOfferReplacesPendingDial,
   randomId,
   waitForIceGatheringComplete,
 } from "./WebRtcTransportSupport.js";
 import {
-  decodeWebRtcSignalPayload,
   validateWebRtcSignal,
   type WebRtcSignal,
 } from "./WebRtcSignal.js";
@@ -67,13 +68,6 @@ const PREFERRED_AUTO_CONNECT_FAILURE_COOLDOWN_MS = 1_000;
 const AUTO_CONNECT_FAILURE_COOLDOWN_MS = 30_000;
 const AUTO_CONNECT_SETTLE_MS = 750;
 
-export function incomingOfferReplacesPendingDial(
-  localPubkeyHex: string,
-  remotePubkeyHex: string,
-): boolean {
-  return localPubkeyHex > remotePubkeyHex;
-}
-
 export class WebRtcTransport implements Transport {
   readonly type = "webrtc";
   readonly mtu: number;
@@ -104,7 +98,10 @@ export class WebRtcTransport implements Transport {
   private readonly conns = new Map<string, WebRtcConnection>(); // by pubkeyHex
   private readonly supersededConnections = new WeakSet<WebRtcConnection>();
   private readonly pendingDials = new Map<string, PendingDial>(); // by sessionId
-  private readonly pendingInbound = new Map<string, ReturnType<typeof setTimeout>>(); // by sessionId
+  private readonly pendingInbound = new Map<string, {
+    timer: ReturnType<typeof setTimeout>;
+    remotePubkeyHex: string;
+  }>(); // by negotiation id
   private readonly pendingConnects = new Map<string, Promise<void>>(); // by pubkeyHex
   private readonly autoConnectPeers = new Set<string>(); // by pubkeyHex
   private readonly pendingAutoConnects = new Set<string>(); // by pubkeyHex
@@ -128,7 +125,7 @@ export class WebRtcTransport implements Transport {
     const maxConnections = config.maxConnections ?? 32;
     this.cfg = {
       advertiseOnNostr: false,
-      acceptConnections: true,
+      acceptConnections: config.acceptConnections ?? config.advertiseOnNostr ?? false,
       autoConnect: false,
       mtu: 1200,
       maxConnections,
@@ -257,7 +254,7 @@ export class WebRtcTransport implements Transport {
       dial.reject(new Error("transport stopped"));
     }
     this.pendingDials.clear();
-    for (const timer of this.pendingInbound.values()) clearTimeout(timer);
+    for (const pending of this.pendingInbound.values()) clearTimeout(pending.timer);
     this.pendingInbound.clear();
     this.pendingConnects.clear();
     this.knownSessionIds.clear();
@@ -432,7 +429,7 @@ export class WebRtcTransport implements Transport {
       return;
     }
     if (isAutoConnect) this.pendingAutoConnects.add(remotePubkeyHex);
-    if (!this.ctx?.connectTransport || !this.ctx.sendSessionMessage) {
+    if (!this.ctx?.connectTransport || !this.ctx.sendLinkNegotiation) {
       throw new Error("WebRTC negotiation requires a FIPS transport context");
     }
     await this.ctx.connectTransport({ transport: "nostr_relay", addr: remotePubkeyHex });
@@ -537,17 +534,14 @@ export class WebRtcTransport implements Transport {
     dial.phase = "gathering-ice";
     await dial.pc.setLocalDescription(offer);
     await waitForIceGatheringComplete(dial.pc, this.cfg.iceGatherTimeoutMs);
-    const localPubkeyHex = toHex(this.ctx!.localIdentity.publicKey);
     const signal: WebRtcSignal = {
-      protocol: "fips-webrtc-v1",
       version: 1,
-      sessionId: dial.sessionId,
+      negotiationId: dial.sessionId,
+      linkType: "webrtc",
       kind: "offer",
-      sender: localPubkeyHex,
-      recipient: dial.remotePubkeyHex,
-      sdp: dial.pc.localDescription!.sdp,
       createdAtMs: Date.now(),
       expiresAtMs: Date.now() + 60_000,
+      payload: { sdp: dial.pc.localDescription!.sdp },
     };
     dial.phase = "sending-offer";
     await this.sendWebRtcSignal(dial.remotePubkeyHex, signal);
@@ -596,35 +590,33 @@ export class WebRtcTransport implements Transport {
     remotePubkeyHex: string,
   ): Promise<void> {
     if (!this.ctx) return;
-    this.logger.debug("webrtc signal received", signal.kind, signal.sessionId, signal.sender);
+    this.logger.debug("webrtc signal received", signal.kind, signal.negotiationId, remotePubkeyHex);
     const localPubkeyHex = toHex(this.ctx.localIdentity.publicKey);
     const valid = validateWebRtcSignal(signal, {
-      localPubkeyHex,
-      outerSenderPubkeyHex: remotePubkeyHex,
-      knownSessionIds: this.knownSessionIds,
-      seenSessionIds: this.seenSessionIds,
+      knownNegotiationIds: this.knownSessionIds,
+      seenNegotiationIds: this.seenSessionIds,
       nowMs: Date.now(),
     });
-    this.seenSessionIds.add(`${valid.sessionId}:${valid.kind}`);
+    this.seenSessionIds.add(`${valid.negotiationId}:${valid.kind}`);
 
     if (valid.kind === "offer") {
-      await this.handleIncomingOffer(valid, localPubkeyHex);
+      await this.handleIncomingOffer(valid, remotePubkeyHex, localPubkeyHex);
       return;
     }
     if (valid.kind === "answer") {
-      const dial = this.pendingDials.get(valid.sessionId);
+      const dial = this.pendingDials.get(valid.negotiationId);
       if (!dial) return;
       dial.phase = "applying-answer";
-      await dial.pc.setRemoteDescription({ type: "answer", sdp: valid.sdp! });
+      await dial.pc.setRemoteDescription({ type: "answer", sdp: valid.payload.sdp! });
       dial.phase = "opening-data-channel";
-      this.logger.debug("webrtc answer applied", valid.sender, valid.sessionId);
+      this.logger.debug("webrtc answer applied", remotePubkeyHex, valid.negotiationId);
       return;
     }
     if (valid.kind === "reject") {
-      const dial = this.pendingDials.get(valid.sessionId);
+      const dial = this.pendingDials.get(valid.negotiationId);
       if (dial) {
         clearTimeout(dial.timer);
-        this.pendingDials.delete(valid.sessionId);
+        this.pendingDials.delete(valid.negotiationId);
         dial.reject(new Error("peer rejected"));
       }
       return;
@@ -634,14 +626,31 @@ export class WebRtcTransport implements Transport {
 
   private async handleIncomingOffer(
     offer: WebRtcSignal,
+    remotePubkeyHex: string,
     localPubkeyHex: string,
   ): Promise<void> {
-    if (!this.cfg.acceptConnections || this.pendingInbound.has(offer.sessionId)) return;
+    if (this.pendingInbound.has(offer.negotiationId)) return;
     const competingDial = [...this.pendingDials.values()]
-      .find((dial) => dial.remotePubkeyHex === offer.sender);
+      .find((dial) => dial.remotePubkeyHex === remotePubkeyHex);
+    if (!this.cfg.acceptConnections && !competingDial) {
+      await this.rejectIncomingOffer(offer, remotePubkeyHex);
+      return;
+    }
+    if (
+      !competingDial
+      && this.cfg.allowIncomingPeer
+      && !await this.cfg.allowIncomingPeer(remotePubkeyHex)
+    ) {
+      await this.rejectIncomingOffer(offer, remotePubkeyHex);
+      return;
+    }
+    if (hasPendingInboundForPeer(this.pendingInbound.values(), remotePubkeyHex)) {
+      await this.rejectIncomingOffer(offer, remotePubkeyHex);
+      return;
+    }
     if (competingDial) {
-      if (!incomingOfferReplacesPendingDial(localPubkeyHex, offer.sender)) {
-        await this.rejectIncomingOffer(offer, localPubkeyHex);
+      if (!incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex)) {
+        await this.rejectIncomingOffer(offer, remotePubkeyHex);
         return;
       }
       clearTimeout(competingDial.timer);
@@ -649,13 +658,13 @@ export class WebRtcTransport implements Transport {
       competingDial.pc.close();
       competingDial.reject(new Error("incoming WebRTC offer won simultaneous dial"));
     } else if (
-      this.retireExistingConnection(offer.sender)
-      && !incomingOfferReplacesPendingDial(localPubkeyHex, offer.sender)
+      this.retireExistingConnection(remotePubkeyHex)
+      && !incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex)
     ) {
-      await this.rejectIncomingOffer(offer, localPubkeyHex);
+      await this.rejectIncomingOffer(offer, remotePubkeyHex);
       this.discoveryStream?.push({
-        remoteAddr: { transport: "webrtc", addr: offer.sender },
-        publicKey: fromHex(offer.sender),
+        remoteAddr: { transport: "webrtc", addr: remotePubkeyHex },
+        publicKey: fromHex(remotePubkeyHex),
         meta: { source: "webrtc-replacement" },
       });
       return;
@@ -664,53 +673,53 @@ export class WebRtcTransport implements Transport {
       this.conns.size + this.pendingDials.size + this.pendingInbound.size
       >= this.cfg.maxConnections
     ) {
-      this.logger.warn("inbound WebRTC offer rejected at connection limit", offer.sender);
+      this.logger.warn("inbound WebRTC offer rejected at connection limit", remotePubkeyHex);
+      await this.rejectIncomingOffer(offer, remotePubkeyHex);
       return;
     }
-    const remoteAddr: TransportAddress = { transport: "webrtc", addr: offer.sender };
+    const remoteAddr: TransportAddress = { transport: "webrtc", addr: remotePubkeyHex };
     const pc = new this.RTCPC({
       iceServers: (this.cfg.stunServers ?? []).map((u) => ({ urls: u })),
     });
-    this.pendingInbound.set(offer.sessionId, setTimeout(() => {
-      this.pendingInbound.delete(offer.sessionId);
+    const timer = setTimeout(() => {
+      this.pendingInbound.delete(offer.negotiationId);
       pc.close();
-    }, this.cfg.connectTimeoutMs));
+    }, this.cfg.connectTimeoutMs);
+    this.pendingInbound.set(offer.negotiationId, { timer, remotePubkeyHex });
     const dcPromise = new Promise<RTCDataChannel>((resolve) => {
       pc.ondatachannel = (evt) => resolve(evt.channel);
     });
     try {
-      await pc.setRemoteDescription({ type: "offer", sdp: offer.sdp! });
+      await pc.setRemoteDescription({ type: "offer", sdp: offer.payload.sdp! });
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await waitForIceGatheringComplete(pc, this.cfg.iceGatherTimeoutMs);
-      this.knownSessionIds.add(offer.sessionId);
-      await this.sendWebRtcSignal(offer.sender, {
-        protocol: "fips-webrtc-v1",
+      this.knownSessionIds.add(offer.negotiationId);
+      await this.sendWebRtcSignal(remotePubkeyHex, {
         version: 1,
-        sessionId: offer.sessionId,
+        negotiationId: offer.negotiationId,
+        linkType: "webrtc",
         kind: "answer",
-        sender: localPubkeyHex,
-        recipient: offer.sender,
-        sdp: pc.localDescription!.sdp,
         createdAtMs: Date.now(),
         expiresAtMs: Date.now() + 60_000,
+        payload: { sdp: pc.localDescription!.sdp },
       });
-      this.logger.debug("webrtc answer sent", offer.sender, offer.sessionId);
+      this.logger.debug("webrtc answer sent", remotePubkeyHex, offer.negotiationId);
     } catch (err) {
-      this.clearPendingInbound(offer.sessionId);
+      this.clearPendingInbound(offer.negotiationId);
       pc.close();
       throw err;
     }
     dcPromise.then((dataChannel) => {
-      this.clearPendingInbound(offer.sessionId);
+      this.clearPendingInbound(offer.negotiationId);
       let conn: WebRtcConnection | null = null;
       conn = new WebRtcConnection({
-        remotePubkeyHex: offer.sender,
+        remotePubkeyHex,
         remoteAddr,
         pc,
         dataChannel,
         onPacket: (data) => {
-          this.peersWithTraffic.add(offer.sender);
+          this.peersWithTraffic.add(remotePubkeyHex);
           this.ctx?.onPacket({
             transportType: "webrtc",
             remoteAddr,
@@ -721,16 +730,16 @@ export class WebRtcTransport implements Transport {
         onState: (state) => {
           if (conn && this.supersededConnections.has(conn)) return;
           this.ctx?.onConnectionState?.({ remoteAddr, state });
-          if (state === "connected" && conn) this.conns.set(offer.sender, conn);
+          if (state === "connected" && conn) this.conns.set(remotePubkeyHex, conn);
           if (state === "failed" || state === "disconnected") {
-            this.conns.delete(offer.sender);
-            this.scheduleAutoReconnect(offer.sender);
+            this.conns.delete(remotePubkeyHex);
+            this.scheduleAutoReconnect(remotePubkeyHex);
           }
         },
         logger: this.logger,
       });
     }).catch((err) => {
-      this.clearPendingInbound(offer.sessionId);
+      this.clearPendingInbound(offer.negotiationId);
       this.logger.warn("dcPromise", err);
     });
   }
@@ -786,48 +795,41 @@ export class WebRtcTransport implements Transport {
   }
 
   private clearPendingInbound(sessionId: string): void {
-    const timer = this.pendingInbound.get(sessionId);
-    if (timer) clearTimeout(timer);
+    const pending = this.pendingInbound.get(sessionId);
+    if (pending) clearTimeout(pending.timer);
     this.pendingInbound.delete(sessionId);
   }
 
   private async rejectIncomingOffer(
     offer: WebRtcSignal,
-    localPubkeyHex: string,
+    remotePubkeyHex: string,
   ): Promise<void> {
-    await this.sendWebRtcSignal(offer.sender, {
-      protocol: "fips-webrtc-v1",
+    await this.sendWebRtcSignal(remotePubkeyHex, {
       version: 1,
-      sessionId: offer.sessionId,
+      negotiationId: offer.negotiationId,
+      linkType: "webrtc",
       kind: "reject",
-      sender: localPubkeyHex,
-      recipient: offer.sender,
       createdAtMs: Date.now(),
       expiresAtMs: Date.now() + 60_000,
+      payload: {},
     });
   }
 
-  async handleSessionMessage(
+  async handleLinkNegotiation(
     remotePubkeyHex: string,
-    msgType: number,
-    payload: Uint8Array,
+    message: LinkNegotiationMessage,
   ): Promise<void> {
-    if (msgType !== FSP_MSG_WEBRTC_SIGNAL) return;
-    await this.handleIncomingSignal(decodeWebRtcSignalPayload(payload), remotePubkeyHex);
+    await this.handleIncomingSignal(message as WebRtcSignal, remotePubkeyHex);
   }
 
   private async sendWebRtcSignal(
     remotePubkeyHex: string,
     signal: WebRtcSignal,
   ): Promise<void> {
-    if (!this.ctx?.sendSessionMessage) {
-      throw new Error("WebRTC negotiation requires authenticated FSP messaging");
+    if (!this.ctx?.sendLinkNegotiation) {
+      throw new Error("WebRTC negotiation requires the FIPS link-negotiation service");
     }
-    await this.ctx.sendSessionMessage(
-      remotePubkeyHex,
-      FSP_MSG_WEBRTC_SIGNAL,
-      new TextEncoder().encode(JSON.stringify(signal)),
-    );
+    await this.ctx.sendLinkNegotiation(remotePubkeyHex, signal);
   }
 
   private speculativeAutoConnects(): number {
@@ -841,7 +843,5 @@ export class WebRtcTransport implements Transport {
       + this.autoConnectPeers.size;
   }
 
-  private maxSpeculativeAutoConnects(): number {
-    return Math.max(1, Math.floor(this.cfg.maxConnections / 2));
-  }
+  private maxSpeculativeAutoConnects(): number { return Math.max(1, Math.floor(this.cfg.maxConnections / 2)); }
 }

@@ -14,6 +14,20 @@ export function randomId(): string {
   return toHex(bytes);
 }
 
+export function incomingOfferReplacesPendingDial(
+  localPubkeyHex: string,
+  remotePubkeyHex: string,
+): boolean {
+  return localPubkeyHex > remotePubkeyHex;
+}
+
+export function hasPendingInboundForPeer(
+  pending: Iterable<{ remotePubkeyHex: string }>,
+  remotePubkeyHex: string,
+): boolean {
+  return [...pending].some((item) => item.remotePubkeyHex === remotePubkeyHex);
+}
+
 export function waitForIceGatheringComplete(
   pc: RTCPeerConnection,
   timeoutMs: number,

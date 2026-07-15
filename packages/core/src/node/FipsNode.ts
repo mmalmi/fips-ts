@@ -114,15 +114,15 @@ export class FipsNode {
       getPeerByNodeAddr: (nodeAddrHex) => this.peersByNodeAddr.get(nodeAddrHex),
       emitDatagram: (event) => this.emit("datagram", event),
       emitEndpointData: (event) => this.emit("endpointData", event),
-      emitSessionMessage: (remotePubkeyHex, msgType, payload) => {
-        for (const transport of this.transports) {
-          if (!transport.handleSessionMessage) continue;
-          void Promise.resolve(
-            transport.handleSessionMessage(remotePubkeyHex, msgType, payload),
-          ).catch((err) => {
-            this.emit("error", { err: err as Error, where: "transport session message" });
-          });
+      handleLinkNegotiation: async (remotePubkeyHex, message) => {
+        const transport = this.transports.find(
+          (candidate) => candidate.type === message.linkType && candidate.handleLinkNegotiation,
+        );
+        if (!transport?.handleLinkNegotiation) {
+          this.logger.debug("ignored link negotiation for disabled adapter", message.linkType);
+          return;
         }
+        await transport.handleLinkNegotiation(remotePubkeyHex, message);
       },
       emitSession: (event) => this.emit("session", event),
     });
@@ -154,8 +154,8 @@ export class FipsNode {
           onPacket: (packet) => this.packetProcessor.process(t, packet),
           onConnectionState: (e) => this.onTransportConn(t, e),
           connectTransport: (addr) => this.connect(addr),
-          sendSessionMessage: (remotePubkeyHex, msgType, payload) =>
-            this.sessionManager.sendSessionMessage(remotePubkeyHex, msgType, payload),
+          sendLinkNegotiation: (remotePubkeyHex, message) =>
+            this.sessionManager.sendLinkNegotiation(remotePubkeyHex, message),
           logger: this.logger,
         });
         startedTransports.push(t);

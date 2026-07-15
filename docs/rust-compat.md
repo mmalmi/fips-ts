@@ -116,7 +116,7 @@ byte-for-byte modulo the epoch field.
 - Advert kind: 37195 (parameterized replaceable)
 - Relay datagram kind: 21060 (targeted ephemeral, one `p` tag)
 - Relay event content: unpadded base64url of an already encrypted FIPS wire datagram
-- WebRTC negotiation: FSP message type `0x18` over the established relay path
+- Link negotiation: ordinary FSP DataPacket (`0x10`) on service port 257
 - Advert tags: `d=<app-scope>`, `protocol=<app-scope>`, `version=1`
 
 Advert content (JSON):
