@@ -1,12 +1,17 @@
 # Changelog
 
-## Unreleased
+## Runtime packages - 2026-07-16
 
 - Carry generic link negotiation through the existing FSP DataPacket service
   on port 257. Remove the accidental WebRTC-specific FSP message type `0x18`.
 - Dispatch negotiations only to enabled matching adapters. WebRTC rejects
   unsolicited offers unless inbound acceptance is enabled, which defaults to
   public WebRTC advertisement; correlated simultaneous dials remain eligible.
+- Release `@fips/core` 0.0.24 and `@fips/transport-webrtc` 0.0.40. Release
+  `@fips/browser` 0.0.6, `@fips/transport-ethernet` 0.0.23, and
+  `@fips/transport-memory` 0.0.4 against that core tuple.
+- Verify the unchanged browser process suite against native FIPS 0.4.1,
+  including disconnect, replacement-page, and WebRTC reconnect coverage.
 
 ## @fips/transport-webrtc 0.0.39 - 2026-07-14
 
