@@ -12,6 +12,8 @@
   `@fips/transport-memory` 0.0.4 against that core tuple.
 - Verify the unchanged browser process suite against native FIPS 0.4.1,
   including disconnect, replacement-page, and WebRTC reconnect coverage.
+- Pin cross-package runtime dependencies to this immutable release bundle while
+  retaining local workspace overrides for development.
 
 ## @fips/transport-webrtc 0.0.39 - 2026-07-14
 

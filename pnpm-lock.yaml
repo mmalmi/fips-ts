@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@fips/core': link:packages/core
+  '@fips/transport-webrtc': link:packages/transport-webrtc
+
 importers:
 
   .:
@@ -42,13 +46,13 @@ importers:
         specifier: workspace:*
         version: link:../../packages/browser
       '@fips/core':
-        specifier: workspace:*
+        specifier: link:../../packages/core
         version: link:../../packages/core
       '@fips/transport-memory':
         specifier: workspace:*
         version: link:../../packages/transport-memory
       '@fips/transport-webrtc':
-        specifier: workspace:*
+        specifier: link:../../packages/transport-webrtc
         version: link:../../packages/transport-webrtc
     devDependencies:
       typescript:
@@ -61,10 +65,10 @@ importers:
   packages/browser:
     dependencies:
       '@fips/core':
-        specifier: workspace:*
+        specifier: link:../core
         version: link:../core
       '@fips/transport-webrtc':
-        specifier: workspace:*
+        specifier: link:../transport-webrtc
         version: link:../transport-webrtc
     devDependencies:
       typescript:
@@ -96,7 +100,7 @@ importers:
   packages/transport-ethernet:
     dependencies:
       '@fips/core':
-        specifier: workspace:*
+        specifier: link:../core
         version: link:../core
     devDependencies:
       typescript:
@@ -109,7 +113,7 @@ importers:
   packages/transport-memory:
     dependencies:
       '@fips/core':
-        specifier: workspace:*
+        specifier: link:../core
         version: link:../core
     devDependencies:
       typescript:
@@ -122,7 +126,7 @@ importers:
   packages/transport-webrtc:
     dependencies:
       '@fips/core':
-        specifier: workspace:*
+        specifier: link:../core
         version: link:../core
       '@noble/ciphers':
         specifier: ^1.1.3
