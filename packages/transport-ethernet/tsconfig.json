@@ -4,7 +4,7 @@
     "composite": true,
     "outDir": "dist",
     "rootDir": "src",
-    "tsBuildInfoFile": "dist/.tsbuildinfo"
+    "tsBuildInfoFile": "../../node_modules/.cache/fips-transport-ethernet.tsbuildinfo"
   },
   "include": ["src"],
   "references": [{ "path": "../core" }]
