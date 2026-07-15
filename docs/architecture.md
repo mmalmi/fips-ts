@@ -1,42 +1,63 @@
 # Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ Application (hashtree, etc.)                                    │
+│ Application protocol                                            │
+│   Hashtree: hash-verified blob GET / response                   │
 ├─────────────────────────────────────────────────────────────────┤
-│ FIPS endpoint bytes / optional service-port datagrams           │
+│ Reliable application stream                                     │
+│   TCP/FIPS on service port 39018                                │
 ├─────────────────────────────────────────────────────────────────┤
 │ FSP — end-to-end encrypted session (Noise XK over secp256k1)    │
+│   authenticated service datagrams and capability exchange       │
 ├─────────────────────────────────────────────────────────────────┤
 │ FMP — mesh/link layer (Noise IK over secp256k1, forwarding)     │
 ├─────────────────────────────────────────────────────────────────┤
-│ Transport  ── adjacent only ──                                  │
-│   • NostrRelayTransport (kind 21060, MTU 1280, low priority)     │
-│   • WebRtcTransport (RTCDataChannel, MTU 1200, unordered)       │
-│   • MemoryTransport (tests/demo)                                │
+│ Transport — adjacent peers only                                 │
+│   Nostr relay, WebRTC, memory, or virtual Ethernet              │
 ├─────────────────────────────────────────────────────────────────┤
-│ Discovery / Negotiation                                         │
-│   • Public Nostr peer advert kind 37195                         │
-│   • Link negotiation via FSP DataPacket service port 257        │
+│ Discovery / negotiation                                         │
+│   public Nostr peer adverts; link negotiation on FSP port 257   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Layering rules
 
-- **Transport** moves opaque bytes between adjacent peers (for example `nostr_relay:<remote-pubkey>`, `webrtc:<remote-pubkey>`, or `memory:<pubkey>`; never a session id).
-- **FMP** is responsible for link encryption (IK), framing, replay protection, link-state, mesh forwarding.
-- **FSP** is end-to-end encrypted (XK), independent of the path the FMP frames take.
-- **EndpointData** carries app-owned opaque bytes without service ports.
-- **Service ports** are u16 LE when an app wants local port dispatch; ports 1024–65535 are application. Port 256 is the IPv6 shim and port 257 is generic link negotiation.
-- **Link negotiation** is a service above unchanged FSP framing. Core dispatches an authenticated envelope only to an enabled adapter whose `linkType` matches.
-- Application protocols stay above FIPS. Hashtree integration lives in Hashtree as `@hashtree/fips-transport`, which sends `@hashtree/mesh` frames as EndpointData bytes.
+- A **transport** moves opaque bytes between adjacent peers. Its address names
+  the remote transport endpoint, never an application session.
+- **FMP** owns link encryption, framing, replay protection, link state, mesh
+  forwarding, and Noise IK proof of the adjacent peer's identity.
+- **FSP** is an end-to-end Noise XK session independent of the path its FMP
+  frames take. Service and capability traffic is accepted only in this
+  authenticated context.
+- **Service datagrams** use little-endian `u16` ports. Ports `1024`–`65535` are
+  available to applications; port `256` is the IPv6 shim and port `257` is
+  generic link negotiation.
+- **TCP/FIPS** adds ordered delivery, flow control, and segment retransmission
+  without teaching FIPS about application payloads.
+- **Capabilities** describe active authenticated services. A listener-backed
+  capability is advertised only while the listener owns its port and is
+  withdrawn with that listener.
+- `EndpointData` remains a generic portless application primitive, but the
+  canonical Hashtree transport does not use it.
+
+## Hashtree example
+
+The canonical Hashtree adapter binds TCP/FIPS service port `39018` and
+advertises `hashtree.blob/1`. Clients select an authenticated provider, open a
+TCP/FIPS stream, and verify returned bytes against the requested hash. FIPS
+does not carry Hashtree's former raw mesh framing and does not decide content
+availability, provider ranking, retries, or caching.
 
 ## Forwarding
 
-Browser default: `forwarding: false`. Tabs are not reliable transit. Enable for test topologies (A — B — C routing test).
+Browser forwarding defaults to disabled because tabs are not reliable transit
+nodes. Enable it deliberately for routed test topologies such as A—B—C.
 
-## What the browser cannot do
+## Browser boundary
 
-UDP, TCP listening sockets, Tor sockets, BLE L2CAP, TUN, raw packet capture.
-Browsers can still carry FIPS over configured Nostr WebSocket relays and
-promote the path to WebRTC when available. There is no browser IPv6 shim.
+Browsers cannot open UDP, native TCP-listening, Tor, BLE L2CAP, TUN, or raw
+packet-capture sockets. They can carry FIPS over configured Nostr WebSocket
+relays, promote paths to WebRTC, and run TCP/FIPS as a protocol above FIPS
+service datagrams. Native fixed-loopback discovery belongs to the native FIPS
+runtime; browser applications do not emulate it with a second registry.

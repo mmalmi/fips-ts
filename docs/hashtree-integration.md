@@ -1,37 +1,63 @@
 # Hashtree integration
 
-Hashtree content routing **stays in hashtree**. FIPS only carries opaque bytes between identities.
+Hashtree owns content addressing, storage, provider selection, retries, hash
+verification, and caching. FIPS supplies authenticated identities, discovery,
+routing, and service datagrams; TCP/FIPS supplies a reliable byte stream over
+those datagrams.
 
-The Hashtree-side integration now lives in the Hashtree repository as `@hashtree/fips-transport`. It sends existing `@hashtree/mesh` MessagePack-tagged `DataRequest` / `DataResponse` frames over FIPS EndpointData, exposed through a generic FIPS endpoint interface:
+The canonical adapters live in the Hashtree repository as
+`hashtree-fips-transport` for Rust and `@hashtree/fips-transport` for
+TypeScript. Both use the TCP/FIPS blob protocol on service port `39018`. They
+do not send the former `@hashtree/mesh` request/response frames through raw
+FIPS `EndpointData`.
 
-```ts
-send(peerId, bytes)
-onMessage(({ peerId, data }) => ...)
-```
+## Provider discovery
 
-For public Hashtree swarms, use the FIPS Nostr discovery app scope:
+A provider advertises the authenticated FSP capability:
 
 ```text
-hashtree-v1
+hashtree.blob/1
 ```
 
-Private or narrower swarms can use app scopes such as `hashtree-v1:<topic>`.
-The advert content still uses the FIPS advert identifier `fips-overlay-v1`; the
-Hashtree scope lives in the FIPS `d` and `protocol` tags. A generic FIPS daemon
-advert and a Hashtree endpoint advert are separate replaceable events.
+The capability is service state, not plaintext transport discovery metadata.
+It appears only after the provider owns its TCP/FIPS listener and is withdrawn
+when that listener closes. A client selects providers from the authenticated
+capability roster, opens an ordinary TCP/FIPS connection to port `39018`, and
+still verifies every returned blob against the requested SHA-256 hash.
 
-Those may be different identities. A host daemon can advertise generic FIPS
-reachability while a Hashtree endpoint identity behind that daemon advertises
-`hashtree-v1`; FIPS routing/gateway state is responsible for reaching the
-endpoint identity.
+Public browser providers use the shared FIPS discovery scope:
 
-## What FIPS does NOT do
+```text
+fips-overlay-v1
+```
 
-- decrement HTL or choose retry/hedge policy (that's hashtree's concern)
-- track which peers have which blob (no content routing)
-- chunk or merkleize data
-- run the @hashtree/core Store interface
+Private deployments may select another scope. Discovery only establishes a
+route to a FIPS identity; it does not prove that the peer offers Hashtree. The
+authenticated capability does that. Same-host native processes use FIPS's
+ordinary fixed-loopback discovery and authenticated link establishment, not a
+Hashtree-specific registry or wire protocol.
 
-## Silence
+## Blob service
 
-Hashtree's blob protocol does not require explicit misses. If a peer has no matching blob it can remain silent. The Hashtree transport treats silence as unknown/no response, not as proof of absence and not as a reason to retry the same peer forever.
+Each request uses one reliable TCP/FIPS stream. The client sends the protocol
+version, GET operation, and 32-byte hash. The provider returns an explicit
+found-or-missing header followed by the blob when found. Implementations bound
+blob size, retry only a wholly reset session, and verify the hash before
+returning or caching bytes.
+
+An explicit missing response means absence at that provider. Timeouts, resets,
+malformed responses, mixed missing/error results, and hash mismatches are
+availability or integrity errors, not proof that content does not exist.
+
+## Layering boundary
+
+FIPS does not:
+
+- choose content providers or retry/hedge policy;
+- track which peer stores which hash;
+- chunk or Merkle-encode blobs;
+- implement Hashtree's `Store` interface; or
+- turn transport silence into a content miss.
+
+Hashtree does not copy FIPS discovery, capability exchange, routing,
+retransmission, or underlay-specific logic.
