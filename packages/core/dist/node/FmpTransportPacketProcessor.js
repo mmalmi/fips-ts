@@ -191,9 +191,8 @@ export class FmpTransportPacketProcessor {
     rejectRetiredEpoch(peer, handshakeLink, remotePubkeyHex, candidateEpoch, changedEpoch, remoteAddr) {
         if (!changedEpoch || !candidateEpoch)
             return false;
-        if (!this.remoteEpochHistory.get(remotePubkeyHex)?.includes(toHex(candidateEpoch))) {
+        if (!this.isRetiredRemoteEpoch(remotePubkeyHex, candidateEpoch))
             return false;
-        }
         handshakeLink.close();
         if (peer.pendingResponderLink === handshakeLink)
             peer.pendingResponderLink = undefined;
@@ -218,9 +217,15 @@ export class FmpTransportPacketProcessor {
         peer.link.handleMsg2(packet);
         peer.pubkey = peer.link.remotePubkey;
         peer.pubkeyHex = toHex(peer.link.remotePubkey);
-        if (previousRemoteEpoch
-            && peer.link.remoteEpoch
-            && !bytesEqual(previousRemoteEpoch, peer.link.remoteEpoch)) {
+        const candidateEpoch = peer.link.remoteEpoch;
+        const changedEpoch = previousRemoteEpoch !== undefined
+            && candidateEpoch !== undefined
+            && !bytesEqual(previousRemoteEpoch, candidateEpoch);
+        if (changedEpoch && candidateEpoch) {
+            if (this.isRetiredRemoteEpoch(peer.pubkeyHex, candidateEpoch)) {
+                this.rejectRetiredMsg2Peer(peer, remoteAddr);
+                return;
+            }
             this.removeRestartedPeerPaths(peer.pubkeyHex, peer.link, transport, restartedHandshake);
             this.cfg.peers.set(transportAddressKey(peer.remoteAddr), peer);
             this.cfg.logger.info("FMP peer restart detected", peer.pubkeyHex);
@@ -371,6 +376,37 @@ export class FmpTransportPacketProcessor {
         if (history.length > FMP_REMOTE_EPOCH_HISTORY_LIMIT)
             history.shift();
         this.remoteEpochHistory.set(remotePubkeyHex, history);
+    }
+    isRetiredRemoteEpoch(remotePubkeyHex, epoch) {
+        return this.remoteEpochHistory.get(remotePubkeyHex)?.includes(toHex(epoch)) ?? false;
+    }
+    rejectRetiredMsg2Peer(peer, remoteAddr) {
+        peer.link.close();
+        for (const [key, candidate] of this.cfg.peers) {
+            if (candidate === peer)
+                this.cfg.peers.delete(key);
+        }
+        const alternate = [...this.cfg.peers.values()].find((candidate) => candidate !== peer
+            && candidate.pubkeyHex === peer.pubkeyHex
+            && candidate.link.state === "established");
+        if (alternate) {
+            this.rememberPeer(alternate);
+            this.cfg.routing.scheduleTreeAnnounce(alternate);
+        }
+        else {
+            if (this.cfg.peersByPubkey.get(peer.pubkeyHex) === peer) {
+                this.cfg.peersByPubkey.delete(peer.pubkeyHex);
+            }
+            if (peer.pubkey.length > 0) {
+                const nodeAddrHex = nodeAddrToHex(deriveNodeAddr(peer.pubkey));
+                if (this.cfg.peersByNodeAddr.get(nodeAddrHex) === peer) {
+                    this.cfg.peersByNodeAddr.delete(nodeAddrHex);
+                }
+            }
+        }
+        peer.outgoingHandshake?.reject(new Error("remote FIPS peer replied from a retired startup epoch"));
+        peer.outgoingHandshake = undefined;
+        this.cfg.logger.debug("ignored FMP Msg2 from a retired startup epoch", remoteAddr.transport, remoteAddr.addr);
     }
     findXOnlyTransportPeer(transport, remoteAddr) {
         if (!/^[0-9a-fA-F]{64}$/.test(remoteAddr.addr))

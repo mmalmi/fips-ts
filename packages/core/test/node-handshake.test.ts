@@ -239,7 +239,7 @@ describe("FipsNode FMP handshake", () => {
     }
   }, 10_000);
 
-  it("keeps a replacement link when the retired startup epoch is replayed", async () => {
+  it("keeps a replacement link when the retired startup epoch is replayed in either direction", async () => {
     const survivorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x11));
     const restartedIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x12));
     const survivorTransport = new FlakyMemoryTransport();
@@ -300,6 +300,49 @@ describe("FipsNode FMP handshake", () => {
         expect(errors).toEqual([]);
         expect(survivorPeer.pendingResponderLink).toBeUndefined();
         expect(survivorPeer.link.remoteEpoch).toEqual((replacement as any).startupEpoch);
+
+        const staleOutbound = new FmpLink({
+          identity: survivorIdentity,
+          remotePubkey: restartedIdentity.publicKey,
+          role: "initiator",
+          sessionIdx: 0x6363,
+          localEpoch: (survivor as any).startupEpoch,
+        });
+        const staleResponder = new FmpLink({
+          identity: restartedIdentity,
+          role: "responder",
+          sessionIdx: 0x6464,
+          localEpoch: originalEpoch,
+        });
+        const staleMsg1 = staleOutbound.buildMsg1(
+          (length) => new Uint8Array(length).fill(0x63),
+        );
+        const staleMsg2 = staleResponder.handleMsg1(
+          staleMsg1.packet,
+          (length) => new Uint8Array(length).fill(0x64),
+        );
+        const stalePeer = {
+          pubkey: restartedIdentity.publicKey,
+          pubkeyHex: toHex(restartedIdentity.publicKey),
+          remoteAddr: { transport: "memory", addr: "retired-epoch-alias" },
+          transport: survivorTransport,
+          link: staleOutbound,
+          outgoingHandshake: { resolve: () => {}, reject: () => {} },
+        };
+        (survivor as any).peers.set("retired-epoch-alias", stalePeer);
+        (survivor as any).rememberPeer(stalePeer);
+        (survivor as any).packetProcessor.process(survivorTransport, {
+          transportType: "memory",
+          remoteAddr: stalePeer.remoteAddr,
+          data: staleMsg2.reply!,
+          receivedAtMs: Date.now(),
+        });
+        await Promise.resolve();
+
+        expect(errors).toEqual([]);
+        expect(survivorPeer.link.remoteEpoch).toEqual((replacement as any).startupEpoch);
+        expect((survivor as any).peersByPubkey.get(stalePeer.pubkeyHex)).toBe(survivorPeer);
+        expect([...(survivor as any).peers.values()]).not.toContain(stalePeer);
       } finally {
         await replacement.stop();
       }

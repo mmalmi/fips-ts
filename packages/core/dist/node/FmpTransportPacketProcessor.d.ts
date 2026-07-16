@@ -38,6 +38,8 @@ export declare class FmpTransportPacketProcessor {
     private newResponderLink;
     private rememberPeer;
     private rememberRemoteEpoch;
+    private isRetiredRemoteEpoch;
+    private rejectRetiredMsg2Peer;
     private findXOnlyTransportPeer;
     private establishedRemoteEpoch;
     private removeRestartedPeerPaths;
