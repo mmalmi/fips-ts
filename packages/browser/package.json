@@ -1,6 +1,6 @@
 {
   "name": "@fips/browser",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,8 +16,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.24/fips-core-0.0.24.tgz",
-    "@fips/transport-webrtc": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.24/fips-transport-webrtc-0.0.40.tgz"
+    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.25/fips-core-0.0.25.tgz",
+    "@fips/transport-webrtc": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.25/fips-transport-webrtc-0.0.41.tgz"
   },
   "devDependencies": {
     "typescript": "^5.7.3"

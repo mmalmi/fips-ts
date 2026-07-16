@@ -17,6 +17,7 @@ interface FmpTransportPacketProcessorConfig {
     sessionManager: FspSessionManager;
     emitError: (error: Error, where: string) => void;
     emitPeer: (event: PeerEvent) => void;
+    handlePeerRestart: (remotePubkeyHex: string, preserveTransport: Transport) => void;
 }
 export declare class FmpTransportPacketProcessor {
     private readonly cfg;
@@ -27,7 +28,10 @@ export declare class FmpTransportPacketProcessor {
     private handleMsg1;
     private prepareMsg1Peer;
     private handleMsg2;
+    private matchMsg2Peer;
+    private retireDisplacedMsg2Peer;
     private handleEstablished;
+    private matchEstablishedLink;
     private newResponderLink;
     private rememberPeer;
     private findXOnlyTransportPeer;

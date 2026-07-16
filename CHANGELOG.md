@@ -1,5 +1,20 @@
 # Changelog
 
+## Runtime packages 0.0.25 - 2026-07-16
+
+- Match FMP Msg2 and Established packets by their authenticated receiver index
+  across Nostr x-only and compressed transport-address aliases, while dropping
+  stale relay packets that no longer belong to a pending handshake.
+- Detect same-identity process restarts from the authenticated startup epoch,
+  reset displaced FSP sessions, and keep the fresh carrier alive while retiring
+  stale WebRTC paths and pending dials.
+- Release `@fips/core` 0.0.25, `@fips/transport-webrtc` 0.0.41,
+  `@fips/browser` 0.0.7, `@fips/transport-ethernet` 0.0.24, and
+  `@fips/transport-memory` 0.0.5 as one immutable runtime bundle.
+- Verify all 15 browser process gates against native FIPS 0.4.1, five repeated
+  replacement-page gates, and five repeated Iris Drive identity-switch/block
+  exchange gates.
+
 ## Runtime packages - 2026-07-16
 
 - Carry generic link negotiation through the existing FSP DataPacket service

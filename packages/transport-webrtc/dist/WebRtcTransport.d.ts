@@ -47,6 +47,7 @@ export declare class WebRtcTransport implements Transport {
     connect(addr: TransportAddress): Promise<void>;
     send(addr: TransportAddress, packet: Uint8Array): Promise<void>;
     close(addr: TransportAddress): Promise<void>;
+    handlePeerRestart(remotePubkeyHex: string): Promise<void>;
     private startInitiatorHandshake;
     private handleIncomingSignal;
     private handleIncomingOffer;

@@ -138,6 +138,14 @@ export class FipsNode {
       sessionManager: this.sessionManager,
       emitError: (error, where) => this.emit("error", { err: error, where }),
       emitPeer: (event) => this.emit("peer", event),
+      handlePeerRestart: (remotePubkeyHex, preserveTransport) => {
+        for (const transport of this.transports) {
+          if (transport === preserveTransport || !transport.handlePeerRestart) continue;
+          void transport.handlePeerRestart(remotePubkeyHex).catch((error) => {
+            this.emit("error", { err: error, where: "transport.handlePeerRestart" });
+          });
+        }
+      },
     });
     for (const s of cfg.services ?? []) {
       this.sessionManager.registerService(s.port, s.handler);

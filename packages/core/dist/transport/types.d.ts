@@ -52,6 +52,8 @@ export interface Transport {
     resolve?(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined>;
     /** Application-owned fallback transports enabled with this transport. */
     companionTransports?(): Transport[];
+    /** Retire state keyed by an authenticated FIPS identity after its process restarts. */
+    handlePeerRestart?(remotePubkeyHex: string): Promise<void>;
     /** Receive authenticated link negotiation addressed to this adapter type. */
     handleLinkNegotiation?(remotePubkeyHex: string, message: LinkNegotiationMessage): Promise<void> | void;
 }

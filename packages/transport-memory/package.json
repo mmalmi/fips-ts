@@ -1,6 +1,6 @@
 {
   "name": "@fips/transport-memory",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,7 +17,7 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
-    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.24/fips-core-0.0.24.tgz"
+    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.25/fips-core-0.0.25.tgz"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

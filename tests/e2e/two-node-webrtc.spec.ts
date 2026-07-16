@@ -141,3 +141,23 @@ test("a restarted peer with the same identity replaces its stale WebRTC session"
     },
   });
 });
+
+test("a replacement page ignores replayed Msg1 state and completes its fresh dial", async ({ page }) => {
+  await page.addInitScript((url) => {
+    window.__fipsTestRelayUrl = url;
+  }, relay.url);
+
+  await page.goto("/");
+  await page.waitForFunction(() => !!window.__fipsHarness);
+
+  const result = await page.evaluate(async () => {
+    return window.__fipsHarness.autoConnectWebRtcPeerRestartWithRelayReplay(
+      window.__fipsTestRelayUrl!,
+    );
+  });
+
+  expect(result).toEqual({
+    first: "before-peer-restart",
+    second: "after-peer-restart",
+  });
+});

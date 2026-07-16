@@ -187,7 +187,7 @@ async function autoConnectWebRtcPeerRestart(
     identity: aId,
     transports: [new WebRtcTransport({
       ...options,
-      relays: [initialRelayUrl, replacementRelayUrl],
+      relays: [...new Set([initialRelayUrl, replacementRelayUrl])],
     })],
   });
   const originalRelay = new NostrRelayClient({ url: initialRelayUrl });
@@ -214,6 +214,7 @@ async function autoConnectWebRtcPeerRestart(
   await initiallyConnected;
   try {
     const first = await echoOverPair({ a, b: originalB, aPub, bPub }, "before-peer-restart");
+    await originalB.stop();
     originalRelay.close();
     replacementB = createB(replacementRelayUrl);
     const replacementConnected = waitForPeerState(replacementB, aPub, "connected");
@@ -226,6 +227,12 @@ async function autoConnectWebRtcPeerRestart(
     await originalB.stop();
     await a.stop();
   }
+}
+
+async function autoConnectWebRtcPeerRestartWithRelayReplay(
+  relayUrl: string,
+): Promise<{ first: string; second: string }> {
+  return autoConnectWebRtcPeerRestart(relayUrl, relayUrl, false);
 }
 
 async function connectThroughStaleAdvertBacklog(relayUrl: string): Promise<{
@@ -331,11 +338,19 @@ function waitForPeerState(
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       off();
-      reject(new Error(`peer ${remotePubkey} did not become ${state}`));
+      reject(new Error(`WebRTC peer ${remotePubkey} did not become ${state}`));
     }, 20_000);
     const off = node.on("peer", (event) => {
-      const peer = event as { remotePubkey: string; state: string };
-      if (peer.remotePubkey !== remotePubkey || peer.state !== state) return;
+      const peer = event as {
+        remotePubkey: string;
+        remoteAddr: { transport: string };
+        state: string;
+      };
+      if (
+        peer.remotePubkey !== remotePubkey
+        || peer.remoteAddr.transport !== "webrtc"
+        || peer.state !== state
+      ) return;
       clearTimeout(timer);
       off();
       resolve();
@@ -415,7 +430,7 @@ async function memoryThreeNodes(): Promise<ThreeNodes> {
 
 async function echoOverPair(pair: NodePair, payload: string, port = 9000): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timeout")), 20_000);
+    const timer = setTimeout(() => reject(new Error(`timeout waiting for echo: ${payload}`)), 20_000);
     const off = pair.a.on("datagram", (evt) => {
       const dg = evt as { dstPort: number; payload: Uint8Array };
       if (dg.dstPort === port) {
@@ -669,6 +684,7 @@ export const harness = {
   autoConnectWebRtcPair,
   autoConnectWebRtcReconnect,
   autoConnectWebRtcPeerRestart,
+  autoConnectWebRtcPeerRestartWithRelayReplay,
   connectThroughStaleAdvertBacklog,
   duplicateWebRtcConnect,
   makeWebRtcChain,

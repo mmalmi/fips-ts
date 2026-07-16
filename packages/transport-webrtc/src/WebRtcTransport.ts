@@ -512,17 +512,27 @@ export class WebRtcTransport implements Transport {
   }
 
   async close(addr: TransportAddress): Promise<void> {
+    for (const [sessionId, dial] of this.pendingDials) {
+      if (dial.remotePubkeyHex !== addr.addr) continue;
+      clearTimeout(dial.timer);
+      this.pendingDials.delete(sessionId);
+      this.knownSessionIds.delete(sessionId);
+      dial.pc.close();
+      dial.reject(new Error("WebRTC path closed"));
+    }
     const provenPeer = this.peersWithTraffic.delete(addr.addr);
     const conn = this.conns.get(addr.addr);
-    if (conn) {
-      conn.close();
-      this.conns.delete(addr.addr);
-    }
+    conn?.close();
+    this.conns.delete(addr.addr);
     if (provenPeer || this.autoReconnectTimers.has(addr.addr)) {
       this.scheduleAutoReconnect(addr.addr);
       return;
     }
     this.handleAutoConnectFailure(addr.addr);
+  }
+
+  handlePeerRestart(remotePubkeyHex: string): Promise<void> {
+    return this.close({ transport: this.type, addr: remotePubkeyHex });
   }
 
   private async startInitiatorHandshake(
@@ -657,17 +667,8 @@ export class WebRtcTransport implements Transport {
       this.pendingDials.delete(competingDial.sessionId);
       competingDial.pc.close();
       competingDial.reject(new Error("incoming WebRTC offer won simultaneous dial"));
-    } else if (
-      this.retireExistingConnection(remotePubkeyHex)
-      && !incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex)
-    ) {
-      await this.rejectIncomingOffer(offer, remotePubkeyHex);
-      this.discoveryStream?.push({
-        remoteAddr: { transport: "webrtc", addr: remotePubkeyHex },
-        publicKey: fromHex(remotePubkeyHex),
-        meta: { source: "webrtc-replacement" },
-      });
-      return;
+    } else {
+      this.retireExistingConnection(remotePubkeyHex);
     }
     if (
       this.conns.size + this.pendingDials.size + this.pendingInbound.size
@@ -768,9 +769,9 @@ export class WebRtcTransport implements Transport {
     this.autoReconnectTimers.set(remotePubkeyHex, timer);
   }
 
-  private retireExistingConnection(remotePubkeyHex: string): boolean {
+  private retireExistingConnection(remotePubkeyHex: string): void {
     const existing = this.conns.get(remotePubkeyHex);
-    if (!existing) return false;
+    if (!existing) return;
     this.conns.delete(remotePubkeyHex);
     this.peersWithTraffic.delete(remotePubkeyHex);
     this.supersededConnections.add(existing);
@@ -780,7 +781,6 @@ export class WebRtcTransport implements Transport {
     });
     existing.close();
     this.logger.debug("webrtc stale connection retired", remotePubkeyHex);
-    return true;
   }
 
   private handleAutoConnectFailure(remotePubkeyHex: string): void {
