@@ -5,12 +5,15 @@
 - Allocate FMP receiver indices inside each node's fresh startup epoch instead
   of a module-global counter that reset when a browser JS realm reloaded.
 - Remember a bounded history of authenticated remote startup epochs so replayed
-  relay handshakes cannot roll a live same-identity peer back to a retired link.
+  relay handshakes cannot roll a live same-identity peer back in either handshake
+  role, while restoring the surviving authenticated link as the canonical peer.
 - Drain an authenticated link displaced by a same-address replacement long
   enough for its in-flight FSP establishment and application data to finish.
 - Treat configured Nostr relays as subscription alternatives so one unavailable
   relay cannot cancel healthy relay and ordinary transport startup, while still
   failing clearly when no configured relay accepts the subscription.
+- Refresh the test and build toolchain and remove all known OSV findings from
+  the frozen dependency lock without changing shipped runtime behavior.
 - Release `@fips/core` 0.0.26, `@fips/transport-webrtc` 0.0.42,
   `@fips/browser` 0.0.8, `@fips/transport-ethernet` 0.0.25, and
   `@fips/transport-memory` 0.0.6 as one immutable runtime bundle.
