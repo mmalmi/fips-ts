@@ -18,7 +18,7 @@
   `@fips/browser` 0.0.8, `@fips/transport-ethernet` 0.0.25, and
   `@fips/transport-memory` 0.0.6 as one immutable runtime bundle.
 - Keep the FMP/FSP/link-negotiation wire and public API unchanged; verify the
-  real two-page persisted-identity reload, native FIPS 0.4.4 process matrix,
+  real two-page persisted-identity reload, native FIPS 0.4.5 process matrix,
   and consumer restart paths.
 
 ## Runtime packages 0.0.25 - 2026-07-16
