@@ -8,6 +8,7 @@ export declare class FipsNode {
     private readonly transports;
     private readonly random;
     private readonly startupEpoch;
+    private nextFmpSessionIdx;
     private readonly logger;
     private readonly defaultRoute?;
     private readonly heartbeatIntervalMs;
@@ -37,6 +38,7 @@ export declare class FipsNode {
     connect(addr: TransportAddress): Promise<void>;
     private connectKnownPeer;
     private connectAdjacentPeer;
+    private allocateFmpSessionIdx;
     /** Send a service datagram to a target identity (adjacent or routable). */
     sendDatagram(args: {
         dst: string;

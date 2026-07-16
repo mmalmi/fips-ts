@@ -161,3 +161,92 @@ test("a replacement page ignores replayed Msg1 state and completes its fresh dia
     second: "after-peer-restart",
   });
 });
+
+test("a reloaded page rejects replayed packets from its previous FMP epoch", async ({ page, context }) => {
+  const listenerPage = await context.newPage();
+  const discoveryApp = `fips-page-reload-${crypto.randomUUID()}`;
+  const initiatorStore = `fips-page-reload-initiator-${crypto.randomUUID()}`;
+  const listenerStore = `fips-page-reload-listener-${crypto.randomUUID()}`;
+  for (const candidate of [page, listenerPage]) {
+    await candidate.addInitScript((url) => {
+      window.__fipsTestRelayUrl = url;
+    }, relay.url);
+    await candidate.goto("/");
+    await candidate.waitForFunction(() => !!window.__fipsHarness);
+  }
+
+  const listenerPubkey = await listenerPage.evaluate(
+    ([storeName, app]) => window.__fipsHarness.startPersistentWebRtcPeer(
+      window.__fipsTestRelayUrl!, storeName, app,
+    ),
+    [listenerStore, discoveryApp] as const,
+  );
+  const initiatorPubkey = await page.evaluate(
+    ([storeName, app]) => window.__fipsHarness.startPersistentWebRtcPeer(
+      window.__fipsTestRelayUrl!, storeName, app,
+    ),
+    [initiatorStore, discoveryApp] as const,
+  );
+
+  await page.evaluate(
+    (remotePubkey) => window.__fipsHarness.connectPersistentWebRtcPeer(remotePubkey),
+    listenerPubkey,
+  );
+  await listenerPage.evaluate(
+    (remotePubkey) => window.__fipsHarness.waitForPersistentWebRtcPeer(remotePubkey),
+    initiatorPubkey,
+  );
+  await expect(page.evaluate(
+    (remotePubkey) => window.__fipsHarness.echoPersistentWebRtcPeer(remotePubkey, "before-reload"),
+    listenerPubkey,
+  )).resolves.toBe("before-reload");
+  const oldEventCount = relay.eventCount();
+
+  await page.reload();
+  await page.waitForFunction(() => !!window.__fipsHarness);
+  const reloadedPubkey = await page.evaluate(
+    ([storeName, app]) => window.__fipsHarness.startPersistentWebRtcPeer(
+      window.__fipsTestRelayUrl!, storeName, app,
+    ),
+    [initiatorStore, discoveryApp] as const,
+  );
+  expect(reloadedPubkey).toBe(initiatorPubkey);
+  relay.pauseBroadcasts();
+  const reconnect = page.evaluate(
+    (remotePubkey) => window.__fipsHarness.connectPersistentWebRtcPeer(remotePubkey),
+    listenerPubkey,
+  );
+  await expect.poll(() => relay.eventCount()).toBeGreaterThan(oldEventCount);
+  // A fresh JS realm used to restart the module-global receiver index at one.
+  // Deliver the old 69-byte FMP Msg2 while the replacement Msg1 is pending so
+  // that collision is deterministic rather than dependent on relay timing.
+  relay.replayPrefix(oldEventCount, 69);
+  relay.resumeBroadcasts();
+  await reconnect;
+  await expect(page.evaluate(
+    (remotePubkey) => window.__fipsHarness.echoPersistentWebRtcPeer(remotePubkey, "after-reload"),
+    listenerPubkey,
+  )).resolves.toBe("after-reload");
+
+  relay.replayPrefix(oldEventCount);
+  await page.waitForTimeout(250);
+  const errors = {
+    initiator: await page.evaluate(() => window.__fipsHarness.persistentWebRtcPeerErrors()),
+    listener: await listenerPage.evaluate(
+      () => window.__fipsHarness.persistentWebRtcPeerErrors(),
+    ),
+  };
+  expect([...errors.initiator, ...errors.listener]).not.toContainEqual(
+    expect.stringContaining("invalid tag"),
+  );
+  await expect(page.evaluate(
+    (remotePubkey) => window.__fipsHarness.echoPersistentWebRtcPeer(remotePubkey, "after-replay"),
+    listenerPubkey,
+  )).resolves.toBe("after-replay");
+
+  await Promise.all([
+    page.evaluate(() => window.__fipsHarness.stopPersistentWebRtcPeer()),
+    listenerPage.evaluate(() => window.__fipsHarness.stopPersistentWebRtcPeer()),
+  ]);
+  await listenerPage.close();
+});

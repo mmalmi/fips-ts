@@ -239,7 +239,7 @@ describe("FipsNode FMP handshake", () => {
     }
   }, 10_000);
 
-  it("replaces an established initiator link when the remote startup epoch changes", async () => {
+  it("keeps a replacement link when the retired startup epoch is replayed", async () => {
     const survivorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x11));
     const restartedIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x12));
     const survivorTransport = new FlakyMemoryTransport();
@@ -252,6 +252,8 @@ describe("FipsNode FMP handshake", () => {
       identity: restartedIdentity,
       transports: [originalTransport],
     });
+    const errors: Error[] = [];
+    survivor.on("error", (event) => errors.push((event as { err: Error }).err));
     const restartedAddr = {
       transport: "memory",
       addr: toHex(restartedIdentity.publicKey),
@@ -261,6 +263,7 @@ describe("FipsNode FMP handshake", () => {
     await survivor.start();
     try {
       await survivor.connect(restartedAddr);
+      const originalEpoch = new Uint8Array((original as any).startupEpoch);
       await original.stop();
 
       const replacementTransport = new FlakyMemoryTransport();
@@ -277,6 +280,25 @@ describe("FipsNode FMP handshake", () => {
         const survivorPeer = [...(survivor as any).peers.values()][0];
         expect(survivorPeer.pendingResponderLink).toBeUndefined();
         expect(survivorPeer.link.role).toBe("responder");
+        expect(survivorPeer.link.remoteEpoch).toEqual((replacement as any).startupEpoch);
+
+        const replay = new FmpLink({
+          identity: restartedIdentity,
+          remotePubkey: survivorIdentity.publicKey,
+          role: "initiator",
+          sessionIdx: 0x6262,
+          localEpoch: originalEpoch,
+        });
+        (survivor as any).packetProcessor.process(survivorTransport, {
+          transportType: "memory",
+          remoteAddr: { transport: "memory", addr: toHex(restartedIdentity.publicKey) },
+          data: replay.buildMsg1((length) => new Uint8Array(length)).packet,
+          receivedAtMs: Date.now(),
+        });
+        await Promise.resolve();
+
+        expect(errors).toEqual([]);
+        expect(survivorPeer.pendingResponderLink).toBeUndefined();
         expect(survivorPeer.link.remoteEpoch).toEqual((replacement as any).startupEpoch);
       } finally {
         await replacement.stop();
@@ -352,6 +374,75 @@ describe("FipsNode FMP handshake", () => {
     } finally {
       await initiator.stop();
       await responder.stop();
+    }
+  }, 10_000);
+
+  it("drains an established responder displaced by an address alias", async () => {
+    const replacementIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xb1));
+    const survivorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xb2));
+    const replacementTransport = new FlakyMemoryTransport();
+    const survivorTransport = new FlakyMemoryTransport();
+    const replacement = new FipsNode({
+      identity: replacementIdentity,
+      transports: [replacementTransport],
+    });
+    const survivor = new FipsNode({
+      identity: survivorIdentity,
+      transports: [survivorTransport],
+    });
+
+    await replacement.start();
+    await survivor.start();
+    try {
+      await survivor.connect({
+        transport: "memory",
+        addr: toHex(replacementIdentity.publicKey),
+      });
+      const displaced = [...(replacement as any).peers.values()][0];
+      const displacedReceiverIdx = displaced.link.localSessionIdx;
+
+      const replacementLink = new FmpLink({
+        identity: replacementIdentity,
+        remotePubkey: survivorIdentity.publicKey,
+        role: "initiator",
+        sessionIdx: 0xb1b1,
+        localEpoch: new Uint8Array(8).fill(0xb1),
+      });
+      const remoteReplacementLink = new FmpLink({
+        identity: survivorIdentity,
+        role: "responder",
+        sessionIdx: 0xb2b2,
+        localEpoch: new Uint8Array(8).fill(0xb2),
+      });
+      const msg1 = replacementLink.buildMsg1((length) => new Uint8Array(length).fill(0x31));
+      const msg2 = remoteReplacementLink.handleMsg1(
+        msg1.packet,
+        (length) => new Uint8Array(length).fill(0x32),
+      );
+      replacementLink.handleMsg2(msg2.reply!);
+      const replacementPeer = {
+        pubkey: survivorIdentity.publicKey,
+        pubkeyHex: toHex(survivorIdentity.publicKey),
+        remoteAddr: {
+          transport: "memory",
+          addr: toHex(survivorIdentity.publicKey),
+        },
+        transport: replacementTransport,
+        link: replacementLink,
+      };
+      (replacement as any).peers.set("memory:replacement-alias", replacementPeer);
+
+      (replacement as any).packetProcessor.retireDisplacedMsg2Peer(
+        displaced.remoteAddr,
+        replacementPeer,
+      );
+
+      expect(replacementPeer.drainingResponderLinks?.get(displacedReceiverIdx)?.link)
+        .toBe(displaced.link);
+      expect(displaced.link.state).toBe("established");
+    } finally {
+      await survivor.stop();
+      await replacement.stop();
     }
   }, 10_000);
 

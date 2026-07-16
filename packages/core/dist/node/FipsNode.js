@@ -6,7 +6,7 @@ import { deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
 import { LinkMessageType } from "../protocol/link.js";
 import { noopLogger, transportAddressKey, } from "../transport/types.js";
 import { FipsRouting } from "./FipsRouting.js";
-import { FmpTransportPacketProcessor, nextSessionIdx, } from "./FmpTransportPacketProcessor.js";
+import { FmpTransportPacketProcessor, } from "./FmpTransportPacketProcessor.js";
 import { FspSessionManager } from "./FspSessionManager.js";
 const defaultRandom = { bytes: (n) => randomBytes(n) };
 const FMP_HANDSHAKE_TIMEOUT_MS = 15_000;
@@ -19,6 +19,7 @@ export class FipsNode {
     transports;
     random;
     startupEpoch;
+    nextFmpSessionIdx;
     logger;
     defaultRoute;
     heartbeatIntervalMs;
@@ -49,6 +50,7 @@ export class FipsNode {
         if (this.startupEpoch.length !== 8) {
             throw new Error("FIPS random source returned a bad startup epoch");
         }
+        this.nextFmpSessionIdx = readU32Le(this.startupEpoch) || 1;
         this.logger = cfg.logger ?? noopLogger;
         this.heartbeatIntervalMs = cfg.heartbeatIntervalMs ?? FMP_HEARTBEAT_INTERVAL_MS;
         if (!Number.isSafeInteger(this.heartbeatIntervalMs) || this.heartbeatIntervalMs <= 0) {
@@ -93,6 +95,7 @@ export class FipsNode {
         this.packetProcessor = new FmpTransportPacketProcessor({
             identity: this.identity,
             startupEpoch: this.startupEpoch,
+            nextSessionIdx: () => this.allocateFmpSessionIdx(),
             randomBytes: (length) => this.random.bytes(length),
             logger: this.logger,
             peers: this.peers,
@@ -274,7 +277,7 @@ export class FipsNode {
             identity: this.identity,
             remotePubkey,
             role: "initiator",
-            sessionIdx: nextSessionIdx(),
+            sessionIdx: this.allocateFmpSessionIdx(),
             localEpoch: this.startupEpoch,
         });
         const peer = {
@@ -317,6 +320,11 @@ export class FipsNode {
                 this.removePeerPath(key, peer, false);
             }
         }
+    }
+    allocateFmpSessionIdx() {
+        const value = this.nextFmpSessionIdx;
+        this.nextFmpSessionIdx = (value + 1) >>> 0 || 1;
+        return value;
     }
     /** Send a service datagram to a target identity (adjacent or routable). */
     async sendDatagram(args) {
@@ -455,6 +463,9 @@ function hexBytes(hex) {
         out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
     }
     return out;
+}
+function readU32Le(bytes) {
+    return new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
 }
 function expandCompanionTransports(configured) {
     const explicitTypes = new Set(configured.map((transport) => transport.type));

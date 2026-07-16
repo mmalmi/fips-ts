@@ -4,10 +4,10 @@ import type { FipsRouting } from "./FipsRouting.js";
 import type { FspSessionManager } from "./FspSessionManager.js";
 import type { AdjacentPeer } from "./PeerState.js";
 import type { PeerEvent } from "./types.js";
-export declare function nextSessionIdx(): number;
 interface FmpTransportPacketProcessorConfig {
     identity: FipsIdentity;
     startupEpoch: Uint8Array;
+    nextSessionIdx: () => number;
     randomBytes: (length: number) => Uint8Array;
     logger: Logger;
     peers: Map<string, AdjacentPeer>;
@@ -22,18 +22,22 @@ interface FmpTransportPacketProcessorConfig {
 export declare class FmpTransportPacketProcessor {
     private readonly cfg;
     private readonly reassembler;
+    private readonly remoteEpochHistory;
     constructor(cfg: FmpTransportPacketProcessorConfig);
     clear(): void;
     process(transport: Transport, received: ReceivedTransportPacket): void;
     private handleMsg1;
     private prepareMsg1Peer;
+    private rejectRetiredEpoch;
     private handleMsg2;
     private matchMsg2Peer;
     private retireDisplacedMsg2Peer;
+    private drainAuthenticatedLink;
     private handleEstablished;
     private matchEstablishedLink;
     private newResponderLink;
     private rememberPeer;
+    private rememberRemoteEpoch;
     private findXOnlyTransportPeer;
     private establishedRemoteEpoch;
     private removeRestartedPeerPaths;

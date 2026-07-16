@@ -5,20 +5,18 @@ import { isDirectFspEstablished } from "../fsp/wire.js";
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
 import { decodeFmpEstablished, decodeFmpMsg2, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
 import { transportAddressKey, } from "../transport/types.js";
-let sessionIdxCounter = 1;
-export function nextSessionIdx() {
-    const value = sessionIdxCounter++;
-    return value >>> 0;
-}
 const FMP_REPLACED_LINK_DRAIN_MS = 10_000;
+const FMP_REMOTE_EPOCH_HISTORY_LIMIT = 8;
 export class FmpTransportPacketProcessor {
     cfg;
     reassembler = new DirectFspTransportReassembler();
+    remoteEpochHistory = new Map();
     constructor(cfg) {
         this.cfg = cfg;
     }
     clear() {
         this.reassembler.clear();
+        this.remoteEpochHistory.clear();
     }
     process(transport, received) {
         try {
@@ -101,9 +99,13 @@ export class FmpTransportPacketProcessor {
         const remotePubkeyHex = toHex(result.remotePubkey);
         const previousRemoteEpoch = peerEpochBeforeMsg1
             ?? this.establishedRemoteEpoch(remotePubkeyHex, handshakeLink);
-        if (previousRemoteEpoch
-            && handshakeLink.remoteEpoch
-            && !bytesEqual(previousRemoteEpoch, handshakeLink.remoteEpoch)) {
+        const candidateEpoch = handshakeLink.remoteEpoch;
+        const changedEpoch = previousRemoteEpoch !== undefined
+            && candidateEpoch !== undefined
+            && !bytesEqual(previousRemoteEpoch, candidateEpoch);
+        if (this.rejectRetiredEpoch(peer, handshakeLink, remotePubkeyHex, candidateEpoch, changedEpoch, remoteAddr))
+            return;
+        if (changedEpoch) {
             this.removeRestartedPeerPaths(remotePubkeyHex, handshakeLink, transport, replacedHandshake);
             peer = {
                 pubkey: result.remotePubkey,
@@ -115,6 +117,12 @@ export class FmpTransportPacketProcessor {
             this.cfg.peers.set(key, peer);
             wasEstablished = false;
             this.cfg.logger.info("FMP peer restart detected", remotePubkeyHex);
+        }
+        else if (replacedHandshake && peer.link !== handshakeLink) {
+            peer.abandonedInitiatorSessionIdx = peer.link.localSessionIdx;
+            peer.link.close();
+            peer.link = handshakeLink;
+            peer.pendingResponderLink = undefined;
         }
         peer.pubkey = result.remotePubkey;
         peer.pubkeyHex = remotePubkeyHex;
@@ -155,11 +163,9 @@ export class FmpTransportPacketProcessor {
             if (order === 0)
                 throw new Error("simultaneous FMP handshake with local identity");
             replacedEstablishedInitiator = peer.link.state === "established";
-            peer.abandonedInitiatorSessionIdx = peer.link.localSessionIdx;
             replacedHandshake = peer.outgoingHandshake;
-            peer.link.close();
-            peer.link = this.newResponderLink();
-            this.cfg.logger.debug("simultaneous FMP handshake: remote initiator wins", remoteAddr.transport, remoteAddr.addr);
+            stageEstablishedInitiator = true;
+            this.cfg.logger.debug("simultaneous FMP handshake: staging remote initiator winner", remoteAddr.transport, remoteAddr.addr);
         }
         else if (peer?.link.role === "initiator") {
             stageEstablishedInitiator = true;
@@ -181,6 +187,18 @@ export class FmpTransportPacketProcessor {
             replacedHandshake,
             stageEstablishedInitiator,
         };
+    }
+    rejectRetiredEpoch(peer, handshakeLink, remotePubkeyHex, candidateEpoch, changedEpoch, remoteAddr) {
+        if (!changedEpoch || !candidateEpoch)
+            return false;
+        if (!this.remoteEpochHistory.get(remotePubkeyHex)?.includes(toHex(candidateEpoch))) {
+            return false;
+        }
+        handshakeLink.close();
+        if (peer.pendingResponderLink === handshakeLink)
+            peer.pendingResponderLink = undefined;
+        this.cfg.logger.debug("ignored FMP Msg1 from a retired startup epoch", remoteAddr.transport, remoteAddr.addr);
+        return true;
     }
     handleMsg2(transport, remoteAddr, addressedPeer, packet) {
         const msg2 = decodeFmpMsg2(packet);
@@ -241,10 +259,12 @@ export class FmpTransportPacketProcessor {
             if (candidate === displaced)
                 this.cfg.peers.delete(candidateKey);
         }
-        displaced.link.close();
-        displaced.pendingResponderLink?.close();
+        this.drainAuthenticatedLink(peer, displaced.link);
+        if (displaced.pendingResponderLink) {
+            this.drainAuthenticatedLink(peer, displaced.pendingResponderLink);
+        }
         for (const draining of displaced.drainingResponderLinks?.values() ?? []) {
-            draining.link.close();
+            this.drainAuthenticatedLink(peer, draining.link, draining.expiresAtMs);
         }
         displaced.outgoingHandshake?.reject(new Error("authenticated FMP path replaced address alias"));
         if (this.cfg.peersByPubkey.get(displaced.pubkeyHex) === displaced) {
@@ -256,6 +276,22 @@ export class FmpTransportPacketProcessor {
                 this.cfg.peersByNodeAddr.delete(nodeAddrHex);
             }
         }
+    }
+    drainAuthenticatedLink(peer, link, expiresAtMs = Date.now() + FMP_REPLACED_LINK_DRAIN_MS) {
+        if (link === peer.link || link === peer.pendingResponderLink)
+            return;
+        if (link.state !== "established") {
+            link.close();
+            return;
+        }
+        const draining = peer.drainingResponderLinks ?? new Map();
+        const existing = draining.get(link.localSessionIdx);
+        if (existing && existing.link !== link) {
+            link.close();
+            return;
+        }
+        draining.set(link.localSessionIdx, { link, expiresAtMs });
+        peer.drainingResponderLinks = draining;
     }
     handleEstablished(remoteAddr, _addressedPeer, packet) {
         const receiverIdx = decodeFmpEstablished(packet).receiverIdx;
@@ -314,7 +350,7 @@ export class FmpTransportPacketProcessor {
         return new FmpLink({
             identity: this.cfg.identity,
             role: "responder",
-            sessionIdx: nextSessionIdx(),
+            sessionIdx: this.cfg.nextSessionIdx(),
             localEpoch: this.cfg.startupEpoch,
         });
     }
@@ -323,6 +359,18 @@ export class FmpTransportPacketProcessor {
             return;
         this.cfg.peersByPubkey.set(peer.pubkeyHex, peer);
         this.cfg.peersByNodeAddr.set(nodeAddrToHex(deriveNodeAddr(peer.pubkey)), peer);
+        if (peer.link.remoteEpoch)
+            this.rememberRemoteEpoch(peer.pubkeyHex, peer.link.remoteEpoch);
+    }
+    rememberRemoteEpoch(remotePubkeyHex, epoch) {
+        const encoded = toHex(epoch);
+        const history = this.remoteEpochHistory.get(remotePubkeyHex) ?? [];
+        if (history.includes(encoded))
+            return;
+        history.push(encoded);
+        if (history.length > FMP_REMOTE_EPOCH_HISTORY_LIMIT)
+            history.shift();
+        this.remoteEpochHistory.set(remotePubkeyHex, history);
     }
     findXOnlyTransportPeer(transport, remoteAddr) {
         if (!/^[0-9a-fA-F]{64}$/.test(remoteAddr.addr))

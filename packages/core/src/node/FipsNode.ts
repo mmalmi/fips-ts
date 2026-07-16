@@ -31,7 +31,6 @@ import type {
 import { FipsRouting } from "./FipsRouting.js";
 import {
   FmpTransportPacketProcessor,
-  nextSessionIdx,
 } from "./FmpTransportPacketProcessor.js";
 import { FspSessionManager } from "./FspSessionManager.js";
 import type { AdjacentPeer } from "./PeerState.js";
@@ -48,6 +47,7 @@ export class FipsNode {
   private readonly transports: Transport[];
   private readonly random: RandomSource;
   private readonly startupEpoch: Uint8Array;
+  private nextFmpSessionIdx: number;
   private readonly logger: Logger;
   private readonly defaultRoute?: string;
   private readonly heartbeatIntervalMs: number;
@@ -80,6 +80,7 @@ export class FipsNode {
     if (this.startupEpoch.length !== 8) {
       throw new Error("FIPS random source returned a bad startup epoch");
     }
+    this.nextFmpSessionIdx = readU32Le(this.startupEpoch) || 1;
     this.logger = cfg.logger ?? noopLogger;
     this.heartbeatIntervalMs = cfg.heartbeatIntervalMs ?? FMP_HEARTBEAT_INTERVAL_MS;
     if (!Number.isSafeInteger(this.heartbeatIntervalMs) || this.heartbeatIntervalMs <= 0) {
@@ -129,6 +130,7 @@ export class FipsNode {
     this.packetProcessor = new FmpTransportPacketProcessor({
       identity: this.identity,
       startupEpoch: this.startupEpoch,
+      nextSessionIdx: () => this.allocateFmpSessionIdx(),
       randomBytes: (length) => this.random.bytes(length),
       logger: this.logger,
       peers: this.peers,
@@ -318,7 +320,7 @@ export class FipsNode {
       identity: this.identity,
       remotePubkey,
       role: "initiator",
-      sessionIdx: nextSessionIdx(),
+      sessionIdx: this.allocateFmpSessionIdx(),
       localEpoch: this.startupEpoch,
     });
     const peer: AdjacentPeer = {
@@ -365,6 +367,12 @@ export class FipsNode {
         this.removePeerPath(key, peer, false);
       }
     }
+  }
+
+  private allocateFmpSessionIdx(): number {
+    const value = this.nextFmpSessionIdx;
+    this.nextFmpSessionIdx = (value + 1) >>> 0 || 1;
+    return value;
   }
 
   /** Send a service datagram to a target identity (adjacent or routable). */
@@ -543,6 +551,10 @@ function hexBytes(hex: string): Uint8Array {
     out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
   return out;
+}
+
+function readU32Le(bytes: Uint8Array): number {
+  return new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
 }
 
 function expandCompanionTransports(configured: Transport[]): Transport[] {

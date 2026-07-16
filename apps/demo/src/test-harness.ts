@@ -25,6 +25,15 @@ interface ThreeNodes {
   cPub: string;
 }
 
+interface PersistentWebRtcPeer {
+  node: FipsNode;
+  pubkey: string;
+  connectedPeers: Set<string>;
+  errors: string[];
+}
+
+let persistentWebRtcPeer: PersistentWebRtcPeer | undefined;
+
 declare global {
   interface Window {
     __fipsHarness: typeof harness;
@@ -433,10 +442,11 @@ async function echoOverPair(pair: NodePair, payload: string, port = 9000): Promi
     const timer = setTimeout(() => reject(new Error(`timeout waiting for echo: ${payload}`)), 20_000);
     const off = pair.a.on("datagram", (evt) => {
       const dg = evt as { dstPort: number; payload: Uint8Array };
-      if (dg.dstPort === port) {
+      const reply = new TextDecoder().decode(dg.payload);
+      if (dg.dstPort === port && reply === payload) {
         clearTimeout(timer);
         off();
-        resolve(new TextDecoder().decode(dg.payload));
+        resolve(reply);
       }
     });
     void pair.a.sendDatagram({
@@ -679,6 +689,73 @@ async function concurrentIdentityStoreCreate(dbName: string): Promise<{
   };
 }
 
+async function startPersistentWebRtcPeer(
+  relayUrl: string,
+  identityStoreName: string,
+  discoveryApp: string,
+): Promise<string> {
+  await persistentWebRtcPeer?.node.stop();
+  const identity = await new IndexedDbIdentityStore(identityStoreName).getOrCreateIdentity();
+  const pubkey = toHex(identity.publicKey);
+  const connectedPeers = new Set<string>();
+  const errors: string[] = [];
+  const node = new FipsNode({
+    identity,
+    transports: [new WebRtcTransport({
+      relays: [relayUrl],
+      advertiseOnNostr: true,
+      autoConnect: false,
+      discoveryApp,
+    })],
+  });
+  node.on("peer", (event) => {
+    const peer = event as { remotePubkey: string; state: string };
+    if (peer.state === "connected") connectedPeers.add(peer.remotePubkey);
+    if (peer.state === "disconnected") connectedPeers.delete(peer.remotePubkey);
+  });
+  node.on("error", (event) => {
+    const error = event as { err: unknown; where: string };
+    errors.push(`${error.where}: ${String(error.err)}`);
+  });
+  node.registerService(9000, async ({ payload, reply }) => reply(payload));
+  persistentWebRtcPeer = { node, pubkey, connectedPeers, errors };
+  await node.start();
+  return pubkey;
+}
+
+async function connectPersistentWebRtcPeer(remotePubkey: string): Promise<void> {
+  if (!persistentWebRtcPeer) throw new Error("persistent WebRTC peer is not started");
+  await persistentWebRtcPeer.node.connect({ transport: "webrtc", addr: remotePubkey });
+  persistentWebRtcPeer.connectedPeers.add(remotePubkey);
+}
+
+async function waitForPersistentWebRtcPeer(remotePubkey: string): Promise<void> {
+  if (!persistentWebRtcPeer) throw new Error("persistent WebRTC peer is not started");
+  if (persistentWebRtcPeer.connectedPeers.has(remotePubkey)) return;
+  await waitForPeerState(persistentWebRtcPeer.node, remotePubkey, "connected");
+  persistentWebRtcPeer.connectedPeers.add(remotePubkey);
+}
+
+async function echoPersistentWebRtcPeer(remotePubkey: string, payload: string): Promise<string> {
+  if (!persistentWebRtcPeer) throw new Error("persistent WebRTC peer is not started");
+  return echoOverPair({
+    a: persistentWebRtcPeer.node,
+    b: persistentWebRtcPeer.node,
+    aPub: persistentWebRtcPeer.pubkey,
+    bPub: remotePubkey,
+  }, payload);
+}
+
+function persistentWebRtcPeerErrors(): string[] {
+  return [...(persistentWebRtcPeer?.errors ?? [])];
+}
+
+async function stopPersistentWebRtcPeer(): Promise<void> {
+  const peer = persistentWebRtcPeer;
+  persistentWebRtcPeer = undefined;
+  await peer?.node.stop();
+}
+
 export const harness = {
   makeWebRtcPair,
   autoConnectWebRtcPair,
@@ -695,4 +772,10 @@ export const harness = {
   echoOverChain,
   echoWithRustWebRtcPeer,
   concurrentIdentityStoreCreate,
+  startPersistentWebRtcPeer,
+  connectPersistentWebRtcPeer,
+  waitForPersistentWebRtcPeer,
+  echoPersistentWebRtcPeer,
+  persistentWebRtcPeerErrors,
+  stopPersistentWebRtcPeer,
 };

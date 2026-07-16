@@ -1,6 +1,6 @@
 {
   "name": "@fips/transport-ethernet",
-  "version": "0.0.24",
+  "version": "0.0.25",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,7 +20,7 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
-    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.25/fips-core-0.0.25.tgz"
+    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.26/fips-core-0.0.26.tgz"
   },
   "devDependencies": {
     "typescript": "^5.7.3",
