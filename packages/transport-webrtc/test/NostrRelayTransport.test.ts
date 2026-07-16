@@ -16,8 +16,15 @@ class FakeRelay {
     handler: (event: NostrEvent) => void;
   }> = [];
 
-  constructor(url = "ws://relay.test") {
+  constructor(
+    url = "ws://relay.test",
+    private readonly subscribeError?: Error,
+  ) {
     this.url = new URL(url).toString();
+  }
+
+  get subscriptionCount(): number {
+    return this.subscriptions.length;
   }
 
   async publish(event: NostrEvent): Promise<void> {
@@ -31,6 +38,7 @@ class FakeRelay {
     filter: NostrFilter,
     callbacks: { onEvent: (event: NostrEvent) => void },
   ): Promise<() => void> {
+    if (this.subscribeError) throw this.subscribeError;
     const subscription = { filter, handler: callbacks.onEvent };
     this.subscriptions.push(subscription);
     return () => {
@@ -101,5 +109,40 @@ describe("NostrRelayTransport", () => {
 
     expect(first.published).toHaveLength(0);
     expect(second.published).toHaveLength(1);
+  });
+
+  it("starts when any configured relay accepts the datagram subscription", async () => {
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x61));
+    const unavailable = new FakeRelay(
+      "ws://unavailable.test",
+      new Error("relay connect error"),
+    );
+    const available = new FakeRelay("ws://available.test");
+    const transport = new NostrRelayTransport({
+      relays: [unavailable.url, available.url],
+      relayClients: [relayClient(unavailable), relayClient(available)],
+    });
+
+    await transport.start({ localIdentity: local, onPacket: () => undefined });
+
+    expect(unavailable.subscriptionCount).toBe(0);
+    expect(available.subscriptionCount).toBe(1);
+    await transport.stop();
+    expect(available.subscriptionCount).toBe(0);
+  });
+
+  it("reports a clear error when every configured relay subscription fails", async () => {
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x62));
+    const first = new FakeRelay("ws://first.test", new Error("first unavailable"));
+    const second = new FakeRelay("ws://second.test", new Error("second unavailable"));
+    const transport = new NostrRelayTransport({
+      relays: [first.url, second.url],
+      relayClients: [relayClient(first), relayClient(second)],
+    });
+
+    await expect(transport.start({
+      localIdentity: local,
+      onPacket: () => undefined,
+    })).rejects.toThrow("no configured Nostr relay accepted the FIPS datagram subscription");
   });
 });

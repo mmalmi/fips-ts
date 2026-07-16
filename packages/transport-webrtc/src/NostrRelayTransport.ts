@@ -58,7 +58,7 @@ export class NostrRelayTransport implements Transport {
     this.clients = this.createClients();
     const localXOnly = toHex(ctx.localIdentity.xOnlyPubkey);
     const since = Math.floor(Date.now() / 1_000) - MAX_EVENT_AGE_SECONDS;
-    this.cleanups = await Promise.all(this.clients.map((client) =>
+    const subscriptions = await Promise.allSettled(this.clients.map((client) =>
       client.subscribe(
         { kinds: [NOSTR_RELAY_DATAGRAM_KIND], "#p": [localXOnly], since },
         {
@@ -72,6 +72,29 @@ export class NostrRelayTransport implements Transport {
         },
       )
     ));
+    const cleanups: Array<() => void> = [];
+    const failures: unknown[] = [];
+    for (const [index, subscription] of subscriptions.entries()) {
+      if (subscription.status === "fulfilled") {
+        cleanups.push(subscription.value);
+        continue;
+      }
+      failures.push(subscription.reason);
+      this.logger.warn(
+        "Nostr relay datagram subscription failed",
+        this.clients[index]!.url,
+        subscription.reason,
+      );
+    }
+    if (this.clients.length > 0 && cleanups.length === 0) {
+      const error = new AggregateError(
+        failures,
+        "no configured Nostr relay accepted the FIPS datagram subscription",
+      );
+      await this.stop();
+      throw error;
+    }
+    this.cleanups = cleanups;
   }
 
   async stop(): Promise<void> {
