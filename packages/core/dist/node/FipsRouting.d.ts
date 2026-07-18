@@ -35,6 +35,7 @@ export declare class FipsRouting {
     handleLinkMessage(peer: AdjacentPeer, msgType: number, payload: Uint8Array): Promise<void>;
     sendTreeAnnounce(peer: AdjacentPeer): Promise<void>;
     scheduleTreeAnnounce(peer: AdjacentPeer): void;
+    replayPendingLookupsFor(peer: AdjacentPeer): Promise<void>;
     ensureFirstContactRoute(target: NodeAddr, targetHex: string, targetPubkey: Uint8Array): Promise<void>;
     sendFspToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array): Promise<void>;
     sendFspReplyToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array, previousHop: AdjacentPeer): Promise<void>;

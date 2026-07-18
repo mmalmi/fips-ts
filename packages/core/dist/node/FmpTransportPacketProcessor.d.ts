@@ -30,6 +30,7 @@ export declare class FmpTransportPacketProcessor {
     private prepareMsg1Peer;
     private rejectRetiredEpoch;
     private handleMsg2;
+    private replayPendingLookupsAfterEstablishment;
     private matchMsg2Peer;
     private retireDisplacedMsg2Peer;
     private drainAuthenticatedLink;

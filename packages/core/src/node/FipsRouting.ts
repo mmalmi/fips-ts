@@ -59,6 +59,7 @@ interface LookupReversePath {
   peer: AdjacentPeer;
   expiresAtMs: number;
   forwardedNextHops: Set<string>;
+  request: LookupRequest;
 }
 
 interface FipsRoutingConfig {
@@ -214,6 +215,36 @@ export class FipsRouting {
         this.cfg.emitError(error as Error, "send TreeAnnounce");
       });
     }, 0);
+  }
+
+  async replayPendingLookupsFor(peer: AdjacentPeer): Promise<void> {
+    if (peer.link.state !== "established") return;
+    const peerKey = peerNodeKey(peer);
+    if (this.cfg.getPeerByNodeAddr(peerKey) !== peer) return;
+    this.pruneLookupReversePaths(Date.now());
+    const pending = [...this.lookupReversePaths.values()].filter((reverse) =>
+      nodeAddrToHex(reverse.request.target) === peerKey
+      && peerNodeKey(reverse.peer) !== peerKey
+      && !reverse.forwardedNextHops.has(peerKey)
+      && (reverse.request.minMtu === 0 || peer.transport.mtu >= reverse.request.minMtu)
+    );
+    await Promise.all(pending.map(async (reverse) => {
+      reverse.forwardedNextHops.add(peerKey);
+      try {
+        await this.cfg.sendLinkMessage(
+          peer,
+          LinkMessageType.LookupRequest,
+          encodeLookupRequestPayload(reverse.request),
+        );
+        this.cfg.logger.debug(
+          "pending lookup replayed to established target",
+          peerKey,
+        );
+      } catch (error) {
+        reverse.forwardedNextHops.delete(peerKey);
+        this.cfg.emitError(error as Error, "replay pending LookupRequest");
+      }
+    }));
   }
 
   async ensureFirstContactRoute(
@@ -420,15 +451,14 @@ export class FipsRouting {
       peer: sourcePeer,
       expiresAtMs: Date.now() + LOOKUP_REVERSE_PATH_TTL_MS,
       forwardedNextHops: new Set<string>(),
+      request: { ...request, ttl: request.ttl - 1 },
     };
     if (!existingReverse) {
       this.reserveLookupReversePath();
       this.lookupReversePaths.set(reverseKey, reverse);
     }
     if (canResolveDirectly) {
-      const requestForResolution = { ...request };
       void this.resolveAndForwardLookup(
-        requestForResolution,
         targetHex,
         reverseKey,
         reverse,
@@ -437,8 +467,7 @@ export class FipsRouting {
     }
     if (nextHops.length === 0) return;
     for (const nextHop of nextHops) reverse.forwardedNextHops.add(peerNodeKey(nextHop));
-    request.ttl -= 1;
-    const encoded = encodeLookupRequestPayload(request);
+    const encoded = encodeLookupRequestPayload(reverse.request);
     const results = await Promise.allSettled(
       nextHops.map((nextHop) =>
         this.cfg.sendLinkMessage(nextHop, LinkMessageType.LookupRequest, encoded)
@@ -458,21 +487,23 @@ export class FipsRouting {
   }
 
   private async resolveAndForwardLookup(
-    request: LookupRequest,
     targetHex: string,
     reverseKey: string,
     reverse: LookupReversePath,
     sourcePeer: AdjacentPeer,
   ): Promise<void> {
     try {
-      await this.resolveRoute(request.target, targetHex);
+      await this.resolveRoute(reverse.request.target, targetHex);
     } catch {
       this.cfg.logger.debug("lookup target transport resolution failed", targetHex);
       return;
     }
     if (this.lookupReversePaths.get(reverseKey) !== reverse) return;
     const nextHop = this.nextHopFor(targetHex, sourcePeer);
-    if (!nextHop || (request.minMtu !== 0 && nextHop.transport.mtu < request.minMtu)) return;
+    if (
+      !nextHop
+      || (reverse.request.minMtu !== 0 && nextHop.transport.mtu < reverse.request.minMtu)
+    ) return;
     const nextHopKey = peerNodeKey(nextHop);
     if (reverse.forwardedNextHops.has(nextHopKey)) return;
     reverse.forwardedNextHops.add(nextHopKey);
@@ -480,7 +511,7 @@ export class FipsRouting {
       await this.cfg.sendLinkMessage(
         nextHop,
         LinkMessageType.LookupRequest,
-        encodeLookupRequestPayload({ ...request, ttl: request.ttl - 1 }),
+        encodeLookupRequestPayload(reverse.request),
       );
       this.cfg.logger.debug("lookup request forwarded after transport resolution", targetHex);
     } catch (error) {

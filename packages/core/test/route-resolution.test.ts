@@ -332,6 +332,93 @@ describe("FipsNode on-demand route resolution", () => {
     }
   }, 10_000);
 
+  it("replays a pending lookup when the exact target establishes later", async () => {
+    vi.useFakeTimers();
+    const origin = await identityFromSecretKey(new Uint8Array(32).fill(0x45));
+    const router = await identityFromSecretKey(new Uint8Array(32).fill(0x46));
+    const companion = await identityFromSecretKey(new Uint8Array(32).fill(0x47));
+    const target = await identityFromSecretKey(new Uint8Array(32).fill(0x48));
+    const originTransport = new RoutedTransport("late-target-origin");
+    const routerOriginTransport = new RoutedTransport("late-target-origin");
+    const routerCompanionTransport = new RoutedTransport("late-target-companion");
+    const companionTransport = new RoutedTransport("late-target-companion");
+    const routerTargetTransport = new RoutedTransport("late-target-direct");
+    const targetTransport = new RoutedTransport("late-target-direct");
+    const originNode = new FipsNode({
+      identity: origin,
+      transports: [originTransport],
+      routingMode: "reply_learned",
+    });
+    const routerNode = new FipsNode({
+      identity: router,
+      transports: [
+        routerOriginTransport,
+        routerCompanionTransport,
+        routerTargetTransport,
+      ],
+      forwarding: true,
+      routingMode: "reply_learned",
+    });
+    const companionNode = new FipsNode({
+      identity: companion,
+      transports: [companionTransport],
+      routingMode: "reply_learned",
+    });
+    const targetNode = new FipsNode({
+      identity: target,
+      transports: [targetTransport],
+      routingMode: "reply_learned",
+    });
+    let received: Uint8Array | undefined;
+    targetNode.registerService(8_083, ({ payload }) => {
+      received = payload;
+    });
+
+    await Promise.all([
+      originNode.start(),
+      routerNode.start(),
+      companionNode.start(),
+      targetNode.start(),
+    ]);
+    try {
+      await originNode.connect({
+        transport: "late-target-origin",
+        addr: toHex(router.publicKey),
+      });
+      await routerNode.connect({
+        transport: "late-target-companion",
+        addr: toHex(companion.publicKey),
+      });
+
+      const firstDatagram = originNode.sendDatagram({
+        dst: toHex(target.publicKey),
+        dstPort: 8_083,
+        payload: new TextEncoder().encode("late-target"),
+      });
+      void firstDatagram.catch(() => undefined);
+      await vi.waitFor(() => {
+        const reversePaths = (
+          routerNode as unknown as { routing: { lookupReversePaths: Map<string, unknown> } }
+        ).routing.lookupReversePaths;
+        expect(reversePaths.size).toBe(1);
+      });
+
+      await targetNode.connect({
+        transport: "late-target-direct",
+        addr: toHex(router.publicKey),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(new TextDecoder().decode(received)).toBe("late-target");
+      await firstDatagram;
+    } finally {
+      await originNode.stop();
+      await routerNode.stop();
+      await companionNode.stop();
+      await targetNode.stop();
+    }
+  }, 10_000);
+
   it("resolves a lookup target on a forwarding host before releasing the first datagram", async () => {
     const guest = await identityFromSecretKey(new Uint8Array(32).fill(0x3a));
     const host = await identityFromSecretKey(new Uint8Array(32).fill(0x3b));

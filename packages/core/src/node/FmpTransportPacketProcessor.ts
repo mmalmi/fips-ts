@@ -197,15 +197,18 @@ export class FmpTransportPacketProcessor {
     peer.pubkey = result.remotePubkey;
     peer.pubkeyHex = remotePubkeyHex;
     this.rememberPeer(peer);
-    if (result.reply) {
-      void transport.send(remoteAddr, result.reply).catch((error) => {
+    const reply = result.reply;
+    let replySent: Promise<void> | undefined;
+    if (reply) {
+      replySent = transport.send(remoteAddr, reply);
+      void replySent.catch((error) => {
         this.cfg.emitError(error as Error, "send Msg2");
       });
       this.cfg.logger.debug(
         "fips msg2 sent",
         remoteAddr.transport,
         remoteAddr.addr,
-        result.reply.length,
+        reply.length,
       );
     }
     if (replacedHandshake) {
@@ -218,6 +221,7 @@ export class FmpTransportPacketProcessor {
         remoteAddr: peer.remoteAddr,
         state: "connected",
       });
+      this.replayPendingLookupsAfterEstablishment(peer, replySent);
     }
   }
 
@@ -363,8 +367,22 @@ export class FmpTransportPacketProcessor {
       peer.outgoingHandshake?.resolve();
       peer.outgoingHandshake = undefined;
       this.cfg.routing.scheduleTreeAnnounce(peer);
+      this.replayPendingLookupsAfterEstablishment(peer);
     }
     this.cfg.logger.debug("fips msg2 handled", remoteAddr.transport, remoteAddr.addr);
+  }
+
+  private replayPendingLookupsAfterEstablishment(
+    peer: AdjacentPeer,
+    establishmentReply?: Promise<void>,
+  ): void {
+    const replay = () => {
+      void this.cfg.routing.replayPendingLookupsFor(peer).catch((error) => {
+        this.cfg.emitError(error as Error, "replay pending lookups");
+      });
+    };
+    if (establishmentReply) void establishmentReply.then(replay, () => undefined);
+    else replay();
   }
 
   private matchMsg2Peer(receiverIdx: number): AdjacentPeer | undefined {

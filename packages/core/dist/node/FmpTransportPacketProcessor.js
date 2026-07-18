@@ -127,11 +127,14 @@ export class FmpTransportPacketProcessor {
         peer.pubkey = result.remotePubkey;
         peer.pubkeyHex = remotePubkeyHex;
         this.rememberPeer(peer);
-        if (result.reply) {
-            void transport.send(remoteAddr, result.reply).catch((error) => {
+        const reply = result.reply;
+        let replySent;
+        if (reply) {
+            replySent = transport.send(remoteAddr, reply);
+            void replySent.catch((error) => {
                 this.cfg.emitError(error, "send Msg2");
             });
-            this.cfg.logger.debug("fips msg2 sent", remoteAddr.transport, remoteAddr.addr, result.reply.length);
+            this.cfg.logger.debug("fips msg2 sent", remoteAddr.transport, remoteAddr.addr, reply.length);
         }
         if (replacedHandshake) {
             peer.outgoingHandshake = undefined;
@@ -143,6 +146,7 @@ export class FmpTransportPacketProcessor {
                 remoteAddr: peer.remoteAddr,
                 state: "connected",
             });
+            this.replayPendingLookupsAfterEstablishment(peer, replySent);
         }
     }
     prepareMsg1Peer(transport, remoteAddr, key, initialPeer) {
@@ -241,8 +245,20 @@ export class FmpTransportPacketProcessor {
             peer.outgoingHandshake?.resolve();
             peer.outgoingHandshake = undefined;
             this.cfg.routing.scheduleTreeAnnounce(peer);
+            this.replayPendingLookupsAfterEstablishment(peer);
         }
         this.cfg.logger.debug("fips msg2 handled", remoteAddr.transport, remoteAddr.addr);
+    }
+    replayPendingLookupsAfterEstablishment(peer, establishmentReply) {
+        const replay = () => {
+            void this.cfg.routing.replayPendingLookupsFor(peer).catch((error) => {
+                this.cfg.emitError(error, "replay pending lookups");
+            });
+        };
+        if (establishmentReply)
+            void establishmentReply.then(replay, () => undefined);
+        else
+            replay();
     }
     matchMsg2Peer(receiverIdx) {
         const matches = new Set();
