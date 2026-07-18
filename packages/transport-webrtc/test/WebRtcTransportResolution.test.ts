@@ -97,6 +97,22 @@ afterEach(() => {
 });
 
 describe("WebRtcTransport NodeAddr resolution", () => {
+  it("starts without public relays for authenticated in-FIPS negotiation", async () => {
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x57));
+    const transport = new WebRtcTransport({
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+    });
+    await expect(transport.start(transportContext(local))).resolves.toBeUndefined();
+    await transport.stop();
+  });
+
+  it("requires a relay only when signed Nostr advertisements are enabled", () => {
+    expect(() => new WebRtcTransport({
+      advertiseOnNostr: true,
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+    })).toThrow("advertiseOnNostr requires at least one Nostr relay");
+  });
+
   it("rejects an unsolicited offer when inbound acceptance was not enabled", async () => {
     const local = await identityFromSecretKey(new Uint8Array(32).fill(0x58));
     const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x59));

@@ -3,7 +3,8 @@ import type { Logger } from "@fips/core";
 import type { NostrRelayClient } from "./NostrRelayClient.js";
 
 export interface WebRtcTransportConfig {
-  relays: string[];
+  /** Optional Nostr relays for bounded signed WebRTC peer announcements. */
+  relays?: string[];
   relayClients?: NostrRelayClient[];
   stunServers?: string[];
   advertiseOnNostr?: boolean;

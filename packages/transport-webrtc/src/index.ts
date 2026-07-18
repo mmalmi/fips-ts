@@ -17,12 +17,6 @@ export {
 } from "./NostrPeerDiscovery.js";
 
 export {
-  NostrRelayTransport,
-  NOSTR_RELAY_DATAGRAM_KIND,
-  type NostrRelayTransportConfig,
-} from "./NostrRelayTransport.js";
-
-export {
   NostrRelayClient,
   type NostrEvent,
   type NostrFilter,

@@ -1,0 +1,13 @@
+export {
+  LOCAL_KEY_HINT_REQUEST_BYTES,
+  LOCAL_KEY_HINT_RESPONSE_BYTES,
+  LOCAL_KEY_HINT_VERSION,
+  WebSocketTransport,
+  decodeLocalKeyHint,
+  encodeLocalKeyHintRequest,
+  encodeLocalKeyHintResponse,
+  validateFipsWebSocketRecord,
+  type LocalKeyHint,
+  type WebSocketTransportConfig,
+  type WebSocketTransportStats,
+} from "./WebSocketTransport.js";

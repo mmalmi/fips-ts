@@ -8,7 +8,6 @@ export declare class WebRtcTransport implements Transport {
     private readonly logger;
     private readonly RTCPC;
     private peerDiscovery?;
-    private readonly relayFallback;
     private relayClients;
     private ownsRelayClients;
     private readonly conns;
@@ -34,7 +33,6 @@ export declare class WebRtcTransport implements Transport {
     private advertRefreshTimer?;
     private stopping;
     constructor(config: WebRtcTransportConfig);
-    companionTransports(): Transport[];
     start(ctx: TransportContext): Promise<void>;
     stop(): Promise<void>;
     private handleAdvert;

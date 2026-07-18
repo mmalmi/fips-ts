@@ -1,5 +1,24 @@
 # Changelog
 
+## Runtime packages 0.0.27 - 2026-07-18
+
+- Add `@fips/transport-websocket` 0.0.1 for explicit `wss://` first
+  adjacencies. Each bounded binary WebSocket message carries one FIPS physical
+  record or bounded direct-FSP fragment; the ordinary FMP Noise handshake
+  authenticates the remote identity.
+- Remove the kind-21060 Nostr relay packet transport. Nostr relays remain an
+  optional carrier for low-rate signed peer adverts; they never carry FIPS
+  physical packets or WebRTC offers and answers.
+- Carry WebRTC negotiation only through the authenticated in-FIPS service on
+  port 257, and preserve an FSP session while its WSS path is being replaced
+  by an in-progress authenticated WebRTC path.
+- Release `@fips/core` 0.0.27, `@fips/transport-webrtc` 0.0.43,
+  `@fips/transport-websocket` 0.0.1, `@fips/browser` 0.0.9,
+  `@fips/transport-ethernet` 0.0.26, and `@fips/transport-memory` 0.0.7 as one
+  immutable runtime bundle.
+- Verify bounded queue/backpressure and reconnect behavior, all browser unit
+  and Playwright gates, and real Rust FIPS 0.4.11 WSS-to-WebRTC interop.
+
 ## Runtime packages 0.0.26 - 2026-07-16
 
 - Allocate FMP receiver indices inside each node's fresh startup epoch instead

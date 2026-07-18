@@ -48,7 +48,6 @@ function advertContent(pubkey: string): FipsAdvertContent {
     version: 1,
     endpoints: [
       { transport: "webrtc", addr: pubkey },
-      { transport: "nostr_relay", addr: "npub1example" },
     ],
     stunServers: [],
   };

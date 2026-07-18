@@ -3,10 +3,9 @@ import { expect, test } from "@playwright/test";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
+import { createServer } from "node:net";
 import { createInterface } from "node:readline";
 import path from "node:path";
-
-import { startLocalNostrRelay, type LocalNostrRelay } from "./fixtures/localNostrRelay.js";
 
 const RUST_SECRET_HEX =
   "0000000000000000000000000000000000000000000000000000000000000001";
@@ -15,21 +14,12 @@ interface RustFixture {
   process: ChildProcessWithoutNullStreams;
   npub: string;
   pubkeyHex: string;
+  websocketUrl: string;
   stderr: () => string;
   close(): Promise<void>;
 }
 
-let relay: LocalNostrRelay;
-
 test.setTimeout(180_000);
-
-test.beforeAll(async () => {
-  relay = await startLocalNostrRelay();
-});
-
-test.afterAll(async () => {
-  await relay.close();
-});
 
 test("Rust WebRTC stays responsive after a browser peer disconnects", async ({ page, context }) => {
   const manifest = rustManifestPath();
@@ -38,11 +28,11 @@ test("Rust WebRTC stays responsive after a browser peer disconnects", async ({ p
     `Rust FIPS checkout not found at ${manifest}; set FIPS_RS_ROOT to run this interop test`,
   );
 
-  const rust = await startRustFixture(relay.url, manifest);
+  const rust = await startRustFixture(manifest);
   try {
     await page.addInitScript((url) => {
-      window.__fipsTestRelayUrl = url;
-    }, relay.url);
+      window.__fipsTestWebSocketSeedUrl = url;
+    }, rust.websocketUrl);
     page.on("console", (msg) => {
       if (msg.type() === "log" || msg.type() === "warning" || msg.type() === "error") {
         console.log(`browser ${msg.type()}: ${msg.text()}`);
@@ -53,13 +43,12 @@ test("Rust WebRTC stays responsive after a browser peer disconnects", async ({ p
     await page.goto("/");
     await page.waitForFunction(() => !!window.__fipsHarness);
 
-    const reply = await page.evaluate(async ({ relayUrl, pubkeyHex }) => {
+    const reply = await page.evaluate(async ({ pubkeyHex }) => {
       return window.__fipsHarness.echoWithRustWebRtcPeer(
-        relayUrl,
         pubkeyHex,
         "hello-rust-fips",
       );
-    }, { relayUrl: relay.url, pubkeyHex: rust.pubkeyHex });
+    }, { pubkeyHex: rust.pubkeyHex });
 
     expect(reply).toBe("hello-rust-fips");
 
@@ -70,17 +59,16 @@ test("Rust WebRTC stays responsive after a browser peer disconnects", async ({ p
 
     const replacementPage = await context.newPage();
     await replacementPage.addInitScript((url) => {
-      window.__fipsTestRelayUrl = url;
-    }, relay.url);
+      window.__fipsTestWebSocketSeedUrl = url;
+    }, rust.websocketUrl);
     await replacementPage.goto("/");
     await replacementPage.waitForFunction(() => !!window.__fipsHarness);
     const replacementReply = await replacementPage.evaluate(
-      async ({ relayUrl, pubkeyHex }) => window.__fipsHarness.echoWithRustWebRtcPeer(
-        relayUrl,
+      async ({ pubkeyHex }) => window.__fipsHarness.echoWithRustWebRtcPeer(
         pubkeyHex,
         "hello-after-disconnect",
       ),
-      { relayUrl: relay.url, pubkeyHex: rust.pubkeyHex },
+      { pubkeyHex: rust.pubkeyHex },
     );
     expect(replacementReply).toBe("hello-after-disconnect");
     await replacementPage.close();
@@ -99,10 +87,11 @@ function rustManifestPath(): string {
 }
 
 async function startRustFixture(
-  relayUrl: string,
   manifestPath: string,
 ): Promise<RustFixture> {
   const cwd = path.dirname(manifestPath);
+  const port = await availableLoopbackPort();
+  const websocketUrl = `ws://127.0.0.1:${port}/fips`;
   const proc = spawn(
     "cargo",
     [
@@ -113,8 +102,8 @@ async function startRustFixture(
       "--bin",
       "fips-webrtc-echo-fixture",
       "--",
-      "--relay",
-      relayUrl,
+      "--websocket-bind",
+      `127.0.0.1:${port}`,
       "--secret",
       RUST_SECRET_HEX,
     ],
@@ -123,9 +112,10 @@ async function startRustFixture(
       detached: process.platform !== "win32",
       env: {
         ...process.env,
+        RUSTC_WRAPPER: "",
         RUST_LOG:
           process.env.FIPS_RUST_LOG ??
-          "fips_core::transport::webrtc=debug,fips_core::discovery::nostr=debug,info",
+          "fips_core::transport::websocket=debug,fips_core::transport::webrtc=debug,info",
       },
     },
   );
@@ -170,9 +160,26 @@ async function startRustFixture(
   return {
     process: proc,
     ...ready,
+    websocketUrl,
     stderr: () => stderr,
     close: () => stopProcess(proc),
   };
+}
+
+async function availableLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("failed to allocate a loopback port");
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+  return address.port;
 }
 
 async function stopProcess(proc: ChildProcessWithoutNullStreams): Promise<void> {

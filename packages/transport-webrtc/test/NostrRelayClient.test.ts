@@ -84,7 +84,7 @@ function event(id: string): NostrEvent {
     id,
     pubkey: "aa".repeat(32),
     created_at: 1,
-    kind: 21060,
+    kind: 37195,
     tags: [["p", "bb".repeat(32)]],
     content: "content",
     sig: "cc".repeat(64),
@@ -154,7 +154,7 @@ describe("NostrRelayClient subscription lifecycle", () => {
       url: "ws://relay.test",
       webSocket: FakeWebSocket as unknown as typeof WebSocket,
     });
-    const firstFilter = { kinds: [21060], "#p": ["aa"] };
+    const firstFilter = { kinds: [37195], "#p": ["aa"] };
     const secondFilter = { authors: ["bb"], since: 10 };
     const onEose = (): void => undefined;
 
@@ -182,7 +182,7 @@ describe("NostrRelayClient subscription lifecycle", () => {
       webSocket: FakeWebSocket as unknown as typeof WebSocket,
     });
     const unsubscribe = await relay.subscribe(
-      { kinds: [21060] },
+      { kinds: [37195] },
       { onEvent: () => undefined },
     );
     const firstSocket = FakeWebSocket.instances[0]!;
@@ -193,7 +193,7 @@ describe("NostrRelayClient subscription lifecycle", () => {
     await relay.connect();
 
     expect(firstSocket.sent.map((message) => JSON.parse(message))).toEqual([
-      ["REQ", "s1", { kinds: [21060] }],
+      ["REQ", "s1", { kinds: [37195] }],
     ]);
     expect(FakeWebSocket.instances[1]!.sent).toEqual([]);
   });
@@ -204,7 +204,7 @@ describe("NostrRelayClient subscription lifecycle", () => {
       webSocket: FakeWebSocket as unknown as typeof WebSocket,
     });
     const unsubscribe = await relay.subscribe(
-      { kinds: [21060] },
+      { kinds: [37195] },
       { onEvent: () => undefined },
     );
     const firstSocket = FakeWebSocket.instances[0]!;
@@ -214,7 +214,7 @@ describe("NostrRelayClient subscription lifecycle", () => {
     unsubscribe();
 
     expect(firstSocket.sent.map((message) => JSON.parse(message))).toEqual([
-      ["REQ", "s1", { kinds: [21060] }],
+      ["REQ", "s1", { kinds: [37195] }],
     ]);
     expect(FakeWebSocket.instances[1]!.sent).toEqual([]);
   });

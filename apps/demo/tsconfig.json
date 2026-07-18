@@ -11,6 +11,7 @@
   "references": [
     { "path": "../../packages/core" },
     { "path": "../../packages/transport-memory" },
+    { "path": "../../packages/transport-websocket" },
     { "path": "../../packages/transport-webrtc" },
     { "path": "../../packages/browser" }
   ]

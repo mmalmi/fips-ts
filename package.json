@@ -19,6 +19,8 @@
     "lint": "eslint ."
   },
   "devDependencies": {
+    "@fips/core": "workspace:*",
+    "@fips/transport-websocket": "workspace:*",
     "@playwright/test": "^1.61.1",
     "@types/node": "^22.10.5",
     "@types/ws": "^8.5.13",
@@ -33,6 +35,7 @@
   "pnpm": {
     "overrides": {
       "@fips/core": "link:packages/core",
+      "@fips/transport-websocket": "link:packages/transport-websocket",
       "@fips/transport-webrtc": "link:packages/transport-webrtc",
       "js-yaml": "4.2.0"
     }

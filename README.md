@@ -1,6 +1,6 @@
 # fips-ts
 
-Browser TypeScript implementation of [FIPS](https://github.com/jmcorgan/fips) — node identity, FMP / FSP, WebRTC, Nostr-relay, and virtual-Ethernet transports, endpoint bytes, service-port datagrams, and browser endpoint helpers.
+Browser TypeScript implementation of [FIPS](https://github.com/jmcorgan/fips) — node identity, FMP / FSP, WebSocket, WebRTC, and virtual-Ethernet transports, endpoint bytes, service-port datagrams, and browser endpoint helpers.
 
 The Rust reference lives at **[jmcorgan/fips](https://github.com/jmcorgan/fips)** (canonical) with a mirror at **[mmalmi/fips](https://github.com/mmalmi/fips)**. This package targets byte-for-byte wire compatibility with that codebase and ships a live interop test that drives the Rust Noise responder over stdio from TS — see [`interop/`](interop/) and [`docs/rust-compat.md`](docs/rust-compat.md).
 
@@ -12,8 +12,9 @@ packages/core              FipsNode, identity, NIP-19 npub, FMP / FSP codecs,
 packages/transport-memory  In-process transport for tests and same-page peers
 packages/transport-ethernet  Full-frame virtual Ethernet transport for browser
                            VMs and virtual NICs (EtherType 0x2121)
-packages/transport-webrtc  RTCDataChannel transport, kind 37195 Nostr peer
-                           adverts, and automatic kind 21060 FIPS relay fallback
+packages/transport-websocket  Explicit WSS first adjacency with bounded queues
+packages/transport-webrtc  RTCDataChannel transport and optional signed kind
+                           37195 Nostr peer adverts
 packages/browser           IndexedDB identity store + createBrowserFipsNode
 apps/demo                  Vanilla-TS Vite demo
 tests/e2e                  Playwright acceptance tests
@@ -42,13 +43,13 @@ pnpm --filter '@fips/core' test:unit  # the interop tests now run
 application endpoint bytes or service-port datagrams
   → FSP end-to-end session (Noise XK over secp256k1)
   → FMP mesh / link layer (Noise IK over secp256k1)
-  → Nostr relay bootstrap/fallback, WebRTC datachannel, virtual Ethernet,
-    or MemoryTransport in tests
+  → WSS seed, WebRTC datachannel, virtual Ethernet, or MemoryTransport in tests
 ```
 
-Link offers and answers use the generic service on FSP DataPacket port 257;
-they do not allocate an FSP message type. WebRTC negotiation starts only after
-the kind-21060 relay path has established authenticated FMP and FSP sessions.
+An explicit WSS seed supplies the first adjacency when no physical peer is
+already reachable. Link offers and answers then use the generic service on FSP
+DataPacket port 257; they do not allocate an FSP message type. Nostr relays may
+carry signed peer adverts, but never FIPS packets or WebRTC signaling.
 
 The invariant: **WebRTC connects adjacent peers. FIPS routes opaque bytes to node identities. Applications route their own content.** Don't push content hashes into FIPS.
 

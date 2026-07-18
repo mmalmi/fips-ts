@@ -13,6 +13,7 @@
     "@fips/browser": "workspace:*",
     "@fips/core": "workspace:*",
     "@fips/transport-memory": "workspace:*",
+    "@fips/transport-websocket": "workspace:*",
     "@fips/transport-webrtc": "workspace:*"
   },
   "devDependencies": {

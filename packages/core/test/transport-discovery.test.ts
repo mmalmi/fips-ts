@@ -98,7 +98,7 @@ describe("FipsNode transport discovery", () => {
 
   it("starts an automatic companion unless that transport type is explicit", async () => {
     const local = await generateIdentity();
-    const automatic = new LifecycleTransport("nostr_relay");
+    const automatic = new LifecycleTransport("automatic");
     const webrtc = new LifecycleTransport("webrtc", [automatic]);
     const first = new FipsNode({ identity: local, transports: [webrtc] });
 
@@ -107,8 +107,8 @@ describe("FipsNode transport discovery", () => {
     expect(automatic.starts).toBe(1);
     expect(automatic.stops).toBe(1);
 
-    const explicit = new LifecycleTransport("nostr_relay");
-    const skipped = new LifecycleTransport("nostr_relay");
+    const explicit = new LifecycleTransport("automatic");
+    const skipped = new LifecycleTransport("automatic");
     const second = new FipsNode({
       identity: local,
       transports: [new LifecycleTransport("webrtc", [skipped]), explicit],

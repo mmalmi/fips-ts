@@ -1,6 +1,6 @@
 /**
  * Minimal in-process Nostr relay for Playwright tests. Implements the bits
- * the FIPS Nostr peerfinding and relay transport paths need:
+ * signed FIPS peer announcements need:
  *   - EVENT: store and rebroadcast to matching subscribers
  *   - REQ filter (kinds, authors, #p, #d, since/until/limit)
  *   - CLOSED
@@ -40,10 +40,6 @@ interface RelayFilter {
 
 export interface LocalNostrRelay {
   url: string;
-  eventCount(): number;
-  pauseBroadcasts(): void;
-  resumeBroadcasts(): void;
-  replayPrefix(endExclusive: number, packetLength?: number): void;
   close(): Promise<void>;
 }
 
@@ -56,8 +52,6 @@ export async function startLocalNostrRelay(
   });
   const events: RelayEvent[] = [];
   const subs = new Set<Subscription>();
-  const queuedBroadcasts: RelayEvent[] = [];
-  let broadcastsPaused = false;
 
   const broadcast = (event: RelayEvent): void => {
     for (const sub of subs) {
@@ -96,8 +90,7 @@ export async function startLocalNostrRelay(
         }
         events.push(ev);
         ws.send(JSON.stringify(["OK", ev.id, true, ""]));
-        if (broadcastsPaused) queuedBroadcasts.push(ev);
-        else broadcast(ev);
+        broadcast(ev);
         return;
       }
       if (tag === "REQ") {
@@ -132,27 +125,6 @@ export async function startLocalNostrRelay(
   const { port: boundPort } = wss.address() as AddressInfo;
   return {
     url: `ws://127.0.0.1:${boundPort}`,
-    eventCount: () => events.length,
-    pauseBroadcasts() {
-      broadcastsPaused = true;
-    },
-    resumeBroadcasts() {
-      broadcastsPaused = false;
-      for (const event of queuedBroadcasts.splice(0)) broadcast(event);
-    },
-    replayPrefix(endExclusive, packetLength) {
-      for (const sub of subs) {
-        if (sub.ws.readyState !== sub.ws.OPEN) continue;
-        for (const ev of events.slice(0, endExclusive)) {
-          if (
-            (packetLength === undefined || relayPacketLength(ev) === packetLength)
-            && matchFilter(sub.filter, ev)
-          ) {
-            sub.ws.send(JSON.stringify(["EVENT", sub.subId, ev]));
-          }
-        }
-      }
-    },
     async close() {
       for (const ws of wss.clients) {
         try { ws.terminate(); } catch { /* ignore */ }
@@ -165,15 +137,6 @@ export async function startLocalNostrRelay(
       });
     },
   };
-}
-
-function relayPacketLength(event: RelayEvent): number | undefined {
-  if (event.kind !== 21_060 || !/^[A-Za-z0-9_-]*$/u.test(event.content)) return undefined;
-  const padding = "=".repeat((4 - (event.content.length % 4)) % 4);
-  return Buffer.from(
-    event.content.replaceAll("-", "+").replaceAll("_", "/") + padding,
-    "base64",
-  ).length;
 }
 
 function isReplaceable(kind: number): boolean {

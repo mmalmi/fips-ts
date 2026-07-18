@@ -4,7 +4,7 @@
     "composite": true,
     "outDir": "dist",
     "rootDir": "src",
-    "tsBuildInfoFile": "../../node_modules/.cache/fips-browser.tsbuildinfo"
+    "tsBuildInfoFile": "../../node_modules/.cache/fips-transport-websocket.tsbuildinfo"
   },
   "include": ["src"],
   "references": [{ "path": "../core" }]

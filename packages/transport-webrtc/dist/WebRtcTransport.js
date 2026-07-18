@@ -1,8 +1,7 @@
-import { encodeNpub, fromHex, deriveNodeAddr, nodeAddrToHex, toHex, noopLogger, } from "@fips/core";
+import { fromHex, deriveNodeAddr, nodeAddrToHex, toHex, noopLogger, } from "@fips/core";
 import { NostrRelayClient } from "./NostrRelayClient.js";
 import { WebRtcAutoConnectPolicy } from "./WebRtcAutoConnectPolicy.js";
 import { DEFAULT_FIPS_ADVERT_TTL_MS, FIPS_ADVERT_D_TAG, NostrPeerDiscovery, } from "./NostrPeerDiscovery.js";
-import { NostrRelayTransport } from "./NostrRelayTransport.js";
 import { WebRtcConnection } from "./WebRtcConnection.js";
 import { WebRtcAdvertCache } from "./WebRtcAdvertCache.js";
 import { AsyncEventStream, cloneDiscoveredPeer, emptyAsyncIterable, hasPendingInboundForPeer, incomingOfferReplacesPendingDial, randomId, waitForIceGatheringComplete, } from "./WebRtcTransportSupport.js";
@@ -20,7 +19,6 @@ export class WebRtcTransport {
     logger;
     RTCPC;
     peerDiscovery;
-    relayFallback;
     relayClients = [];
     ownsRelayClients = false;
     conns = new Map(); // by pubkeyHex
@@ -48,6 +46,7 @@ export class WebRtcTransport {
     constructor(config) {
         const maxConnections = config.maxConnections ?? 32;
         this.cfg = {
+            relays: [],
             advertiseOnNostr: false,
             acceptConnections: config.acceptConnections ?? config.advertiseOnNostr ?? false,
             autoConnect: false,
@@ -72,23 +71,23 @@ export class WebRtcTransport {
         if (!this.RTCPC) {
             throw new Error("RTCPeerConnection not available in this environment");
         }
-        this.relayFallback = new NostrRelayTransport({
-            relays: this.cfg.relays,
-            relayClients: this.cfg.relayClients,
-            webSocket: this.cfg.webSocket,
-            relayConnectTimeoutMs: this.cfg.relayConnectTimeoutMs,
-            logger: this.logger,
-        });
-    }
-    companionTransports() {
-        return [this.relayFallback];
+        if (this.cfg.advertiseOnNostr && this.cfg.relays.length === 0) {
+            throw new Error("advertiseOnNostr requires at least one Nostr relay");
+        }
     }
     async start(ctx) {
         this.stopping = false;
         this.ctx = ctx;
         this.discoveryStream = new AsyncEventStream();
         const sharedRelayClients = this.cfg.relayClients;
-        if (sharedRelayClients !== undefined) {
+        if (this.cfg.relays.length === 0) {
+            if (sharedRelayClients && sharedRelayClients.length > 0) {
+                throw new Error("shared relay clients require matching configured relays");
+            }
+            this.relayClients = [];
+            this.ownsRelayClients = false;
+        }
+        else if (sharedRelayClients !== undefined) {
             const configuredUrls = this.cfg.relays.map((url) => new URL(url).toString());
             const sharedUrls = sharedRelayClients.map((client) => new URL(client.url).toString());
             if (sharedUrls.length === 0
@@ -108,18 +107,20 @@ export class WebRtcTransport {
             }));
             this.ownsRelayClients = true;
         }
-        this.peerDiscovery = new NostrPeerDiscovery({
-            identity: ctx.localIdentity,
-            relays: this.relayClients,
-            discoveryApp: this.cfg.discoveryApp,
-            advertTtlMs: this.cfg.advertTtlMs,
-            logger: this.logger,
-        });
-        this.advertCleanup = await this.peerDiscovery.subscribeAdverts((event, advert, sourceRelayUrl) => {
-            this.handleAdvert(event, advert, sourceRelayUrl).catch((err) => {
-                this.logger.warn("handleAdvert", err);
+        if (this.relayClients.length > 0) {
+            this.peerDiscovery = new NostrPeerDiscovery({
+                identity: ctx.localIdentity,
+                relays: this.relayClients,
+                discoveryApp: this.cfg.discoveryApp,
+                advertTtlMs: this.cfg.advertTtlMs,
+                logger: this.logger,
             });
-        });
+            this.advertCleanup = await this.peerDiscovery.subscribeAdverts((event, advert, sourceRelayUrl) => {
+                this.handleAdvert(event, advert, sourceRelayUrl).catch((err) => {
+                    this.logger.warn("handleAdvert", err);
+                });
+            });
+        }
         if (this.cfg.advertiseOnNostr) {
             await this.publishLocalAdvert();
             const refreshMs = Math.max(1_000, Math.floor((this.cfg.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS) / 2));
@@ -195,7 +196,6 @@ export class WebRtcTransport {
                 continue;
             if (remotePubkeyHex === localPubkeyHex)
                 continue;
-            this.relayFallback.recordAdvertSource(remotePubkeyHex, sourceRelayUrl);
             const peer = {
                 remoteAddr: { transport: this.type, addr: remotePubkeyHex },
                 publicKey: fromHex(remotePubkeyHex),
@@ -260,7 +260,6 @@ export class WebRtcTransport {
             version: 1,
             endpoints: [
                 { transport: "webrtc", addr: toHex(this.ctx.localIdentity.publicKey) },
-                { transport: "nostr_relay", addr: encodeNpub(this.ctx.localIdentity.xOnlyPubkey) },
             ],
             stunServers: this.cfg.stunServers ?? [],
         });
@@ -337,10 +336,9 @@ export class WebRtcTransport {
         }
         if (isAutoConnect)
             this.pendingAutoConnects.add(remotePubkeyHex);
-        if (!this.ctx?.connectTransport || !this.ctx.sendLinkNegotiation) {
-            throw new Error("WebRTC negotiation requires a FIPS transport context");
+        if (!this.ctx?.sendLinkNegotiation) {
+            throw new Error("WebRTC negotiation requires an authenticated FIPS route");
         }
-        await this.ctx.connectTransport({ transport: "nostr_relay", addr: remotePubkeyHex });
         const sessionId = randomId();
         this.knownSessionIds.add(sessionId);
         this.logger.debug("webrtc connect start", remotePubkeyHex, sessionId);

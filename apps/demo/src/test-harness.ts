@@ -1,13 +1,18 @@
 /**
  * Test harness exposed to Playwright. Lets tests drive a pair of FipsNodes
- * inside the demo page over the real WebRtcTransport, with the local Nostr
- * relay URL injected via the global `__fipsTestRelayUrl`.
+ * inside the demo page over the real WebRtcTransport, with local WSS seed and
+ * Nostr advert relay URLs injected through the test globals below.
  */
 
 import { IndexedDbIdentityStore } from "@fips/browser";
 import { FipsNode, generateIdentity, toHex } from "@fips/core";
 import { MemoryHub, MemoryTransport } from "@fips/transport-memory";
-import { NostrRelayClient, WebRtcTransport } from "@fips/transport-webrtc";
+import {
+  NostrRelayClient,
+  WebRtcTransport,
+  type WebRtcTransportConfig,
+} from "@fips/transport-webrtc";
+import { WebSocketTransport } from "@fips/transport-websocket";
 
 interface NodePair {
   a: FipsNode;
@@ -38,7 +43,19 @@ declare global {
   interface Window {
     __fipsHarness: typeof harness;
     __fipsTestRelayUrl?: string;
+    __fipsTestWebSocketSeedUrl?: string;
   }
+}
+
+function webSocketSeedTransport(): WebSocketTransport {
+  const seedUrl = window.__fipsTestWebSocketSeedUrl
+    ?? new URL(window.location.href).searchParams.get("fipsSeed");
+  if (!seedUrl) throw new Error("fipsSeed WebSocket URL is required");
+  return new WebSocketTransport({ seedUrls: [seedUrl] });
+}
+
+function webRtcTransports(config: WebRtcTransportConfig): [WebSocketTransport, WebRtcTransport] {
+  return [webSocketSeedTransport(), new WebRtcTransport(config)];
 }
 
 async function makeWebRtcPair(relayUrl: string): Promise<NodePair> {
@@ -55,16 +72,12 @@ async function makeWebRtcPair(relayUrl: string): Promise<NodePair> {
   const a = new FipsNode({
     identity: aId,
     logger,
-    transports: [
-      new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger }),
-    ],
+    transports: webRtcTransports({ relays: [relayUrl], advertiseOnNostr: true, logger }),
   });
   const b = new FipsNode({
     identity: bId,
     logger,
-    transports: [
-      new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger }),
-    ],
+    transports: webRtcTransports({ relays: [relayUrl], advertiseOnNostr: true, logger }),
   });
   a.on("error", (e) => console.warn("[harness] A error", e));
   b.on("error", (e) => console.warn("[harness] B error", e));
@@ -87,23 +100,19 @@ async function autoConnectWebRtcPair(relayUrl: string): Promise<NodePair> {
   const bId = await generateIdentity();
   const a = new FipsNode({
     identity: aId,
-    transports: [
-      new WebRtcTransport({
+    transports: webRtcTransports({
         relays: [relayUrl],
         advertiseOnNostr: true,
         autoConnect: true,
       }),
-    ],
   });
   const b = new FipsNode({
     identity: bId,
-    transports: [
-      new WebRtcTransport({
+    transports: webRtcTransports({
         relays: [relayUrl],
         advertiseOnNostr: true,
         autoConnect: true,
       }),
-    ],
   });
   b.registerService(9000, async ({ payload, reply }) => {
     await reply(payload);
@@ -144,8 +153,8 @@ async function autoConnectWebRtcReconnect(relayUrl: string): Promise<{ first: st
     maxConnections: 1,
     discoveryApp,
   });
-  const a = new FipsNode({ identity: aId, transports: [aTransport] });
-  const b = new FipsNode({ identity: bId, transports: [bTransport] });
+  const a = new FipsNode({ identity: aId, transports: [webSocketSeedTransport(), aTransport] });
+  const b = new FipsNode({ identity: bId, transports: [webSocketSeedTransport(), bTransport] });
   const pair = { a, b, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey) };
   b.registerService(9000, async ({ payload, reply }) => {
     await reply(payload);
@@ -194,20 +203,20 @@ async function autoConnectWebRtcPeerRestart(
   };
   const a = new FipsNode({
     identity: aId,
-    transports: [new WebRtcTransport({
+    transports: webRtcTransports({
       ...options,
       relays: [...new Set([initialRelayUrl, replacementRelayUrl])],
-    })],
+    }),
   });
   const originalRelay = new NostrRelayClient({ url: initialRelayUrl });
   const createB = (relayUrl: string, relayClients?: NostrRelayClient[]) => {
     const node = new FipsNode({
       identity: bId,
-      transports: [new WebRtcTransport({
+      transports: webRtcTransports({
         ...options,
         relays: [relayUrl],
         relayClients,
-      })],
+      }),
     });
     node.registerService(9000, async ({ payload, reply }) => reply(payload));
     return node;
@@ -254,11 +263,11 @@ async function connectThroughStaleAdvertBacklog(relayUrl: string): Promise<{
     const identity = await generateIdentity();
     const node = new FipsNode({
       identity,
-      transports: [new WebRtcTransport({
+      transports: webRtcTransports({
         relays: [relayUrl],
         advertiseOnNostr: true,
         discoveryApp,
-      })],
+      }),
     });
     await node.start();
     await node.stop();
@@ -283,7 +292,7 @@ async function connectThroughStaleAdvertBacklog(relayUrl: string): Promise<{
   const listener = new FipsNode({
     identity: listenerId,
     logger: listenerLogger,
-    transports: [new WebRtcTransport({
+    transports: webRtcTransports({
       relays: [relayUrl],
       advertiseOnNostr: true,
       autoConnect: true,
@@ -291,7 +300,7 @@ async function connectThroughStaleAdvertBacklog(relayUrl: string): Promise<{
       discoveryApp,
       maxConnections: 8,
       logger: listenerLogger,
-    })],
+    }),
   });
   listener.registerService(9000, async ({ payload, reply }) => reply(payload));
   await listener.start();
@@ -303,14 +312,14 @@ async function connectThroughStaleAdvertBacklog(relayUrl: string): Promise<{
   const liveId = await generateIdentity();
   const createLiveNode = () => new FipsNode({
     identity: liveId,
-    transports: [new WebRtcTransport({
+    transports: webRtcTransports({
       relays: [relayUrl],
       advertiseOnNostr: true,
       autoConnect: false,
       connectTimeoutMs: 8_000,
       discoveryApp,
       maxConnections: 8,
-    })],
+    }),
   });
   let live = createLiveNode();
   await live.start();
@@ -379,16 +388,12 @@ async function duplicateWebRtcConnect(relayUrl: string): Promise<string> {
   const a = new FipsNode({
     identity: aId,
     logger,
-    transports: [
-      new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger }),
-    ],
+    transports: webRtcTransports({ relays: [relayUrl], advertiseOnNostr: true, logger }),
   });
   const b = new FipsNode({
     identity: bId,
     logger,
-    transports: [
-      new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger }),
-    ],
+    transports: webRtcTransports({ relays: [relayUrl], advertiseOnNostr: true, logger }),
   });
   b.registerService(9000, async ({ payload, reply }) => {
     await reply(payload);
@@ -492,19 +497,19 @@ async function makeWebRtcChain(relayUrl: string): Promise<ThreeNodes> {
     identity: aId,
     logger,
     defaultRoute: toHex(bId.publicKey),
-    transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+    transports: webRtcTransports({ relays: [relayUrl], advertiseOnNostr: true, logger }),
   });
   const b = new FipsNode({
     identity: bId,
     logger,
     forwarding: true,
-    transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+    transports: webRtcTransports({ relays: [relayUrl], advertiseOnNostr: true, logger }),
   });
   const c = new FipsNode({
     identity: cId,
     logger,
     defaultRoute: toHex(bId.publicKey),
-    transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+    transports: webRtcTransports({ relays: [relayUrl], advertiseOnNostr: true, logger }),
   });
   c.registerService(9000, async ({ payload, reply }) => {
     await reply(payload);
@@ -532,12 +537,12 @@ async function webRtcReconnect(relayUrl: string): Promise<{ first: string; secon
     const a = new FipsNode({
       identity: aId,
       logger,
-      transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+      transports: webRtcTransports({ relays: [relayUrl], advertiseOnNostr: true, logger }),
     });
     const b = new FipsNode({
       identity: bId,
       logger,
-      transports: [new WebRtcTransport({ relays: [relayUrl], advertiseOnNostr: true, logger })],
+      transports: webRtcTransports({ relays: [relayUrl], advertiseOnNostr: true, logger }),
     });
     b.registerService(9000, async ({ payload, reply }) => {
       await reply(payload);
@@ -609,7 +614,6 @@ async function reconnectMemoryPair(): Promise<{ first: string; second: string }>
 }
 
 async function echoWithRustWebRtcPeer(
-  relayUrl: string,
   rustPubkeyHex: string,
   payload: string,
 ): Promise<string> {
@@ -623,9 +627,8 @@ async function echoWithRustWebRtcPeer(
   const node = new FipsNode({
     identity,
     logger,
-    transports: [
-      new WebRtcTransport({
-        relays: [relayUrl],
+    transports: webRtcTransports({
+        relays: [],
         advertiseOnNostr: false,
         acceptConnections: true,
         autoConnect: false,
@@ -634,10 +637,12 @@ async function echoWithRustWebRtcPeer(
         iceGatherTimeoutMs: 1_500,
         logger,
       }),
-    ],
   });
 
-  node.on("error", (e) => console.warn("[rust-webrtc] node error", e));
+  node.on("error", (event) => {
+    const error = event as { err: unknown; where: string };
+    console.warn("[rust-webrtc] node error", error.where, String(error.err));
+  });
   node.on("peer", (e) => console.log("[rust-webrtc] peer", e));
   node.on("session", (e) => console.log("[rust-webrtc] session", e));
 
@@ -701,12 +706,12 @@ async function startPersistentWebRtcPeer(
   const errors: string[] = [];
   const node = new FipsNode({
     identity,
-    transports: [new WebRtcTransport({
+    transports: webRtcTransports({
       relays: [relayUrl],
       advertiseOnNostr: true,
       autoConnect: false,
       discoveryApp,
-    })],
+    }),
   });
   node.on("peer", (event) => {
     const peer = event as { remotePubkey: string; state: string };

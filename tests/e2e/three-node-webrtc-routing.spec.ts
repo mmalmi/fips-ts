@@ -1,21 +1,29 @@
 import { test, expect } from "@playwright/test";
 
+import {
+  startLocalFipsWebSocketSeed,
+  type LocalFipsWebSocketSeed,
+} from "./fixtures/localFipsWebSocketSeed.js";
 import { startLocalNostrRelay, type LocalNostrRelay } from "./fixtures/localNostrRelay.js";
 
 let relay: LocalNostrRelay;
+let seed: LocalFipsWebSocketSeed;
 
 test.beforeAll(async () => {
-  relay = await startLocalNostrRelay();
+  [relay, seed] = await Promise.all([startLocalNostrRelay(), startLocalFipsWebSocketSeed()]);
 });
 
 test.afterAll(async () => {
-  await relay.close();
+  await Promise.all([relay.close(), seed.close()]);
 });
 
-test("Three-node FIPS routing A -> B -> C over real WebRTC + Nostr relay bootstrap", async ({ page }) => {
+test("Three-node FIPS routing A -> B -> C upgrades from WSS to real WebRTC", async ({ page }) => {
   await page.addInitScript((url) => {
     window.__fipsTestRelayUrl = url;
   }, relay.url);
+  await page.addInitScript((url) => {
+    window.__fipsTestWebSocketSeedUrl = url;
+  }, seed.url);
   page.on("pageerror", (err) => console.log("pageerror:", err.message));
 
   await page.goto("/");

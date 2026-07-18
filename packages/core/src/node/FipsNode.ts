@@ -458,11 +458,17 @@ export class FipsNode {
     const alternate = [...this.peers.values()].find((candidate) =>
       candidate !== peer
       && candidate.pubkeyHex === peer.pubkeyHex
-      && candidate.link.state === "established"
+      && (
+        candidate.link.state === "established"
+        || candidate.outgoingHandshake !== undefined
+        || candidate.pendingResponderLink !== undefined
+      )
     );
     if (alternate) {
-      this.rememberPeer(alternate);
-      this.routing.scheduleTreeAnnounce(alternate);
+      if (alternate.link.state === "established") {
+        this.rememberPeer(alternate);
+        this.routing.scheduleTreeAnnounce(alternate);
+      }
       return;
     }
     if (this.peersByPubkey.get(peer.pubkeyHex) === peer) {
