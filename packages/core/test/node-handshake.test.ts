@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   FMP_PHASE_MSG2,
   FipsNode,
+  FspSession,
   FmpLink,
   FMP_PHASE_MSG1,
   LinkMessageType,
@@ -581,4 +582,50 @@ describe("FipsNode FMP handshake", () => {
       await responder.stop();
     }
   }, 10_000);
+
+  it("routes FSP inside FMP when an adjacent peer lacks direct transport support", async () => {
+    const support = vi
+      .spyOn(FspSession.prototype, "remoteSupportsDirectFspTransport", "get")
+      .mockReturnValue(false);
+    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xe2));
+    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xf3));
+    const initiatorTransport = new FlakyMemoryTransport();
+    const responderTransport = new FlakyMemoryTransport();
+    const initiator = new FipsNode({
+      identity: initiatorIdentity,
+      transports: [initiatorTransport],
+    });
+    const responder = new FipsNode({
+      identity: responderIdentity,
+      transports: [responderTransport],
+    });
+    let resolveRequest: (payload: Uint8Array) => void = () => {};
+    const receivedRequest = new Promise<Uint8Array>((resolve) => {
+      resolveRequest = resolve;
+    });
+    responder.registerService(4_243, (context) => resolveRequest(context.payload));
+
+    await responder.start();
+    await initiator.start();
+    try {
+      await initiator.connect({
+        transport: "memory",
+        addr: toHex(responderIdentity.publicKey),
+      });
+      const payload = new TextEncoder().encode("legacy-routed-fsp");
+      await initiator.sendDatagram({
+        dst: toHex(responderIdentity.publicKey),
+        dstPort: 4_243,
+        payload,
+      });
+
+      await expect(receivedRequest).resolves.toEqual(payload);
+      expect(initiatorTransport.directFragments).toBe(0);
+      expect(responderTransport.directFragments).toBe(0);
+    } finally {
+      await initiator.stop();
+      await responder.stop();
+      support.mockRestore();
+    }
+  });
 });

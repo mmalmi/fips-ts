@@ -1,5 +1,20 @@
 # Changelog
 
+## Runtime packages 0.0.29 - 2026-07-20
+
+- Negotiate direct-on-transport FSP with the session flag introduced by Rust
+  FIPS 0.4.19, while keeping established FSP inside FMP for upstream 0.4.1 and
+  other peers that do not advertise the extension.
+- Apply the negotiated result to datagrams, endpoint data, replies, and rekeyed
+  sessions so peers never send the direct-record flag unilaterally.
+- Release `@fips/core` 0.0.29, `@fips/transport-webrtc` 0.0.45,
+  `@fips/transport-websocket` 0.0.3, `@fips/browser` 0.0.11,
+  `@fips/transport-ethernet` 0.0.28, and `@fips/transport-memory` 0.0.9 as one
+  immutable runtime bundle.
+- Verify the browser process matrix against released Rust FIPS 0.4.19,
+  including WSS bootstrap, FSP-carried WebRTC promotion, direct FSP, browser
+  replacement, and legacy routed-FSP fallback.
+
 ## Runtime packages 0.0.28 - 2026-07-19
 
 - Replay a retained lookup to an authenticated target that becomes adjacent

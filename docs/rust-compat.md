@@ -33,6 +33,12 @@ Inner plaintext: 4-byte timestamp + 1-byte msg_type + 1-byte inner_flags + paylo
 
 Source: `crates/fips-core/src/node/session_wire.rs`.
 
+`SessionSetup` and `SessionAck` body flag `0x04` advertises support for
+established FSP records carried directly on an authenticated adjacent
+transport. Both endpoints must advertise the bit before TypeScript emits the
+established-record direct flag `0x08`; otherwise it retains FSP inside FMP.
+This preserves interoperability with upstream FIPS 0.4.1.
+
 ### Service-port DataPacket (FSP msg_type 0x10)
 Inside the FSP AEAD body:
 

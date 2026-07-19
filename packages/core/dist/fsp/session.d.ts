@@ -29,10 +29,12 @@ export declare class FspSession {
     private receivedSessionAck?;
     private sentSessionMsg3?;
     private establishedMsg3?;
+    private remoteDirectFspTransport;
     private txCounter;
     private replay;
     state: "init" | "handshaking" | "established" | "closed";
     constructor(init: FspSessionInit);
+    get remoteSupportsDirectFspTransport(): boolean;
     buildMsg1(_rand: (n: number) => Uint8Array): Uint8Array;
     buildSessionSetup(_rand: (n: number) => Uint8Array, srcCoords: NodeAddr | NodeAddr[], destCoords: NodeAddr | NodeAddr[]): Uint8Array;
     handleMsg1(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array;

@@ -1,6 +1,6 @@
 {
   "name": "@fips/transport-webrtc",
-  "version": "0.0.44",
+  "version": "0.0.45",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,7 +20,7 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
-    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.28/fips-core-0.0.28.tgz",
+    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.29/fips-core-0.0.29.tgz",
     "@noble/ciphers": "^1.1.3",
     "@noble/curves": "^1.7.0",
     "@noble/hashes": "^1.6.1"

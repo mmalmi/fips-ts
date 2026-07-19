@@ -220,6 +220,65 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
     );
   });
 
+  it("negotiates direct FSP transport in routed session handshakes", async () => {
+    const {
+      decodeSessionAck,
+      decodeSessionSetup,
+      FspSession,
+      SESSION_FLAG_DIRECT_FSP_TRANSPORT,
+    } = await import("../src/index.js");
+    const a = await identityFromSecretKey(new Uint8Array(32).fill(0x28));
+    const b = await identityFromSecretKey(new Uint8Array(32).fill(0x82));
+    const init = new FspSession({
+      identity: a,
+      role: "initiator",
+      remotePubkey: b.publicKey,
+    });
+    const resp = new FspSession({ identity: b, role: "responder" });
+
+    const setup = init.buildSessionSetup(() => new Uint8Array(0), a.nodeAddr, b.nodeAddr);
+    expect(decodeSessionSetup(setup).flags).toBe(SESSION_FLAG_DIRECT_FSP_TRANSPORT);
+    const ack = resp.handleSessionSetup(setup, () => new Uint8Array(0), b.nodeAddr);
+    expect(decodeSessionAck(ack).flags).toBe(SESSION_FLAG_DIRECT_FSP_TRANSPORT);
+    const msg3 = init.handleSessionAck(ack, () => new Uint8Array(0));
+    resp.handleSessionMsg3(msg3);
+
+    expect(init.remoteSupportsDirectFspTransport).toBe(true);
+    expect(resp.remoteSupportsDirectFspTransport).toBe(true);
+  });
+
+  it("falls back when a routed session peer does not advertise direct FSP transport", async () => {
+    const {
+      decodeSessionAck,
+      decodeSessionSetup,
+      encodeSessionAck,
+      encodeSessionSetup,
+      FspSession,
+    } = await import("../src/index.js");
+    const a = await identityFromSecretKey(new Uint8Array(32).fill(0x29));
+    const b = await identityFromSecretKey(new Uint8Array(32).fill(0x92));
+    const init = new FspSession({
+      identity: a,
+      role: "initiator",
+      remotePubkey: b.publicKey,
+    });
+    const resp = new FspSession({ identity: b, role: "responder" });
+
+    const setup = decodeSessionSetup(
+      init.buildSessionSetup(() => new Uint8Array(0), a.nodeAddr, b.nodeAddr),
+    );
+    const legacySetup = encodeSessionSetup({ ...setup, flags: 0 });
+    const ack = decodeSessionAck(
+      resp.handleSessionSetup(legacySetup, () => new Uint8Array(0), b.nodeAddr),
+    );
+    const legacyAck = encodeSessionAck({ ...ack, flags: 0 });
+    const msg3 = init.handleSessionAck(legacyAck, () => new Uint8Array(0));
+    resp.handleSessionMsg3(msg3);
+
+    expect(init.remoteSupportsDirectFspTransport).toBe(false);
+    expect(resp.remoteSupportsDirectFspTransport).toBe(false);
+  });
+
   it("FspSession resends the original SessionMsg3 for duplicate SessionAck", async () => {
     const { FspSession } = await import("../src/fsp/session.js");
     const a = await identityFromSecretKey(new Uint8Array(32).fill(0x27));

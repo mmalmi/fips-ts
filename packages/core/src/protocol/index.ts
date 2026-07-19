@@ -27,6 +27,7 @@ export {
 } from "./filter.js";
 
 export {
+  SESSION_FLAG_DIRECT_FSP_TRANSPORT,
   decodeSessionAck,
   decodeSessionMsg3,
   decodeSessionSetup,

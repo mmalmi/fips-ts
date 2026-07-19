@@ -20,6 +20,7 @@ import {
   encodeSessionAck,
   encodeSessionMsg3,
   encodeSessionSetup,
+  SESSION_FLAG_DIRECT_FSP_TRANSPORT,
 } from "../protocol/session.js";
 
 import {
@@ -70,6 +71,7 @@ export class FspSession {
   private receivedSessionAck?: Uint8Array;
   private sentSessionMsg3?: Uint8Array;
   private establishedMsg3?: Uint8Array;
+  private remoteDirectFspTransport = false;
   private txCounter = 0n;
   private replay = new ReplayWindow();
 
@@ -92,6 +94,10 @@ export class FspSession {
       remoteStatic: init.remotePubkey,
       ephemeralOverride: init.ephemeralOverride,
     });
+  }
+
+  get remoteSupportsDirectFspTransport(): boolean {
+    return this.remoteDirectFspTransport;
   }
 
   buildMsg1(_rand: (n: number) => Uint8Array): Uint8Array {
@@ -123,7 +129,7 @@ export class FspSession {
     return encodeSessionSetup({
       srcCoords: normalizeCoords(srcCoords),
       destCoords: normalizeCoords(destCoords),
-      flags: 0,
+      flags: SESSION_FLAG_DIRECT_FSP_TRANSPORT,
       handshakePayload: noiseMsg,
     });
   }
@@ -161,6 +167,8 @@ export class FspSession {
     }
     const payload = this.hs.readMessage(setup.handshakePayload);
     if (payload.length !== 0) throw new Error("XK msg1 inner payload must be empty");
+    this.remoteDirectFspTransport =
+      (setup.flags & SESSION_FLAG_DIRECT_FSP_TRANSPORT) !== 0;
     const noiseMsg = this.hs.writeMessage(this.localEpoch);
     if (noiseMsg.length !== NOISE_XK_MSG2_LEN) {
       throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
@@ -168,7 +176,7 @@ export class FspSession {
     const reply = encodeSessionAck({
       srcCoords: normalizeCoords(localCoords),
       destCoords: setup.srcCoords,
-      flags: 0,
+      flags: SESSION_FLAG_DIRECT_FSP_TRANSPORT,
       handshakePayload: noiseMsg,
     });
     this.state = "handshaking";
@@ -212,6 +220,8 @@ export class FspSession {
     if (ack.handshakePayload.length !== NOISE_XK_MSG2_LEN) throw new Error("bad XK msg2 length");
     const payload = this.hs.readMessage(ack.handshakePayload);
     if (payload.length !== EPOCH_LEN) throw new Error("XK msg2 inner payload must be 8 bytes");
+    this.remoteDirectFspTransport =
+      (ack.flags & SESSION_FLAG_DIRECT_FSP_TRANSPORT) !== 0;
     this.remoteEpoch = new Uint8Array(payload);
     const noiseMsg = this.hs.writeMessage(this.localEpoch);
     if (noiseMsg.length !== NOISE_XK_MSG3_LEN) {

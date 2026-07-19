@@ -2,7 +2,7 @@ use std::io::{self, Read};
 
 use fips_core::noise::{HandshakeState, NoiseSession};
 use fips_core::protocol::SessionMsg3;
-use fips_core::{SessionAck, SessionSetup, TreeCoordinate};
+use fips_core::{SessionAck, SessionFlags, SessionSetup, TreeCoordinate};
 use fips_identity::{Identity, PeerIdentity};
 use secp256k1::{PublicKey, SecretKey};
 
@@ -259,6 +259,7 @@ fn run_with_envelope(static_sk_hex: &str, session_envelope: bool) -> io::Result<
             TreeCoordinate::root(*identity.node_addr()),
             TreeCoordinate::root(*responder.node_addr()),
         )
+        .with_flags(SessionFlags::new().with_direct_fsp_transport())
         .with_handshake(noise_msg1);
         write_frame(&mut stdout, &setup.encode())?;
     } else {
@@ -275,6 +276,11 @@ fn run_with_envelope(static_sk_hex: &str, session_envelope: bool) -> io::Result<
         }
         let ack = SessionAck::decode(&msg2[4..])
             .map_err(|e| io::Error::other(format!("decode SessionAck: {e}")))?;
+        if !ack.supports_direct_fsp_transport() {
+            return Err(io::Error::other(
+                "SessionAck did not advertise direct FSP transport",
+            ));
+        }
         ack.handshake_payload
     } else {
         parse_fsp_handshake(&msg2, FSP_PHASE_MSG2, 57)?.to_vec()

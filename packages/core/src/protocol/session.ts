@@ -2,6 +2,9 @@ import { BinaryReader, BinaryWriter } from "../codec/binary.js";
 import { FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_VERSION } from "../fsp/wire.js";
 import type { NodeAddr } from "../nodeaddr/index.js";
 
+/** Both endpoints may carry established FSP records directly on a transport. */
+export const SESSION_FLAG_DIRECT_FSP_TRANSPORT = 0x04;
+
 export interface SessionSetup {
   srcCoords: NodeAddr[];
   destCoords: NodeAddr[];

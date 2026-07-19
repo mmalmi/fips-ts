@@ -9,7 +9,7 @@ import { noiseNonce } from "../crypto/aead.js";
 import { ReplayWindow } from "../crypto/replay.js";
 import { bytesEqual } from "../codec/hex.js";
 import { NoiseHandshake } from "../noise/index.js";
-import { decodeSessionAck, decodeSessionMsg3, decodeSessionSetup, encodeSessionAck, encodeSessionMsg3, encodeSessionSetup, } from "../protocol/session.js";
+import { decodeSessionAck, decodeSessionMsg3, decodeSessionSetup, encodeSessionAck, encodeSessionMsg3, encodeSessionSetup, SESSION_FLAG_DIRECT_FSP_TRANSPORT, } from "../protocol/session.js";
 import { decodeDataPacket, decodeFspEstablished, decodeFspHandshake, decodeFspInner, encodeDataPacket, encodeFspEstablished, encodeFspEstablishedHeader, encodeFspHandshake, encodeFspInner, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_KEEPALIVE, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, NOISE_XK_MSG1_LEN, NOISE_XK_MSG2_LEN, NOISE_XK_MSG3_LEN, } from "./wire.js";
 const EPOCH_LEN = 8;
 export class FspSession {
@@ -26,6 +26,7 @@ export class FspSession {
     receivedSessionAck;
     sentSessionMsg3;
     establishedMsg3;
+    remoteDirectFspTransport = false;
     txCounter = 0n;
     replay = new ReplayWindow();
     state = "init";
@@ -47,6 +48,9 @@ export class FspSession {
             remoteStatic: init.remotePubkey,
             ephemeralOverride: init.ephemeralOverride,
         });
+    }
+    get remoteSupportsDirectFspTransport() {
+        return this.remoteDirectFspTransport;
     }
     buildMsg1(_rand) {
         if (this.role !== "initiator")
@@ -78,7 +82,7 @@ export class FspSession {
         return encodeSessionSetup({
             srcCoords: normalizeCoords(srcCoords),
             destCoords: normalizeCoords(destCoords),
-            flags: 0,
+            flags: SESSION_FLAG_DIRECT_FSP_TRANSPORT,
             handshakePayload: noiseMsg,
         });
     }
@@ -117,6 +121,8 @@ export class FspSession {
         const payload = this.hs.readMessage(setup.handshakePayload);
         if (payload.length !== 0)
             throw new Error("XK msg1 inner payload must be empty");
+        this.remoteDirectFspTransport =
+            (setup.flags & SESSION_FLAG_DIRECT_FSP_TRANSPORT) !== 0;
         const noiseMsg = this.hs.writeMessage(this.localEpoch);
         if (noiseMsg.length !== NOISE_XK_MSG2_LEN) {
             throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
@@ -124,7 +130,7 @@ export class FspSession {
         const reply = encodeSessionAck({
             srcCoords: normalizeCoords(localCoords),
             destCoords: setup.srcCoords,
-            flags: 0,
+            flags: SESSION_FLAG_DIRECT_FSP_TRANSPORT,
             handshakePayload: noiseMsg,
         });
         this.state = "handshaking";
@@ -174,6 +180,8 @@ export class FspSession {
         const payload = this.hs.readMessage(ack.handshakePayload);
         if (payload.length !== EPOCH_LEN)
             throw new Error("XK msg2 inner payload must be 8 bytes");
+        this.remoteDirectFspTransport =
+            (ack.flags & SESSION_FLAG_DIRECT_FSP_TRANSPORT) !== 0;
         this.remoteEpoch = new Uint8Array(payload);
         const noiseMsg = this.hs.writeMessage(this.localEpoch);
         if (noiseMsg.length !== NOISE_XK_MSG3_LEN) {

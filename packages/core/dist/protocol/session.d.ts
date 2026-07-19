@@ -1,4 +1,6 @@
 import type { NodeAddr } from "../nodeaddr/index.js";
+/** Both endpoints may carry established FSP records directly on a transport. */
+export declare const SESSION_FLAG_DIRECT_FSP_TRANSPORT = 4;
 export interface SessionSetup {
     srcCoords: NodeAddr[];
     destCoords: NodeAddr[];

@@ -355,6 +355,8 @@ export class FspSessionManager {
         session.previousFsp = undefined;
     }
     directPeerForSession(session) {
+        if (!session.fsp.remoteSupportsDirectFspTransport)
+            return undefined;
         const peer = this.cfg.getPeerByNodeAddr(nodeAddrToHex(session.remoteNodeAddr));
         return peer?.link.state === "established" ? peer : undefined;
     }
