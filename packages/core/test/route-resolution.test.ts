@@ -233,7 +233,7 @@ describe("FipsNode on-demand route resolution", () => {
 
       expect(new TextDecoder().decode(received)).toBe("ethernet-to-webrtc");
       expect(aEthernet.resolveCalls).toBe(0);
-      expect(bWebRtc.resolveCalls).toBe(1);
+      expect(bWebRtc.resolveCalls).toBe(0);
       const bLearnedRoutes = (
         bNode as unknown as { routing: { learnedRoutes: Map<string, unknown> } }
       ).routing.learnedRoutes;

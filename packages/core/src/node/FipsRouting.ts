@@ -438,7 +438,10 @@ export class FipsRouting {
       : [];
     const nextHops = (directOrLearned ? [directOrLearned] : fallbackPeers)
       .filter((nextHop) => !existingReverse?.forwardedNextHops.has(peerNodeKey(nextHop)));
-    const canResolveDirectly = this.canResolveLookupDirectly(directOrLearned);
+    const canResolveDirectly = this.canResolveLookupDirectly(
+      directOrLearned,
+      fallbackPeers.length > 0,
+    );
     if (!this.lookupCanProgress(nextHops, canResolveDirectly)) {
       this.cfg.logger.debug("lookup request not forwarded", targetHex, "no-next-hop");
       return;
@@ -520,8 +523,11 @@ export class FipsRouting {
     }
   }
 
-  private canResolveLookupDirectly(nextHop: AdjacentPeer | undefined): boolean {
-    if (nextHop) return false;
+  private canResolveLookupDirectly(
+    nextHop: AdjacentPeer | undefined,
+    hasFallbackPeer = false,
+  ): boolean {
+    if (nextHop || hasFallbackPeer) return false;
     return this.cfg.transports.some((transport) => transport.resolve !== undefined);
   }
 
