@@ -1,5 +1,17 @@
 # Changelog
 
+## Runtime packages 0.0.28 - 2026-07-19
+
+- Replay a retained lookup to an authenticated target that becomes adjacent
+  after the lookup first arrived, preserving its signed reverse path.
+- Forward transit lookup traffic across established authenticated peers before
+  attempting speculative direct WebRTC resolution, preventing stale advert
+  dials from delaying ordinary routed traffic.
+- Release `@fips/core` 0.0.28, `@fips/transport-webrtc` 0.0.44,
+  `@fips/transport-websocket` 0.0.2, `@fips/browser` 0.0.10,
+  `@fips/transport-ethernet` 0.0.27, and `@fips/transport-memory` 0.0.8 as one
+  immutable runtime bundle. The FMP/FSP wire format is unchanged.
+
 ## Runtime packages 0.0.27 - 2026-07-18
 
 - Add `@fips/transport-websocket` 0.0.1 for explicit `wss://` first

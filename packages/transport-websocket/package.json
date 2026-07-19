@@ -1,6 +1,6 @@
 {
   "name": "@fips/transport-websocket",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,7 +20,7 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
-    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.27/fips-core-0.0.27.tgz"
+    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.28/fips-core-0.0.28.tgz"
   },
   "devDependencies": {
     "typescript": "^5.7.3",
