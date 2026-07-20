@@ -4,8 +4,17 @@
  * Nostr advert relay URLs injected through the test globals below.
  */
 
-import { IndexedDbIdentityStore } from "@fips/browser";
-import { FipsNode, generateIdentity, toHex } from "@fips/core";
+import {
+  IndexedDbIdentityStore,
+  IndexedDbRecentPeersStore,
+} from "@fips/browser";
+import {
+  FipsNode,
+  encodeNpub,
+  generateIdentity,
+  observeAuthenticatedPeer,
+  toHex,
+} from "@fips/core";
 import { MemoryHub, MemoryTransport } from "@fips/transport-memory";
 import {
   NostrRelayClient,
@@ -694,6 +703,43 @@ async function concurrentIdentityStoreCreate(dbName: string): Promise<{
   };
 }
 
+async function recentPeersStoreRoundTrip(dbName: string): Promise<{
+  persistedPeerCount: number;
+  persistedEndpoint: string | undefined;
+  otherScopePeerCount: number;
+  otherIdentityPeerCount: number;
+  clearedPeerCount: number;
+}> {
+  const store = new IndexedDbRecentPeersStore(dbName);
+  const localIdentity = await generateIdentity();
+  const otherIdentity = await generateIdentity();
+  const remoteIdentity = await generateIdentity();
+  const localNpub = encodeNpub(localIdentity.xOnlyPubkey);
+  const otherLocalNpub = encodeNpub(otherIdentity.xOnlyPubkey);
+  const remoteNpub = encodeNpub(remoteIdentity.xOnlyPubkey);
+  const scope = "e2e-scope";
+  const recent = observeAuthenticatedPeer(
+    await store.load(localNpub, scope),
+    remoteNpub,
+    1_000,
+    "192.0.2.1:32112",
+  );
+  await store.save(recent);
+
+  const persisted = await new IndexedDbRecentPeersStore(dbName).load(localNpub, scope);
+  const otherScope = await store.load(localNpub, "other-scope");
+  const otherIdentityCache = await store.load(otherLocalNpub, scope);
+  await store.clear(localNpub, scope);
+  const cleared = await store.load(localNpub, scope);
+  return {
+    persistedPeerCount: Object.keys(persisted.peers).length,
+    persistedEndpoint: persisted.peers[remoteNpub]?.endpoints[0]?.addr,
+    otherScopePeerCount: Object.keys(otherScope.peers).length,
+    otherIdentityPeerCount: Object.keys(otherIdentityCache.peers).length,
+    clearedPeerCount: Object.keys(cleared.peers).length,
+  };
+}
+
 async function startPersistentWebRtcPeer(
   relayUrl: string,
   identityStoreName: string,
@@ -777,6 +823,7 @@ export const harness = {
   echoOverChain,
   echoWithRustWebRtcPeer,
   concurrentIdentityStoreCreate,
+  recentPeersStoreRoundTrip,
   startPersistentWebRtcPeer,
   connectPersistentWebRtcPeer,
   waitForPersistentWebRtcPeer,

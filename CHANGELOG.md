@@ -1,5 +1,17 @@
 # Changelog
 
+## Runtime packages 0.0.30 - 2026-07-20
+
+- Add a versioned, identity- and scope-bound recent-peer model to
+  `@fips/core`. It remembers authenticated identities and optional UDP restart
+  hints without granting admission or persisting sessions and signaling data.
+- Add a separate `IndexedDbRecentPeersStore` to `@fips/browser`, isolated from
+  the identity database and keyed by local identity plus application scope.
+- Release `@fips/core` 0.0.30, `@fips/transport-webrtc` 0.0.46,
+  `@fips/transport-websocket` 0.0.4, `@fips/browser` 0.0.12,
+  `@fips/transport-ethernet` 0.0.29, and `@fips/transport-memory` 0.0.10 as one
+  immutable runtime bundle. FIPS wire formats are unchanged.
+
 ## Runtime packages 0.0.29 - 2026-07-20
 
 - Negotiate direct-on-transport FSP with the session flag introduced by Rust

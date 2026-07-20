@@ -53,6 +53,19 @@ export {
 export { PeerIdentity } from "./identity/peer.js";
 
 export {
+  RECENT_PEERS_MAX_ENDPOINTS,
+  RECENT_PEERS_MAX_PEERS,
+  RECENT_PEERS_VERSION,
+  createRecentPeers,
+  observeAuthenticatedPeer,
+  parseRecentPeers,
+  pruneRecentPeers,
+  type RecentPeer,
+  type RecentPeerEndpoint,
+  type RecentPeers,
+} from "./recentPeers.js";
+
+export {
   aeadOpen,
   aeadSeal,
   deriveSessionKeys,
