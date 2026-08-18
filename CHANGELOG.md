@@ -1,5 +1,17 @@
 # Changelog
 
+## Runtime packages 0.0.31 - 2026-08-18
+
+- Partition signed Nostr WebRTC adverts by x-only public-key order before
+  auto-connect capacity policy. When both peers accept connections, only the
+  lower identity initiates automatically, preventing simultaneous FSP session
+  glare while both sides retain the advert for explicit resolution.
+- Preserve outbound-only auto-connect behavior and ordinary inbound admission.
+- Release `@fips/core` 0.0.31, `@fips/transport-webrtc` 0.0.47,
+  `@fips/transport-websocket` 0.0.5, `@fips/browser` 0.0.13,
+  `@fips/transport-ethernet` 0.0.30, and `@fips/transport-memory` 0.0.11 as one
+  immutable runtime bundle. FIPS wire formats are unchanged.
+
 ## Runtime packages 0.0.30 - 2026-07-20
 
 - Add a versioned, identity- and scope-bound recent-peer model to

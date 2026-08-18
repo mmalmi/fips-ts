@@ -6,6 +6,10 @@ interface AutoConnectCandidate {
 export declare class WebRtcAutoConnectPolicy {
     private readonly preferredRanks;
     constructor(preferredPeers: string[]);
+    partitionByInitiator<T extends AutoConnectCandidate>(candidates: T[], localXOnlyPubkey: string, acceptsConnections: boolean): {
+        outbound: T[];
+        inbound: T[];
+    };
     sort<T extends AutoConnectCandidate>(candidates: T[], attempts: ReadonlyMap<string, number>): T[];
     isPreferred(remote: string): boolean;
     shouldReserveSlot(cachedPeers: Iterable<string>, ...activePeerSets: Iterable<string>[]): boolean;

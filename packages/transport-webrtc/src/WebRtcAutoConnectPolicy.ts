@@ -18,6 +18,24 @@ export class WebRtcAutoConnectPolicy {
     }
   }
 
+  partitionByInitiator<T extends AutoConnectCandidate>(
+    candidates: T[],
+    localXOnlyPubkey: string,
+    acceptsConnections: boolean,
+  ): { outbound: T[]; inbound: T[] } {
+    if (!acceptsConnections) return { outbound: candidates, inbound: [] };
+    // Both accepting peers see the same adverts. Only the lower x-only
+    // identity dials automatically; both can still resolve either advert.
+    return {
+      outbound: candidates.filter((candidate) => (
+        localXOnlyPubkey < candidate.peer.remoteAddr.addr.slice(2)
+      )),
+      inbound: candidates.filter((candidate) => (
+        localXOnlyPubkey >= candidate.peer.remoteAddr.addr.slice(2)
+      )),
+    };
+  }
+
   sort<T extends AutoConnectCandidate>(
     candidates: T[],
     attempts: ReadonlyMap<string, number>,

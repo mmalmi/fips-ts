@@ -97,6 +97,100 @@ afterEach(() => {
 });
 
 describe("WebRtcTransport NodeAddr resolution", () => {
+  it("lets exactly one x-only identity auto-connect while both retain the advert", async () => {
+    vi.useFakeTimers();
+    const identities = await Promise.all([
+      identityFromSecretKey(new Uint8Array(32).fill(0x31)),
+      identityFromSecretKey(new Uint8Array(32).fill(0x32)),
+    ]);
+    const [lower, higher] = identities.sort((a, b) => (
+      toHex(a.publicKey).slice(2).localeCompare(toHex(b.publicKey).slice(2))
+    ));
+    const relay = new FakeRelay();
+    const queued: Array<{ local: string; remote: string }> = [];
+    const transports = [lower!, higher!].map((identity) => new WebRtcTransport({
+      relays: [relay.url],
+      relayClients: [relayClient(relay)],
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+      autoConnect: true,
+      acceptConnections: true,
+      logger: {
+        debug: (...args) => {
+          if (args[0] === "webrtc auto-connect queued" && typeof args[1] === "string") {
+            queued.push({ local: toHex(identity.publicKey), remote: args[1] });
+          }
+        },
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+    }));
+
+    await Promise.all(transports.map((transport, index) => (
+      transport.start(transportContext([lower!, higher!][index]!))
+    )));
+    try {
+      transports.forEach((transport) => transport.discover()[Symbol.asyncIterator]());
+      relay.emit(advertEvent(lower!));
+      relay.emit(advertEvent(higher!));
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(queued).toEqual([{
+        local: toHex(lower!.publicKey),
+        remote: toHex(higher!.publicKey),
+      }]);
+      await expect(transports[0]!.resolve(higher!.nodeAddr)).resolves.toBeDefined();
+      await expect(transports[1]!.resolve(lower!.nodeAddr)).resolves.toBeDefined();
+    } finally {
+      await Promise.all(transports.map((transport) => transport.stop()));
+    }
+  });
+
+  it("applies capacity policy only to its lexicographic auto-connect side", async () => {
+    vi.useFakeTimers();
+    const [lower, local, higher] = (await Promise.all([0x33, 0x34, 0x35].map(
+      (byte) => identityFromSecretKey(new Uint8Array(32).fill(byte)),
+    ))).sort((a, b) => (
+      toHex(a.publicKey).slice(2).localeCompare(toHex(b.publicKey).slice(2))
+    ));
+    const relay = new FakeRelay();
+    const queued: string[] = [];
+    const transport = new WebRtcTransport({
+      relays: [relay.url],
+      relayClients: [relayClient(relay)],
+      rtcPeerConnection: FakeRtcPeerConnection as unknown as typeof RTCPeerConnection,
+      autoConnect: true,
+      acceptConnections: true,
+      maxConnections: 1,
+      maxAutoConnections: 1,
+      preferredAutoConnectPeers: [toHex(lower!.publicKey)],
+      logger: {
+        debug: (...args) => {
+          if (args[0] === "webrtc auto-connect queued" && typeof args[1] === "string") {
+            queued.push(args[1]);
+          }
+        },
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+    });
+
+    await transport.start(transportContext(local!));
+    try {
+      transport.discover()[Symbol.asyncIterator]();
+      relay.emit(advertEvent(lower!));
+      relay.emit(advertEvent(higher!));
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(queued).toEqual([toHex(higher!.publicKey)]);
+      await expect(transport.resolve(lower!.nodeAddr)).resolves.toBeDefined();
+      await expect(transport.resolve(higher!.nodeAddr)).resolves.toBeDefined();
+    } finally {
+      await transport.stop();
+    }
+  });
+
   it("starts without public relays for authenticated in-FIPS negotiation", async () => {
     const local = await identityFromSecretKey(new Uint8Array(32).fill(0x57));
     const transport = new WebRtcTransport({

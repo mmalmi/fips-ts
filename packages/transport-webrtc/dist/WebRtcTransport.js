@@ -217,14 +217,15 @@ export class WebRtcTransport {
     fillAutoConnectSlots(localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : "") {
         if (!this.cfg.autoConnect || this.stopping || !this.ctx)
             return;
+        const localXOnlyPubkey = localPubkeyHex.slice(2);
         const now = Date.now();
         this.advertCache.prune(now);
-        for (const [remote, until] of this.autoConnectCooldowns) {
+        for (const [remote, until] of this.autoConnectCooldowns)
             if (until <= now)
                 this.autoConnectCooldowns.delete(remote);
-        }
-        const candidates = this.autoConnectPolicy.sort([...this.advertCache.values()], this.autoConnectAttempts);
-        const reservePreferredSlot = this.autoConnectPolicy.shouldReserveSlot(candidates.map((cached) => cached.peer.remoteAddr.addr), this.conns.keys(), this.pendingConnects.keys(), this.autoConnectPeers);
+        const partition = this.autoConnectPolicy.partitionByInitiator([...this.advertCache.values()], localXOnlyPubkey, this.cfg.acceptConnections);
+        const candidates = this.autoConnectPolicy.sort(partition.outbound, this.autoConnectAttempts);
+        const reservePreferredSlot = this.autoConnectPolicy.shouldReserveSlot(candidates.map((cached) => cached.peer.remoteAddr.addr), this.conns.keys(), this.pendingConnects.keys(), this.autoConnectPeers, partition.inbound.map((cached) => cached.peer.remoteAddr.addr));
         for (const cached of candidates) {
             const remote = cached.peer.remoteAddr.addr;
             const autoConnectLimit = this.autoConnectPolicy.connectionLimit(this.cfg.maxAutoConnections, reservePreferredSlot, remote);
@@ -246,10 +247,7 @@ export class WebRtcTransport {
                 this.logger.debug("webrtc auto-connect queued", remote);
                 this.discoveryStream?.push(cloneDiscoveredPeer(cached.peer));
             };
-            if (localPubkeyHex.slice(2) > remote.slice(2))
-                setTimeout(push, 1_200);
-            else
-                push();
+            push();
         }
     }
     async publishLocalAdvert() {
