@@ -497,11 +497,17 @@ export class FmpTransportPacketProcessor {
     }
     removeRestartedPeerPaths(remotePubkeyHex, preserveLink, preserveTransport, preserveHandshake) {
         let remotePubkey;
+        const removedPeers = new Set();
         for (const [pathKey, candidate] of [...this.cfg.peers]) {
             if (candidate.pubkeyHex !== remotePubkeyHex)
                 continue;
             remotePubkey = candidate.pubkey;
             this.cfg.peers.delete(pathKey);
+            removedPeers.add(candidate);
+        }
+        for (const candidate of removedPeers) {
+            const wasConnected = candidate.link !== preserveLink
+                && candidate.link.state === "established";
             if (candidate.link !== preserveLink)
                 candidate.link.close();
             if (candidate.pendingResponderLink !== preserveLink) {
@@ -514,6 +520,13 @@ export class FmpTransportPacketProcessor {
             if (candidate.outgoingHandshake && candidate.outgoingHandshake !== preserveHandshake) {
                 candidate.outgoingHandshake.reject(new Error("remote FIPS peer restarted"));
                 candidate.outgoingHandshake = undefined;
+            }
+            if (wasConnected) {
+                this.cfg.emitPeer({
+                    remotePubkey: candidate.pubkeyHex,
+                    remoteAddr: candidate.remoteAddr,
+                    state: "disconnected",
+                });
             }
         }
         this.cfg.peersByPubkey.delete(remotePubkeyHex);

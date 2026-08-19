@@ -1,5 +1,14 @@
 # Changelog
 
+## Runtime packages 0.0.35 - 2026-08-19
+
+- Emit a disconnected peer lifecycle event when an authenticated identity is
+  displaced at a mutable transport address, before emitting the replacement
+  identity's connected event. Alias paths are coalesced so consumers remove
+  the stale identity exactly once.
+- Release `@fips/core` 0.0.35. Other runtime packages remain unchanged from
+  runtime bundle 0.0.34.
+
 ## Runtime packages 0.0.34 - 2026-08-19
 
 - Retain a small bounded set of authenticated FSP records that arrive before

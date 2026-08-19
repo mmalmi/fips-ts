@@ -162,6 +162,11 @@ describe("FMP replacement-page address aliases", () => {
       transports: [new MutableAddressTransport(browserAddress)],
       heartbeatIntervalMs: 60_000,
     });
+    const peerEvents: Array<{ remotePubkey: string; state: string }> = [];
+    browser.on("peer", (event) => {
+      const peer = event as { remotePubkey: string; state: string };
+      peerEvents.push({ remotePubkey: peer.remotePubkey, state: peer.state });
+    });
     const firstGuest = new FipsNode({
       identity: firstGuestIdentity,
       transports: [new MutableAddressTransport(guestAddress)],
@@ -194,6 +199,11 @@ describe("FMP replacement-page address aliases", () => {
         expect(peers.has(toHex(firstGuestIdentity.nodeAddr))).toBe(false);
         expect(peers.has(toHex(nextGuestIdentity.nodeAddr))).toBe(true);
         expect(peers.size).toBe(1);
+        expect(peerEvents).toEqual([
+          { remotePubkey: toHex(firstGuestIdentity.publicKey), state: "connected" },
+          { remotePubkey: toHex(firstGuestIdentity.publicKey), state: "disconnected" },
+          { remotePubkey: toHex(nextGuestIdentity.publicKey), state: "connected" },
+        ]);
       } finally {
         await nextGuest.stop();
       }
