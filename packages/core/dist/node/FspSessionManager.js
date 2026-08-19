@@ -30,7 +30,11 @@ export class FspSessionManager {
         };
     }
     stop() {
-        for (const session of this.sessions.values()) {
+        for (const [nodeHex, session] of [...this.sessions]) {
+            if (session.setupPromise) {
+                this.rejectSessionSetup(session, nodeHex, new Error("FSP session manager stopped"));
+                continue;
+            }
             session.fsp.close();
             session.pendingResponderFsp?.close();
             session.previousFsp?.fsp.close();
@@ -41,6 +45,10 @@ export class FspSessionManager {
         for (const [nodeHex, session] of this.sessions) {
             if (session.remotePubkeyHex !== remotePubkeyHex)
                 continue;
+            if (session.setupPromise) {
+                this.rejectSessionSetup(session, nodeHex, new Error("remote FIPS peer restarted"));
+                continue;
+            }
             session.fsp.close();
             session.pendingResponderFsp?.close();
             session.previousFsp?.fsp.close();
@@ -100,9 +108,7 @@ export class FspSessionManager {
             if (!wasEstablished) {
                 const eventPubkey = session.remotePubkeyHex ?? srcNodeHex;
                 this.cfg.emitSession({ remotePubkey: eventPubkey, state: "established" });
-                session.setupResolve?.();
-                session.setupResolve = undefined;
-                session.setupReject = undefined;
+                this.resolveSessionSetup(session);
             }
             await this.cfg.routing.sendFspToward(srcNodeAddr, reply);
             return;
@@ -299,9 +305,7 @@ export class FspSessionManager {
             remotePubkey: session.remotePubkeyHex ?? srcNodeHex,
             state: "established",
         });
-        session.setupResolve?.();
-        session.setupResolve = undefined;
-        session.setupReject = undefined;
+        this.resolveSessionSetup(session);
         await this.drainEarlyEstablishedRecords(session, srcNodeHex);
     }
     queueEarlyEstablishedRecord(session, peer, frame, srcNodeHex) {
@@ -352,10 +356,7 @@ export class FspSessionManager {
         if (session && session.fsp.state === "established")
             return session;
         if (session && session.fsp.state === "handshaking") {
-            await new Promise((resolve, reject) => {
-                session.setupResolve = resolve;
-                session.setupReject = reject;
-            });
+            await this.waitForSessionSetup(session, remoteNodeHex);
             return session;
         }
         const directPeer = this.cfg.getPeerByNodeAddr(remoteNodeHex);
@@ -372,22 +373,62 @@ export class FspSessionManager {
         session = { remoteNodeAddr, remotePubkeyHex, remotePubkey, fsp, currentKBit: false };
         this.sessions.set(remoteNodeHex, session);
         this.cfg.emitSession({ remotePubkey: remotePubkeyHex, state: "establishing" });
+        const setupDone = this.waitForSessionSetup(session, remoteNodeHex);
         const msg1 = fsp.buildSessionSetup((n) => this.cfg.random.bytes(n), this.cfg.routing.coords, this.cfg.routing.coordinatesFor(remoteNodeHex) ?? [remoteNodeAddr]);
-        let timer;
-        const setupDone = new Promise((resolve, reject) => {
-            session.setupResolve = resolve;
-            session.setupReject = reject;
-            timer = setTimeout(() => reject(new Error("FSP handshake timeout")), 15_000);
-        });
         try {
             await this.cfg.routing.sendFspToward(remoteNodeAddr, msg1);
             await setupDone;
         }
-        finally {
-            if (timer)
-                clearTimeout(timer);
+        catch (error) {
+            if (this.sessions.get(remoteNodeHex) === session && session.fsp.state !== "established") {
+                this.rejectSessionSetup(session, remoteNodeHex, error instanceof Error ? error : new Error(String(error)));
+            }
+            await setupDone.catch(() => undefined);
+            throw error;
         }
         return session;
+    }
+    waitForSessionSetup(session, remoteNodeHex) {
+        if (session.setupPromise)
+            return session.setupPromise;
+        session.setupPromise = new Promise((resolve, reject) => {
+            session.setupResolve = resolve;
+            session.setupReject = reject;
+            session.setupTimer = setTimeout(() => {
+                this.rejectSessionSetup(session, remoteNodeHex, new Error("FSP handshake timeout"));
+            }, 15_000);
+        });
+        return session.setupPromise;
+    }
+    resolveSessionSetup(session) {
+        if (session.setupTimer)
+            clearTimeout(session.setupTimer);
+        const resolve = session.setupResolve;
+        session.setupPromise = undefined;
+        session.setupTimer = undefined;
+        session.setupResolve = undefined;
+        session.setupReject = undefined;
+        resolve?.();
+    }
+    rejectSessionSetup(session, remoteNodeHex, error) {
+        if (session.setupTimer)
+            clearTimeout(session.setupTimer);
+        const reject = session.setupReject;
+        session.setupPromise = undefined;
+        session.setupTimer = undefined;
+        session.setupResolve = undefined;
+        session.setupReject = undefined;
+        if (this.sessions.get(remoteNodeHex) === session) {
+            session.fsp.close();
+            session.pendingResponderFsp?.close();
+            session.previousFsp?.fsp.close();
+            this.sessions.delete(remoteNodeHex);
+            this.cfg.emitSession({
+                remotePubkey: session.remotePubkeyHex ?? remoteNodeHex,
+                state: "closed",
+            });
+        }
+        reject?.(error);
     }
     prunePreviousFsp(session, nowMs) {
         if (!session.previousFsp || session.previousFsp.expiresAtMs > nowMs)

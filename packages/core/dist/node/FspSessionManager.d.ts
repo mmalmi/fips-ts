@@ -47,6 +47,9 @@ export declare class FspSessionManager {
     private drainEarlyEstablishedRecords;
     private replaceRestartedSession;
     private ensureSession;
+    private waitForSessionSetup;
+    private resolveSessionSetup;
+    private rejectSessionSetup;
     private prunePreviousFsp;
     private directPeerForSession;
     private sendDirectFsp;

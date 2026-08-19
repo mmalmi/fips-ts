@@ -1,5 +1,14 @@
 # Changelog
 
+## Runtime packages 0.0.36 - 2026-08-20
+
+- Share one bounded waiter for concurrent sends during FSP setup and fully
+  discard a handshaking session when setup times out. A later application
+  retry now starts a fresh authenticated session instead of waiting forever on
+  the failed attempt.
+- Release `@fips/core` 0.0.36. Other runtime packages remain unchanged from
+  runtime bundle 0.0.35.
+
 ## Runtime packages 0.0.35 - 2026-08-19
 
 - Emit a disconnected peer lifecycle event when an authenticated identity is
