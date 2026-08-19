@@ -6,6 +6,8 @@ import { decodeFspEstablished, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, FSP_MSG_DA
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
 const FSP_REKEY_DRAIN_MS = 45_000;
 const FSP_DEFAULT_PATH_MTU = 1_200;
+const MAX_EARLY_ESTABLISHED_RECORDS = 16;
+const MAX_EARLY_ESTABLISHED_BYTES = 64 * 1024;
 export class FspSessionManager {
     cfg;
     services = new Map();
@@ -108,13 +110,20 @@ export class FspSessionManager {
         if (phase === 3) {
             if (!session)
                 throw new Error(`FSP msg3 with no session ${srcNodeHex}`);
-            this.handleSessionMsg3(peer, srcNodeAddr, srcNodeHex, session, fspFrame);
+            await this.handleSessionMsg3(peer, srcNodeAddr, srcNodeHex, session, fspFrame);
             return;
         }
         throw new Error(`unknown FSP phase ${phase}`);
     }
     async handleEstablished(peer, srcNodeHex, session, fspFrame) {
-        if (!session || session.fsp.state !== "established") {
+        if (!session) {
+            throw new Error(`FSP Established before handshake from ${srcNodeHex}`);
+        }
+        if (session.fsp.state === "handshaking") {
+            this.queueEarlyEstablishedRecord(session, peer, fspFrame, srcNodeHex);
+            return;
+        }
+        if (session.fsp.state !== "established") {
             throw new Error(`FSP Established before handshake from ${srcNodeHex}`);
         }
         this.prunePreviousFsp(session, Date.now());
@@ -126,6 +135,10 @@ export class FspSessionManager {
             if (session.pendingResponderFsp?.state === "established") {
                 receiveFsp = session.pendingResponderFsp;
                 promotePending = true;
+            }
+            else if (session.pendingResponderFsp?.state === "handshaking") {
+                this.queueEarlyEstablishedRecord(session, peer, fspFrame, srcNodeHex);
+                return;
             }
             else if (session.previousFsp?.kBit === receivedKBit) {
                 receiveFsp = session.previousFsp.fsp;
@@ -248,7 +261,7 @@ export class FspSessionManager {
         }
         await this.cfg.routing.sendFspReplyToward(srcNodeAddr, reply, peer);
     }
-    handleSessionMsg3(peer, srcNodeAddr, srcNodeHex, session, fspFrame) {
+    async handleSessionMsg3(peer, srcNodeAddr, srcNodeHex, session, fspFrame) {
         const handshakeFsp = session.pendingResponderFsp ?? session.fsp;
         const promotesPendingEpoch = session.pendingResponderFsp === handshakeFsp;
         handshakeFsp.handleSessionMsg3(fspFrame);
@@ -289,6 +302,34 @@ export class FspSessionManager {
         session.setupResolve?.();
         session.setupResolve = undefined;
         session.setupReject = undefined;
+        await this.drainEarlyEstablishedRecords(session, srcNodeHex);
+    }
+    queueEarlyEstablishedRecord(session, peer, frame, srcNodeHex) {
+        // Validate the public envelope before retaining anything. Direct FSP and
+        // the routed final handshake use different carriers, so a valid first
+        // encrypted record can overtake Msg3 even on an otherwise ordered link.
+        decodeFspEstablished(frame);
+        const records = session.earlyEstablishedRecords ?? [];
+        const retainedBytes = session.earlyEstablishedBytes ?? 0;
+        if (records.length >= MAX_EARLY_ESTABLISHED_RECORDS
+            || retainedBytes + frame.length > MAX_EARLY_ESTABLISHED_BYTES) {
+            throw new Error(`early FSP Established queue full for ${srcNodeHex}`);
+        }
+        records.push({ peer, frame: new Uint8Array(frame) });
+        session.earlyEstablishedRecords = records;
+        session.earlyEstablishedBytes = retainedBytes + frame.length;
+        this.cfg.logger.debug("queued FSP Established until final handshake", srcNodeHex);
+    }
+    async drainEarlyEstablishedRecords(session, srcNodeHex) {
+        const records = session.earlyEstablishedRecords;
+        session.earlyEstablishedRecords = undefined;
+        session.earlyEstablishedBytes = 0;
+        if (!records || records.length === 0)
+            return;
+        this.cfg.logger.debug("draining early FSP Established records", srcNodeHex, records.length);
+        for (const { peer, frame } of records) {
+            await this.handleEstablished(peer, srcNodeHex, session, frame);
+        }
     }
     replaceRestartedSession(session, replacement, srcNodeHex) {
         session.previousFsp?.fsp.close();

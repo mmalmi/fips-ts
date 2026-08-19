@@ -1,5 +1,15 @@
 # Changelog
 
+## Runtime packages 0.0.34 - 2026-08-19
+
+- Retain a small bounded set of authenticated FSP records that arrive before
+  the routed final handshake message, then deliver them in order once the
+  responder completes the session. This handles legitimate carrier reordering
+  between routed Msg3 and negotiated direct transport without losing the first
+  application record.
+- Release `@fips/core` 0.0.34. Other runtime packages remain unchanged from
+  runtime bundle 0.0.33.
+
 ## Runtime packages 0.0.33 - 2026-08-19
 
 - Re-resolve a transit destination when an established FSP session loses its

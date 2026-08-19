@@ -43,6 +43,8 @@ export declare class FspSessionManager {
     private deliverDatagram;
     private handleSessionSetup;
     private handleSessionMsg3;
+    private queueEarlyEstablishedRecord;
+    private drainEarlyEstablishedRecords;
     private replaceRestartedSession;
     private ensureSession;
     private prunePreviousFsp;
