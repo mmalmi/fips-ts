@@ -2,7 +2,6 @@ import { sha256 } from "@noble/hashes/sha256";
 
 import { bytesEqual } from "../codec/hex.js";
 import {
-  compressedPubkeyFromXOnly,
   signSchnorr,
   verifySchnorr,
   type FipsIdentity,
@@ -43,6 +42,13 @@ import { LearnedRouteTable } from "./LearnedRouteTable.js";
 import { OriginLookupRegistry } from "./OriginLookupRegistry.js";
 import type { PendingOriginLookup } from "./OriginLookupRegistry.js";
 import type { AdjacentPeer } from "./PeerState.js";
+import {
+  delay,
+  discoveryPublicKey,
+  isKnownUnhandledLinkMessage,
+  lookupReverseKey,
+  peerNodeKey,
+} from "./routingHelpers.js";
 import { TreeState } from "./TreeState.js";
 
 interface PendingRouteResolution {
@@ -294,6 +300,40 @@ export class FipsRouting {
       originCoords: this.treeState.coords,
     });
     const retrying = this.retryOriginLookup(pending, encoded);
+    try {
+      await pending.promise;
+    } finally {
+      await retrying;
+    }
+  }
+
+  private async refreshTransitRoute(
+    target: NodeAddr,
+    targetHex: string,
+    previousHop: AdjacentPeer,
+  ): Promise<void> {
+    const existing = this.originLookups.get(targetHex);
+    if (existing) {
+      await existing.promise;
+      return;
+    }
+    if (this.originLookupPeers(previousHop).length === 0) {
+      throw new Error(`no route to ${targetHex}`);
+    }
+    const pending = this.originLookups.create({
+      targetHex,
+      randomBytes: () => this.cfg.randomBytes(8),
+      timeoutMs: LOOKUP_ORIGIN_TIMEOUT_MS,
+    });
+    const encoded = encodeLookupRequestPayload({
+      requestId: pending.requestId,
+      target,
+      origin: this.cfg.identity.nodeAddr,
+      ttl: LOOKUP_ORIGIN_TTL,
+      minMtu: 0,
+      originCoords: this.treeState.coords,
+    });
+    const retrying = this.retryOriginLookup(pending, encoded, previousHop);
     try {
       await pending.promise;
     } finally {
@@ -596,17 +636,23 @@ export class FipsRouting {
     const pending = this.originLookups.findRequest(response.requestId);
     if (!pending) return false;
     if (nodeAddrToHex(response.target) !== pending.targetHex) return true;
-    const proofDigest = sha256(
-      lookupResponseProofBytes(response.requestId, response.target, response.targetCoords),
-    );
-    const proofValid = verifySchnorr(
-      response.proof,
-      proofDigest,
-      pending.targetPubkey.subarray(1),
-    );
-    if (!proofValid) {
-      this.cfg.logger.warn("lookup response proof verification failed", pending.targetHex);
-      return true;
+    // A locally originated first-contact lookup knows the compressed target
+    // key and verifies its proof. A transit refresh only knows the NodeAddr;
+    // its established end-to-end FSP session still authenticates payloads,
+    // while this response is used solely to relearn a forwarding path.
+    if (pending.targetPubkey) {
+      const proofDigest = sha256(
+        lookupResponseProofBytes(response.requestId, response.target, response.targetCoords),
+      );
+      const proofValid = verifySchnorr(
+        response.proof,
+        proofDigest,
+        pending.targetPubkey.subarray(1),
+      );
+      if (!proofValid) {
+        this.cfg.logger.warn("lookup response proof verification failed", pending.targetHex);
+        return true;
+      }
     }
     if (!bytesEqual(response.targetCoords[0]!, response.target)) {
       this.cfg.logger.warn("lookup response coordinates do not start at target", pending.targetHex);
@@ -619,13 +665,13 @@ export class FipsRouting {
     return true;
   }
 
-  private originLookupPeers(): AdjacentPeer[] {
+  private originLookupPeers(excludedPeer?: AdjacentPeer): AdjacentPeer[] {
     const defaultPeer = this.cfg.defaultRoute
       ? this.cfg.getPeerByPubkey(this.cfg.defaultRoute)
       : undefined;
     return [...this.cfg.getPeers()]
       .filter((peer) => {
-        if (peer.link.state !== "established") return false;
+        if (peer === excludedPeer || peer.link.state !== "established") return false;
         if (this.cfg.routingMode === "reply_learned") return true;
         return peer === defaultPeer || this.treeState.isTreePeer(deriveNodeAddr(peer.pubkey));
       })
@@ -635,9 +681,10 @@ export class FipsRouting {
   private async retryOriginLookup(
     pending: PendingOriginLookup,
     encoded: Uint8Array,
+    excludedPeer?: AdjacentPeer,
   ): Promise<void> {
     while (this.originLookups.get(pending.targetHex) === pending) {
-      const peers = this.originLookupPeers();
+      const peers = this.originLookupPeers(excludedPeer);
       await Promise.allSettled(
         peers.map((peer) =>
           this.cfg.sendLinkMessage(peer, LinkMessageType.LookupRequest, encoded)
@@ -659,6 +706,10 @@ export class FipsRouting {
     let nextHop = this.nextHopFor(destNodeHex, previousHop);
     if (!nextHop && !previousHop) {
       await this.resolveRoute(datagram.destAddr, destNodeHex);
+      nextHop = this.nextHopFor(destNodeHex, previousHop);
+    }
+    if (!nextHop && previousHop) {
+      await this.refreshTransitRoute(datagram.destAddr, destNodeHex, previousHop);
       nextHop = this.nextHopFor(destNodeHex, previousHop);
     }
     if (!nextHop) throw new Error(`no route to ${destNodeHex}`);
@@ -799,56 +850,4 @@ export class FipsRouting {
       resolved.remotePubkey,
     );
   }
-}
-
-function peerNodeKey(peer: AdjacentPeer): string {
-  return nodeAddrToHex(deriveNodeAddr(peer.pubkey));
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
-}
-
-function discoveryPublicKey(discovered: {
-  publicKey?: Uint8Array;
-  remoteAddr: TransportAddress;
-}): Uint8Array {
-  const hinted = discovered.publicKey;
-  if (hinted?.length === 32) return compressedPubkeyFromXOnly(hinted);
-  if (hinted?.length === 33) {
-    if (hinted[0] !== 0x02 && hinted[0] !== 0x03) {
-      throw new Error("discovered compressed pubkey has invalid prefix");
-    }
-    return new Uint8Array(hinted);
-  }
-  if (!hinted && discovered.remoteAddr.addr.length === 66) {
-    return hexBytes(discovered.remoteAddr.addr);
-  }
-  throw new Error("discovered peer did not include a FIPS public key");
-}
-
-function hexBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("hex length");
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
-function lookupReverseKey(requestId: bigint, target: NodeAddr): string {
-  return `${requestId.toString(16)}:${nodeAddrToHex(target)}`;
-}
-
-function isKnownUnhandledLinkMessage(msgType: number): boolean {
-  return (
-    msgType === LinkMessageType.Heartbeat
-    || msgType === LinkMessageType.Disconnect
-    || msgType === LinkMessageType.SenderReport
-    || msgType === LinkMessageType.ReceiverReport
-    || msgType === LinkMessageType.TreeAnnounce
-    || msgType === LinkMessageType.FilterAnnounce
-  );
 }

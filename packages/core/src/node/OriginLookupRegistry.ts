@@ -1,7 +1,7 @@
 export interface PendingOriginLookup {
   requestId: bigint;
   targetHex: string;
-  targetPubkey: Uint8Array;
+  targetPubkey?: Uint8Array;
   promise: Promise<void>;
 }
 
@@ -27,7 +27,7 @@ export class OriginLookupRegistry {
 
   create(args: {
     targetHex: string;
-    targetPubkey: Uint8Array;
+    targetPubkey?: Uint8Array;
     randomBytes: () => Uint8Array;
     timeoutMs: number;
   }): PendingOriginLookup {
@@ -44,7 +44,9 @@ export class OriginLookupRegistry {
     const pending: PendingOriginLookupState = {
       requestId,
       targetHex: args.targetHex,
-      targetPubkey: new Uint8Array(args.targetPubkey),
+      targetPubkey: args.targetPubkey
+        ? new Uint8Array(args.targetPubkey)
+        : undefined,
       promise,
       resolve,
       reject,

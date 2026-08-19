@@ -1,7 +1,7 @@
 export interface PendingOriginLookup {
     requestId: bigint;
     targetHex: string;
-    targetPubkey: Uint8Array;
+    targetPubkey?: Uint8Array;
     promise: Promise<void>;
 }
 export declare class OriginLookupRegistry {
@@ -13,7 +13,7 @@ export declare class OriginLookupRegistry {
     findRequest(requestId: bigint): PendingOriginLookup | undefined;
     create(args: {
         targetHex: string;
-        targetPubkey: Uint8Array;
+        targetPubkey?: Uint8Array;
         randomBytes: () => Uint8Array;
         timeoutMs: number;
     }): PendingOriginLookup;

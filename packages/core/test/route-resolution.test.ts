@@ -46,6 +46,10 @@ class RoutedTransport implements Transport {
     }
   }
 
+  disconnect(addr: TransportAddress): void {
+    this.ctx?.onConnectionState?.({ remoteAddr: addr, state: "disconnected" });
+  }
+
   async send(addr: TransportAddress, packet: Uint8Array): Promise<void> {
     if (peekFmpPhase(packet) === FMP_PHASE_ESTABLISHED) {
       this.establishedPackets += 1;
@@ -305,6 +309,119 @@ describe("FipsNode on-demand route resolution", () => {
       await dNode.stop();
     }
   }, 10_000);
+
+  it("refreshes a lost transit route before forwarding an established session", async () => {
+    const guest = await identityFromSecretKey(new Uint8Array(32).fill(0x71));
+    const host = await identityFromSecretKey(new Uint8Array(32).fill(0x72));
+    const firstTransit = await identityFromSecretKey(new Uint8Array(32).fill(0x73));
+    const nextTransit = await identityFromSecretKey(new Uint8Array(32).fill(0x74));
+    const target = await identityFromSecretKey(new Uint8Array(32).fill(0x75));
+    const guestHost = new RoutedTransport("route-refresh-guest");
+    const hostGuest = new RoutedTransport("route-refresh-guest");
+    const hostFirst = new RoutedTransport("route-refresh-first");
+    const firstHost = new RoutedTransport("route-refresh-first");
+    const firstTarget = new RoutedTransport("route-refresh-first-target");
+    const targetFirst = new RoutedTransport("route-refresh-first-target");
+    const hostNext = new RoutedTransport("route-refresh-next");
+    const nextHost = new RoutedTransport("route-refresh-next");
+    const nextTarget = new RoutedTransport("route-refresh-next-target");
+    const targetNext = new RoutedTransport("route-refresh-next-target");
+    const guestNode = new FipsNode({
+      identity: guest,
+      transports: [guestHost],
+      routingMode: "reply_learned",
+    });
+    const hostNode = new FipsNode({
+      identity: host,
+      transports: [hostGuest, hostFirst, hostNext],
+      forwarding: true,
+      routingMode: "reply_learned",
+    });
+    const firstTransitNode = new FipsNode({
+      identity: firstTransit,
+      transports: [firstHost, firstTarget],
+      forwarding: true,
+      routingMode: "reply_learned",
+    });
+    const nextTransitNode = new FipsNode({
+      identity: nextTransit,
+      transports: [nextHost, nextTarget],
+      forwarding: true,
+      routingMode: "reply_learned",
+    });
+    const targetNode = new FipsNode({
+      identity: target,
+      transports: [targetFirst, targetNext],
+      routingMode: "reply_learned",
+    });
+    const received: string[] = [];
+    targetNode.registerService(8_084, ({ payload }) => {
+      received.push(new TextDecoder().decode(payload));
+    });
+
+    await Promise.all([
+      guestNode.start(),
+      hostNode.start(),
+      firstTransitNode.start(),
+      nextTransitNode.start(),
+      targetNode.start(),
+    ]);
+    try {
+      await guestNode.connect({
+        transport: "route-refresh-guest",
+        addr: toHex(host.publicKey),
+      });
+      await hostNode.connect({
+        transport: "route-refresh-first",
+        addr: toHex(firstTransit.publicKey),
+      });
+      await firstTransitNode.connect({
+        transport: "route-refresh-first-target",
+        addr: toHex(target.publicKey),
+      });
+      await guestNode.sendDatagram({
+        dst: toHex(target.publicKey),
+        dstPort: 8_084,
+        payload: new TextEncoder().encode("before-path-loss"),
+      });
+      expect(received).toEqual(["before-path-loss"]);
+
+      await hostNode.connect({
+        transport: "route-refresh-next",
+        addr: toHex(nextTransit.publicKey),
+      });
+      await nextTransitNode.connect({
+        transport: "route-refresh-next-target",
+        addr: toHex(target.publicKey),
+      });
+      hostFirst.disconnect({
+        transport: "route-refresh-first",
+        addr: toHex(firstTransit.publicKey),
+      });
+      const hostRouting = (
+        hostNode as unknown as {
+          routing: { coordCache: Map<string, NodeAddr[]> };
+        }
+      ).routing;
+      hostRouting.coordCache.delete(nodeAddrToHex(target.nodeAddr));
+
+      await guestNode.sendDatagram({
+        dst: toHex(target.publicKey),
+        dstPort: 8_084,
+        payload: new TextEncoder().encode("after-path-loss"),
+      });
+
+      await vi.waitFor(() => {
+        expect(received).toEqual(["before-path-loss", "after-path-loss"]);
+      });
+    } finally {
+      await guestNode.stop();
+      await hostNode.stop();
+      await firstTransitNode.stop();
+      await nextTransitNode.stop();
+      await targetNode.stop();
+    }
+  }, 15_000);
 
   it("releases the first datagram when a retry gains a newly connected transit peer", async () => {
     const guest = await identityFromSecretKey(new Uint8Array(32).fill(0x35));

@@ -1,0 +1,47 @@
+import { compressedPubkeyFromXOnly, } from "../identity/index.js";
+import { deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
+import { LinkMessageType } from "../protocol/link.js";
+export function peerNodeKey(peer) {
+    return nodeAddrToHex(deriveNodeAddr(peer.pubkey));
+}
+export function delay(milliseconds) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, milliseconds);
+    });
+}
+export function discoveryPublicKey(discovered) {
+    const hinted = discovered.publicKey;
+    if (hinted?.length === 32)
+        return compressedPubkeyFromXOnly(hinted);
+    if (hinted?.length === 33) {
+        if (hinted[0] !== 0x02 && hinted[0] !== 0x03) {
+            throw new Error("discovered compressed pubkey has invalid prefix");
+        }
+        return new Uint8Array(hinted);
+    }
+    if (!hinted && discovered.remoteAddr.addr.length === 66) {
+        return hexBytes(discovered.remoteAddr.addr);
+    }
+    throw new Error("discovered peer did not include a FIPS public key");
+}
+export function lookupReverseKey(requestId, target) {
+    return `${requestId.toString(16)}:${nodeAddrToHex(target)}`;
+}
+export function isKnownUnhandledLinkMessage(msgType) {
+    return (msgType === LinkMessageType.Heartbeat
+        || msgType === LinkMessageType.Disconnect
+        || msgType === LinkMessageType.SenderReport
+        || msgType === LinkMessageType.ReceiverReport
+        || msgType === LinkMessageType.TreeAnnounce
+        || msgType === LinkMessageType.FilterAnnounce);
+}
+function hexBytes(hex) {
+    if (hex.length % 2 !== 0)
+        throw new Error("hex length");
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < out.length; i++) {
+        out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    }
+    return out;
+}
+//# sourceMappingURL=routingHelpers.js.map

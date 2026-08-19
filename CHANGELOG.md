@@ -1,5 +1,16 @@
 # Changelog
 
+## Runtime packages 0.0.33 - 2026-08-19
+
+- Re-resolve a transit destination when an established FSP session loses its
+  learned next hop, allowing browser routers to move live traffic onto another
+  authenticated mesh path without requiring the endpoint session to restart.
+- Exclude the packet's previous hop from recovery lookups and keep the
+  end-to-end FSP session responsible for payload authentication while the
+  transit router relearns coordinates and a next hop.
+- Release `@fips/core` 0.0.33. Other runtime packages remain unchanged from
+  runtime bundle 0.0.32.
+
 ## Runtime packages 0.0.32 - 2026-08-19
 
 - Exchange Rust-compatible `FilterAnnounce` reachability summaries across

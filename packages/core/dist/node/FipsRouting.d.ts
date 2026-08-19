@@ -38,6 +38,7 @@ export declare class FipsRouting {
     scheduleTreeAnnounce(peer: AdjacentPeer): void;
     replayPendingLookupsFor(peer: AdjacentPeer): Promise<void>;
     ensureFirstContactRoute(target: NodeAddr, targetHex: string, targetPubkey: Uint8Array): Promise<void>;
+    private refreshTransitRoute;
     sendFspToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array): Promise<void>;
     sendFspReplyToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array, previousHop: AdjacentPeer): Promise<void>;
     learnReverseRoute(destinationNodeHex: string, nextHop: AdjacentPeer): void;
