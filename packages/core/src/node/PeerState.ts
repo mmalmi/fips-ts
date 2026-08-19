@@ -12,6 +12,7 @@ export interface AdjacentPeer {
   drainingResponderLinks?: Map<number, { link: FmpLink; expiresAtMs: number }>;
   abandonedInitiatorSessionIdx?: number;
   treeAnnounced?: boolean;
+  filterAnnounced?: boolean;
   inboundFilter?: BloomFilter;
   inboundFilterSequence?: bigint;
   outboundFilter?: BloomFilter;

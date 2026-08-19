@@ -13,6 +13,7 @@ export class BloomRouting {
     schedule(peer) {
         setTimeout(() => {
             void this.send(peer).catch((error) => {
+                peer.filterAnnounced = false;
                 this.cfg.emitError(error, "send FilterAnnounce");
             });
         }, 0);

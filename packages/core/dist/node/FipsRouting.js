@@ -117,7 +117,10 @@ export class FipsRouting {
         await this.cfg.sendLinkMessage(peer, LinkMessageType.TreeAnnounce, encoded.subarray(1));
     }
     scheduleTreeAnnounce(peer) {
-        this.bloomRouting.schedule(peer);
+        if (!peer.filterAnnounced) {
+            peer.filterAnnounced = true;
+            this.bloomRouting.schedule(peer);
+        }
         if (peer.treeAnnounced)
             return;
         peer.treeAnnounced = true;

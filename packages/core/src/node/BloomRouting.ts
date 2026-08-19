@@ -35,6 +35,7 @@ export class BloomRouting {
   schedule(peer: AdjacentPeer): void {
     setTimeout(() => {
       void this.send(peer).catch((error) => {
+        peer.filterAnnounced = false;
         this.cfg.emitError(error as Error, "send FilterAnnounce");
       });
     }, 0);

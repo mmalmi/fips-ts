@@ -14,6 +14,7 @@ export interface AdjacentPeer {
     }>;
     abandonedInitiatorSessionIdx?: number;
     treeAnnounced?: boolean;
+    filterAnnounced?: boolean;
     inboundFilter?: BloomFilter;
     inboundFilterSequence?: bigint;
     outboundFilter?: BloomFilter;

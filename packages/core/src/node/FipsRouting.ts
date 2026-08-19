@@ -224,7 +224,10 @@ export class FipsRouting {
   }
 
   scheduleTreeAnnounce(peer: AdjacentPeer): void {
-    this.bloomRouting.schedule(peer);
+    if (!peer.filterAnnounced) {
+      peer.filterAnnounced = true;
+      this.bloomRouting.schedule(peer);
+    }
     if (peer.treeAnnounced) return;
     peer.treeAnnounced = true;
     setTimeout(() => {
