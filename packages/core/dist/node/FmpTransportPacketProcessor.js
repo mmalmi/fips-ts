@@ -96,37 +96,21 @@ export class FmpTransportPacketProcessor {
             result = peer.link.handleMsg1(packet, this.cfg.randomBytes);
             handshakeLink = peer.link;
         }
-        const remotePubkeyHex = toHex(result.remotePubkey);
-        const previousRemoteEpoch = peerEpochBeforeMsg1
-            ?? this.establishedRemoteEpoch(remotePubkeyHex, handshakeLink);
-        const candidateEpoch = handshakeLink.remoteEpoch;
-        const changedEpoch = previousRemoteEpoch !== undefined
-            && candidateEpoch !== undefined
-            && !bytesEqual(previousRemoteEpoch, candidateEpoch);
-        if (this.rejectRetiredEpoch(peer, handshakeLink, remotePubkeyHex, candidateEpoch, changedEpoch, remoteAddr))
+        const reconciled = this.reconcileAuthenticatedMsg1({
+            peer,
+            result,
+            handshakeLink,
+            peerEpochBeforeMsg1,
+            transport,
+            remoteAddr,
+            key,
+            replacedHandshake,
+            wasEstablished,
+        });
+        if (!reconciled)
             return;
-        if (changedEpoch) {
-            this.removeRestartedPeerPaths(remotePubkeyHex, handshakeLink, transport, replacedHandshake);
-            peer = {
-                pubkey: result.remotePubkey,
-                pubkeyHex: remotePubkeyHex,
-                remoteAddr,
-                transport,
-                link: handshakeLink,
-            };
-            this.cfg.peers.set(key, peer);
-            wasEstablished = false;
-            this.cfg.logger.info("FMP peer restart detected", remotePubkeyHex);
-        }
-        else if (replacedHandshake && peer.link !== handshakeLink) {
-            peer.abandonedInitiatorSessionIdx = peer.link.localSessionIdx;
-            peer.link.close();
-            peer.link = handshakeLink;
-            peer.pendingResponderLink = undefined;
-        }
-        peer.pubkey = result.remotePubkey;
-        peer.pubkeyHex = remotePubkeyHex;
-        this.rememberPeer(peer);
+        peer = reconciled.peer;
+        wasEstablished = reconciled.wasEstablished;
         const reply = result.reply;
         let replySent;
         if (reply) {
@@ -136,7 +120,7 @@ export class FmpTransportPacketProcessor {
             });
             this.cfg.logger.debug("fips msg2 sent", remoteAddr.transport, remoteAddr.addr, reply.length);
         }
-        if (replacedHandshake) {
+        if (replacedHandshake && !reconciled.identityRebound) {
             peer.outgoingHandshake = undefined;
             replacedHandshake.resolve();
         }
@@ -148,6 +132,67 @@ export class FmpTransportPacketProcessor {
             });
             this.replayPendingLookupsAfterEstablishment(peer, replySent);
         }
+    }
+    reconcileAuthenticatedMsg1(context) {
+        let { peer, wasEstablished } = context;
+        const { result, handshakeLink, peerEpochBeforeMsg1, transport, remoteAddr, key, replacedHandshake, } = context;
+        const remotePubkeyHex = toHex(result.remotePubkey);
+        const identityChanged = peer.pubkey.length > 0
+            && !bytesEqual(peer.pubkey, result.remotePubkey);
+        let identityRebound = false;
+        if (identityChanged) {
+            if (!transport.identityMayChangeAtAddress) {
+                handshakeLink.close();
+                if (peer.pendingResponderLink === handshakeLink)
+                    peer.pendingResponderLink = undefined;
+                throw new Error("fresh FMP Msg1 changed the authenticated peer identity");
+            }
+            this.removeRestartedPeerPaths(peer.pubkeyHex, handshakeLink, transport);
+            peer = {
+                pubkey: result.remotePubkey,
+                pubkeyHex: remotePubkeyHex,
+                remoteAddr,
+                transport,
+                link: handshakeLink,
+            };
+            this.cfg.peers.set(key, peer);
+            wasEstablished = false;
+            identityRebound = true;
+            this.cfg.logger.info("FMP transport address authenticated a replacement identity", remoteAddr.transport, remoteAddr.addr);
+        }
+        else {
+            const previousRemoteEpoch = peerEpochBeforeMsg1
+                ?? this.establishedRemoteEpoch(remotePubkeyHex, handshakeLink);
+            const candidateEpoch = handshakeLink.remoteEpoch;
+            const changedEpoch = previousRemoteEpoch !== undefined
+                && candidateEpoch !== undefined
+                && !bytesEqual(previousRemoteEpoch, candidateEpoch);
+            if (this.rejectRetiredEpoch(peer, handshakeLink, remotePubkeyHex, candidateEpoch, changedEpoch, remoteAddr))
+                return undefined;
+            if (changedEpoch) {
+                this.removeRestartedPeerPaths(remotePubkeyHex, handshakeLink, transport, replacedHandshake);
+                peer = {
+                    pubkey: result.remotePubkey,
+                    pubkeyHex: remotePubkeyHex,
+                    remoteAddr,
+                    transport,
+                    link: handshakeLink,
+                };
+                this.cfg.peers.set(key, peer);
+                wasEstablished = false;
+                this.cfg.logger.info("FMP peer restart detected", remotePubkeyHex);
+            }
+            else if (replacedHandshake && peer.link !== handshakeLink) {
+                peer.abandonedInitiatorSessionIdx = peer.link.localSessionIdx;
+                peer.link.close();
+                peer.link = handshakeLink;
+                peer.pendingResponderLink = undefined;
+            }
+        }
+        peer.pubkey = result.remotePubkey;
+        peer.pubkeyHex = remotePubkeyHex;
+        this.rememberPeer(peer);
+        return { peer, wasEstablished, identityRebound };
     }
     prepareMsg1Peer(transport, remoteAddr, key, initialPeer) {
         let peer = initialPeer;
@@ -497,10 +542,6 @@ export class FmpTransportPacketProcessor {
         }
         replacement = this.newResponderLink();
         const result = replacement.handleMsg1(packet, this.cfg.randomBytes);
-        if (peer.pubkey.length > 0 && !bytesEqual(peer.pubkey, result.remotePubkey)) {
-            replacement.close();
-            throw new Error("fresh FMP Msg1 changed the authenticated peer identity");
-        }
         peer.pendingResponderLink = replacement;
         return result;
     }

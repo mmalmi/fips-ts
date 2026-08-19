@@ -27,6 +27,7 @@ export declare class FmpTransportPacketProcessor {
     clear(): void;
     process(transport: Transport, received: ReceivedTransportPacket): void;
     private handleMsg1;
+    private reconcileAuthenticatedMsg1;
     private prepareMsg1Peer;
     private rejectRetiredEpoch;
     private handleMsg2;

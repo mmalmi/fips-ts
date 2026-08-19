@@ -48,6 +48,7 @@ export interface VirtualEthernetTransportConfig {
 export class VirtualEthernetTransport implements Transport {
   readonly type = "ethernet";
   readonly mtu: number;
+  readonly identityMayChangeAtAddress = true;
 
   private readonly port: EthernetFramePort;
   private readonly localMac: Uint8Array;

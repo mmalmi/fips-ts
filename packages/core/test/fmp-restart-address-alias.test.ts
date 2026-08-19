@@ -13,6 +13,7 @@ import {
 } from "../src/index.js";
 
 const transports = new Map<string, IdentityAliasTransport>();
+const mutableAddressTransports = new Map<string, MutableAddressTransport>();
 
 class IdentityAliasTransport implements Transport {
   readonly type = "identity_alias";
@@ -103,14 +104,105 @@ class AddressOnlyTransport implements Transport {
   }
 }
 
+class MutableAddressTransport implements Transport {
+  readonly type = "mutable_address";
+  readonly mtu = 1_200;
+  readonly identityMayChangeAtAddress = true;
+  private ctx?: TransportContext;
+
+  constructor(private readonly localAddress: string) {}
+
+  async start(ctx: TransportContext): Promise<void> {
+    this.ctx = ctx;
+    mutableAddressTransports.set(this.localAddress, this);
+  }
+
+  async stop(): Promise<void> {
+    if (mutableAddressTransports.get(this.localAddress) === this) {
+      mutableAddressTransports.delete(this.localAddress);
+    }
+    this.ctx = undefined;
+  }
+
+  async connect(addr: TransportAddress): Promise<void> {
+    if (!mutableAddressTransports.has(addr.addr)) throw new Error(`missing peer ${addr.addr}`);
+  }
+
+  async send(addr: TransportAddress, packet: Uint8Array): Promise<void> {
+    const remote = mutableAddressTransports.get(addr.addr);
+    if (!remote?.ctx) throw new Error(`missing peer ${addr.addr}`);
+    remote.ctx.onPacket({
+      transportType: this.type,
+      remoteAddr: { transport: this.type, addr: this.localAddress },
+      data: new Uint8Array(packet),
+      receivedAtMs: Date.now(),
+    });
+  }
+}
+
 function xOnly(addr: string): string {
   const lower = addr.toLowerCase();
   return /^(02|03)[0-9a-f]{64}$/u.test(lower) ? lower.slice(2) : lower;
 }
 
-afterEach(() => transports.clear());
+afterEach(() => {
+  transports.clear();
+  mutableAddressTransports.clear();
+});
 
 describe("FMP replacement-page address aliases", () => {
+  it("authenticates a new identity after a mutable Ethernet-style address is reused", async () => {
+    const browserIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x11));
+    const firstGuestIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x12));
+    const nextGuestIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x13));
+    const browserAddress = toHex(browserIdentity.publicKey);
+    const guestAddress = "guest-mac";
+    const browser = new FipsNode({
+      identity: browserIdentity,
+      transports: [new MutableAddressTransport(browserAddress)],
+      heartbeatIntervalMs: 60_000,
+    });
+    const firstGuest = new FipsNode({
+      identity: firstGuestIdentity,
+      transports: [new MutableAddressTransport(guestAddress)],
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await browser.start();
+    await firstGuest.start();
+    try {
+      await firstGuest.connect({ transport: "mutable_address", addr: browserAddress });
+      await firstGuest.stop();
+
+      const nextGuest = new FipsNode({
+        identity: nextGuestIdentity,
+        transports: [new MutableAddressTransport(guestAddress)],
+        heartbeatIntervalMs: 60_000,
+      });
+      const browserError = new Promise<Error>((resolve) => {
+        browser.on("error", (event) => resolve((event as { err: Error }).err));
+      });
+      await nextGuest.start();
+      try {
+        const outcome = await Promise.race([
+          nextGuest.connect({ transport: "mutable_address", addr: browserAddress })
+            .then(() => "connected" as const),
+          browserError.then(() => "error" as const),
+        ]);
+        expect(outcome).toBe("connected");
+        const peers = (browser as any).peersByNodeAddr as Map<string, unknown>;
+        expect(peers.has(toHex(firstGuestIdentity.nodeAddr))).toBe(false);
+        expect(peers.has(toHex(nextGuestIdentity.nodeAddr))).toBe(true);
+        expect(peers.size).toBe(1);
+      } finally {
+        await nextGuest.stop();
+      }
+    } finally {
+      await browser.stop();
+      await firstGuest.stop();
+    }
+  });
+
   it("keeps the authenticating carrier and skips address-only transports", async () => {
     const survivorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x21));
     const restartedIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x32));

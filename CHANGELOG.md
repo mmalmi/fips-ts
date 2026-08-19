@@ -1,12 +1,17 @@
 # Changelog
 
-## @fips/core 0.0.32 - 2026-08-19
+## Runtime packages 0.0.32 - 2026-08-19
 
 - Exchange Rust-compatible `FilterAnnounce` reachability summaries across
   browser transit nodes, including poisoned-reverse aggregation over current
   tree peers and inbound false-positive-rate validation.
 - Advertise Ethernet leaf nodes through browser WSS adjacencies so an upstream
   FIPS seed can route first-contact control sessions back into a WebVM guest.
+- Allow only transports that explicitly opt in to authenticate a replacement
+  identity at an address, and enable that behavior for virtual Ethernet where
+  a restarted VM guest legitimately retains its MAC address.
+- Release `@fips/core` 0.0.32 and `@fips/transport-ethernet` 0.0.31. Other
+  runtime packages remain unchanged from runtime bundle 0.0.31.
 
 ## Runtime packages 0.0.31 - 2026-08-18
 

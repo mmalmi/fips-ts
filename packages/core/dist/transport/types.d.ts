@@ -42,6 +42,8 @@ export interface TransportContext {
 export interface Transport {
     readonly type: string;
     readonly mtu: number;
+    /** A physical address such as a VM MAC may later authenticate a replacement identity. */
+    readonly identityMayChangeAtAddress?: boolean;
     start(ctx: TransportContext): Promise<void>;
     stop(): Promise<void>;
     connect(addr: TransportAddress): Promise<void>;
