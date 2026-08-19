@@ -27,6 +27,7 @@ export declare class FipsRouting {
     private readonly originLookups;
     private readonly learnedRoutes;
     private readonly coordCache;
+    private readonly bloomRouting;
     constructor(cfg: FipsRoutingConfig);
     get coords(): NodeAddr[];
     coordinatesFor(nodeAddrHex: string): NodeAddr[] | undefined;

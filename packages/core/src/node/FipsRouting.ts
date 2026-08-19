@@ -38,6 +38,7 @@ import type {
   TransportAddress,
 } from "../transport/types.js";
 
+import { BloomRouting } from "./BloomRouting.js";
 import { LearnedRouteTable } from "./LearnedRouteTable.js";
 import { OriginLookupRegistry } from "./OriginLookupRegistry.js";
 import type { PendingOriginLookup } from "./OriginLookupRegistry.js";
@@ -112,9 +113,18 @@ export class FipsRouting {
   private readonly originLookups = new OriginLookupRegistry(MAX_PENDING_ORIGIN_LOOKUPS);
   private readonly learnedRoutes = new LearnedRouteTable();
   private readonly coordCache = new Map<string, NodeAddr[]>();
+  private readonly bloomRouting: BloomRouting;
 
   constructor(private readonly cfg: FipsRoutingConfig) {
     this.treeState = new TreeState(cfg.identity);
+    this.bloomRouting = new BloomRouting({
+      identity: cfg.identity,
+      logger: cfg.logger,
+      getPeers: cfg.getPeers,
+      isTreePeer: (nodeAddr) => this.treeState.isTreePeer(nodeAddr),
+      sendLinkMessage: cfg.sendLinkMessage,
+      emitError: cfg.emitError,
+    });
   }
 
   get coords(): NodeAddr[] {
@@ -136,7 +146,10 @@ export class FipsRouting {
   }
 
   removePeer(peerNodeAddr: NodeAddr): void {
-    if (this.treeState.removePeer(peerNodeAddr)) void this.sendTreeAnnounceToAll();
+    const wasTreePeer = this.treeState.isTreePeer(peerNodeAddr);
+    const parentChanged = this.treeState.removePeer(peerNodeAddr);
+    if (parentChanged) void this.sendTreeAnnounceToAll();
+    if (parentChanged || wasTreePeer) void this.bloomRouting.sendAll();
   }
 
   async handleLinkMessage(
@@ -146,6 +159,10 @@ export class FipsRouting {
   ): Promise<void> {
     if (msgType === LinkMessageType.TreeAnnounce) {
       await this.handleTreeAnnounce(peer, payload);
+      return;
+    }
+    if (msgType === LinkMessageType.FilterAnnounce) {
+      await this.bloomRouting.handle(peer, payload);
       return;
     }
     if (msgType === LinkMessageType.LookupRequest) {
@@ -207,6 +224,7 @@ export class FipsRouting {
   }
 
   scheduleTreeAnnounce(peer: AdjacentPeer): void {
+    this.bloomRouting.schedule(peer);
     if (peer.treeAnnounced) return;
     peer.treeAnnounced = true;
     setTimeout(() => {
@@ -351,7 +369,9 @@ export class FipsRouting {
     if (!verifyTreeAnnounce(announce, peer.pubkey)) {
       throw new Error("TreeAnnounce signature verification failed");
     }
+    const wasTreePeer = this.treeState.isTreePeer(peerNodeAddr);
     const changed = this.treeState.updatePeer(peerNodeAddr, announce);
+    const isTreePeer = this.treeState.isTreePeer(peerNodeAddr);
     this.cfg.logger.debug(
       "tree announce accepted",
       nodeAddrToHex(peerNodeAddr),
@@ -361,6 +381,7 @@ export class FipsRouting {
       nodeAddrToHex(announce.ancestry.at(-1)!.nodeAddr),
     );
     if (changed) await this.sendTreeAnnounceToAll();
+    if (changed || wasTreePeer !== isTreePeer) await this.bloomRouting.sendAll();
   }
 
   private cacheSessionCoordinates(datagram: SessionDatagram): void {

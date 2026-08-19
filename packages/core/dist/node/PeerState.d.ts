@@ -1,4 +1,5 @@
 import type { FmpLink } from "../fmp/link.js";
+import type { BloomFilter } from "../bloom/index.js";
 import type { Transport, TransportAddress } from "../transport/types.js";
 export interface AdjacentPeer {
     pubkey: Uint8Array;
@@ -13,6 +14,9 @@ export interface AdjacentPeer {
     }>;
     abandonedInitiatorSessionIdx?: number;
     treeAnnounced?: boolean;
+    inboundFilter?: BloomFilter;
+    inboundFilterSequence?: bigint;
+    outboundFilter?: BloomFilter;
     outgoingHandshake?: {
         resolve: () => void;
         reject: (err: Error) => void;

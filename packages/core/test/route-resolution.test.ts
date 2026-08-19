@@ -92,6 +92,63 @@ afterEach(() => {
 });
 
 describe("FipsNode on-demand route resolution", () => {
+  it("advertises an Ethernet leaf through a browser transit to its upstream seed", async () => {
+    const identities = await Promise.all(
+      [0x41, 0x42, 0x43].map((value) =>
+        identityFromSecretKey(new Uint8Array(32).fill(value))
+      ),
+    );
+    identities.sort((left, right) =>
+      nodeAddrToHex(left.nodeAddr).localeCompare(nodeAddrToHex(right.nodeAddr))
+    );
+    const [guest, browser, seed] = identities;
+    const guestTransport = new RoutedTransport("filter-route");
+    const browserTransport = new RoutedTransport("filter-route");
+    const seedTransport = new RoutedTransport("filter-route");
+    const guestNode = new FipsNode({ identity: guest, transports: [guestTransport] });
+    const browserNode = new FipsNode({
+      identity: browser,
+      transports: [browserTransport],
+      forwarding: true,
+      routingMode: "reply_learned",
+    });
+    const seedNode = new FipsNode({
+      identity: seed,
+      transports: [seedTransport],
+      forwarding: true,
+    });
+
+    await guestNode.start();
+    await browserNode.start();
+    await seedNode.start();
+    try {
+      await browserNode.connect({
+        transport: "filter-route",
+        addr: toHex(guest.publicKey),
+      });
+      await browserNode.connect({
+        transport: "filter-route",
+        addr: toHex(seed.publicKey),
+      });
+
+      await vi.waitFor(() => {
+        const seedPeers = (
+          seedNode as unknown as {
+            peersByNodeAddr: Map<string, {
+              inboundFilter?: { containsBytes(value: Uint8Array): boolean };
+            }>;
+          }
+        ).peersByNodeAddr;
+        const browserPeer = seedPeers.get(nodeAddrToHex(browser.nodeAddr));
+        expect(browserPeer?.inboundFilter?.containsBytes(guest.nodeAddr)).toBe(true);
+      });
+    } finally {
+      await guestNode.stop();
+      await browserNode.stop();
+      await seedNode.stop();
+    }
+  });
+
   it("times out a resolver that does not produce a route", async () => {
     vi.useFakeTimers();
     const local = await identityFromSecretKey(new Uint8Array(32).fill(0x11));

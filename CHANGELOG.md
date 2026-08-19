@@ -1,5 +1,13 @@
 # Changelog
 
+## @fips/core 0.0.32 - 2026-08-19
+
+- Exchange Rust-compatible `FilterAnnounce` reachability summaries across
+  browser transit nodes, including poisoned-reverse aggregation over current
+  tree peers and inbound false-positive-rate validation.
+- Advertise Ethernet leaf nodes through browser WSS adjacencies so an upstream
+  FIPS seed can route first-contact control sessions back into a WebVM guest.
+
 ## Runtime packages 0.0.31 - 2026-08-18
 
 - Partition signed Nostr WebRTC adverts by x-only public-key order before
