@@ -37,7 +37,7 @@ Source: `crates/fips-core/src/node/session_wire.rs`.
 established FSP records carried directly on an authenticated adjacent
 transport. Both endpoints must advertise the bit before TypeScript emits the
 established-record direct flag `0x08`; otherwise it retains FSP inside FMP.
-This preserves interoperability with upstream FIPS 0.4.1.
+This preserves interoperability with original FIPS 0.4.1.
 
 ### Service-port DataPacket (FSP msg_type 0x10)
 Inside the FSP AEAD body:

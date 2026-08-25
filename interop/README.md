@@ -2,10 +2,12 @@
 
 Two pieces:
 
-- `rust-bridge/` — a tiny Cargo binary that depends on `~/src/fips/crates/fips-core`
-  via path. Runs a Noise IK or XK **responder** using the Rust reference
-  implementation. Reads 4-byte big-endian length-prefixed frames from
-  stdin, writes responses to stdout.
+- `rust-bridge/` — a tiny Cargo binary whose `fips-core` and `fips-identity`
+  dependency aliases point by path to the `nvpn-fips-core` and
+  `nvpn-fips-identity` packages in the local
+  [Nostr VPN FIPS implementation](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips)
+  checkout. It runs a Noise IK or XK **responder**, reads 4-byte big-endian
+  length-prefixed frames from stdin, and writes responses to stdout.
 - The Vitest suite at `packages/core/test/interop/noise-interop.test.ts`
   spawns the bridge and drives the **initiator** side from TypeScript.
   Both IK and XK patterns are exchanged, and a transport-message

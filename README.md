@@ -1,8 +1,16 @@
 # fips-ts
 
-Browser TypeScript implementation of [FIPS](https://github.com/jmcorgan/fips) — node identity, FMP / FSP, WebSocket, WebRTC, and virtual-Ethernet transports, endpoint bytes, service-port datagrams, and browser endpoint helpers.
+Browser TypeScript implementation of FIPS — node identity, FMP / FSP,
+WebSocket, WebRTC, and virtual-Ethernet transports, endpoint bytes,
+service-port datagrams, and browser endpoint helpers.
 
-The Rust reference lives at **[jmcorgan/fips](https://github.com/jmcorgan/fips)** (canonical) with a mirror at **[mmalmi/fips](https://github.com/mmalmi/fips)**. This package targets byte-for-byte wire compatibility with that codebase and ships a live interop test that drives the Rust Noise responder over stdio from TS — see [`interop/`](interop/) and [`docs/rust-compat.md`](docs/rust-compat.md).
+The live Rust interoperability target is the
+[Nostr VPN FIPS implementation](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips),
+which descends from the
+[original FIPS implementation](https://github.com/jmcorgan/fips). This package
+targets byte-for-byte wire compatibility and drives the Rust Noise responder
+over stdio from TypeScript; see [`interop/`](interop/) and
+[`docs/rust-compat.md`](docs/rust-compat.md).
 
 ## Layout
 
@@ -32,7 +40,7 @@ pnpm dev               # open http://127.0.0.1:5173
 pnpm test:unit         # vitest unit/interop tests
 pnpm test:e2e          # 7 playwright tests (chromium)
 
-# Optional: live Rust ↔ TS Noise interop (needs ~/src/fips checked out)
+# Optional: live Rust ↔ TS Noise interop (needs the Nostr VPN FIPS checkout at ~/src/fips)
 cargo build --release --manifest-path interop/rust-bridge/Cargo.toml
 pnpm --filter '@fips/core' test:unit  # the interop tests now run
 ```
