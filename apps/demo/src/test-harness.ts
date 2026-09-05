@@ -146,8 +146,12 @@ async function autoConnectWebRtcPair(relayUrl: string): Promise<NodePair> {
 
 async function autoConnectWebRtcReconnect(relayUrl: string): Promise<{ first: string; second: string }> {
   const discoveryApp = "fips-auto-reconnect-e2e";
-  const aId = await generateIdentity();
-  const bId = await generateIdentity();
+  const firstIdentity = await generateIdentity();
+  const secondIdentity = await generateIdentity();
+  // Only the lower x-only identity auto-dials when both peers accept connections.
+  const [aId, bId] = toHex(firstIdentity.xOnlyPubkey) < toHex(secondIdentity.xOnlyPubkey)
+    ? [firstIdentity, secondIdentity]
+    : [secondIdentity, firstIdentity];
   const aTransport = new WebRtcTransport({
     relays: [relayUrl],
     advertiseOnNostr: true,
