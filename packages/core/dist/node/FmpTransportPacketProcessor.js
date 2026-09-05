@@ -5,6 +5,7 @@ import { isDirectFspEstablished } from "../fsp/wire.js";
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
 import { decodeFmpEstablished, decodeFmpMsg2, FMP_INNER_KEEPALIVE, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
 import { transportAddressKey, } from "../transport/types.js";
+import { pruneDrainingResponderLinks } from "./PeerState.js";
 import { PendingFmpResponders } from "./PendingFmpResponders.js";
 const FMP_REPLACED_LINK_DRAIN_MS = 10_000;
 const FMP_REMOTE_EPOCH_HISTORY_LIMIT = 8;
@@ -321,11 +322,15 @@ export class FmpTransportPacketProcessor {
         const link = peer.link;
         if (!handshake)
             return;
-        try {
-            // Accept the confirmation before connect can send direct FSP data.
-            await peer.transport.send(peer.remoteAddr, link.encryptOutgoing(new Uint8Array(0), FMP_INNER_KEEPALIVE));
-            if (peer.outgoingHandshake !== handshake || peer.link !== link
+        let confirmationSent = false;
+        let confirmationReceived = false;
+        const complete = () => {
+            if (!confirmationSent || peer.outgoingHandshake !== handshake || peer.link !== link
                 || link.state !== "established")
+                return;
+            const current = this.cfg.peersByPubkey.get(peer.pubkeyHex);
+            if (current !== peer && current?.link.state === "established"
+                && !confirmationReceived)
                 return;
             this.retireDisplacedMsg2Peer(remoteAddr, peer);
             this.rememberPeer(peer);
@@ -338,6 +343,17 @@ export class FmpTransportPacketProcessor {
             peer.outgoingHandshake = undefined;
             this.cfg.routing.scheduleTreeAnnounce(peer);
             this.replayPendingLookupsAfterEstablishment(peer);
+        };
+        handshake.confirmCarrier = () => {
+            confirmationReceived = true;
+            complete();
+        };
+        try {
+            // Sending confirms our side; an alternate must also receive confirmation
+            // before it can replace the healthy path used by direct FSP data.
+            await peer.transport.send(peer.remoteAddr, link.encryptOutgoing(new Uint8Array(0), FMP_INNER_KEEPALIVE));
+            confirmationSent = true;
+            complete();
         }
         catch (error) {
             if (peer.outgoingHandshake === handshake && peer.link === link) {
@@ -419,6 +435,8 @@ export class FmpTransportPacketProcessor {
         }
         const { peer, link, promotePending } = match;
         const { msgType, payload } = link.decryptIncoming(packet);
+        if (peer.link === link)
+            peer.outgoingHandshake?.confirmCarrier?.();
         if (promotePending) {
             const previous = peer.link;
             peer.link = link;
@@ -447,7 +465,7 @@ export class FmpTransportPacketProcessor {
         const matches = new Map();
         const nowMs = Date.now();
         for (const peer of new Set(this.cfg.peers.values())) {
-            this.pruneDrainingResponderLinks(peer, nowMs);
+            pruneDrainingResponderLinks(peer, nowMs);
             if (peer.link.state === "established"
                 && peer.link.localSessionIdx === receiverIdx) {
                 matches.set(peer.link, { peer, link: peer.link, promotePending: false });
@@ -615,19 +633,6 @@ export class FmpTransportPacketProcessor {
         const result = replacement.handleMsg1(packet, this.cfg.randomBytes);
         this.pendingResponders.set(peer, replacement);
         return result;
-    }
-    pruneDrainingResponderLinks(peer, nowMs) {
-        if (!peer.drainingResponderLinks)
-            return;
-        for (const [receiverIdx, draining] of peer.drainingResponderLinks) {
-            if (draining.expiresAtMs > nowMs)
-                continue;
-            draining.link.close();
-            peer.drainingResponderLinks.delete(receiverIdx);
-        }
-        if (peer.drainingResponderLinks.size === 0) {
-            peer.drainingResponderLinks = undefined;
-        }
     }
 }
 //# sourceMappingURL=FmpTransportPacketProcessor.js.map

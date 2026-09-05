@@ -22,5 +22,18 @@ export interface AdjacentPeer {
   outgoingHandshake?: {
     resolve: () => void;
     reject: (err: Error) => void;
+    confirmCarrier?: () => void;
   };
+}
+
+export function pruneDrainingResponderLinks(peer: AdjacentPeer, nowMs: number): void {
+  if (!peer.drainingResponderLinks) return;
+  for (const [receiverIdx, draining] of peer.drainingResponderLinks) {
+    if (draining.expiresAtMs > nowMs) continue;
+    draining.link.close();
+    peer.drainingResponderLinks.delete(receiverIdx);
+  }
+  if (peer.drainingResponderLinks.size === 0) {
+    peer.drainingResponderLinks = undefined;
+  }
 }

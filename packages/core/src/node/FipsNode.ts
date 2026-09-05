@@ -30,7 +30,7 @@ import {
   FmpTransportPacketProcessor,
 } from "./FmpTransportPacketProcessor.js";
 import { FspSessionManager } from "./FspSessionManager.js";
-import { FMP_HANDSHAKE_TIMEOUT_MS, type AdjacentPeer } from "./PeerState.js";
+import { FMP_HANDSHAKE_TIMEOUT_MS, pruneDrainingResponderLinks, type AdjacentPeer } from "./PeerState.js";
 import { discoveryPublicKey } from "./routingHelpers.js";
 
 const defaultRandom: RandomSource = { bytes: (n) => randomBytes(n) };
@@ -516,7 +516,7 @@ export class FipsNode {
   private async sendHeartbeats(): Promise<void> {
     const nowMs = Date.now();
     for (const peer of this.peers.values()) {
-      this.pruneDrainingResponderLinks(peer, nowMs);
+      pruneDrainingResponderLinks(peer, nowMs);
     }
     const peers = [...this.peers.values()].filter(
       (peer) => peer.link.state === "established",
@@ -532,19 +532,6 @@ export class FipsNode {
         this.emit("error", { err: err as Error, where: "send Heartbeat" });
       }
     }));
-  }
-
-
-  private pruneDrainingResponderLinks(peer: AdjacentPeer, nowMs: number): void {
-    if (!peer.drainingResponderLinks) return;
-    for (const [receiverIdx, draining] of peer.drainingResponderLinks) {
-      if (draining.expiresAtMs > nowMs) continue;
-      draining.link.close();
-      peer.drainingResponderLinks.delete(receiverIdx);
-    }
-    if (peer.drainingResponderLinks.size === 0) {
-      peer.drainingResponderLinks = undefined;
-    }
   }
 }
 

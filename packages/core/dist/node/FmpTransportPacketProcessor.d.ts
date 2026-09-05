@@ -2,7 +2,7 @@ import type { FipsIdentity } from "../identity/index.js";
 import { type Logger, type ReceivedTransportPacket, type Transport } from "../transport/types.js";
 import type { FipsRouting } from "./FipsRouting.js";
 import type { FspSessionManager } from "./FspSessionManager.js";
-import type { AdjacentPeer } from "./PeerState.js";
+import { type AdjacentPeer } from "./PeerState.js";
 import type { PeerEvent } from "./types.js";
 interface FmpTransportPacketProcessorConfig {
     identity: FipsIdentity;
@@ -51,7 +51,6 @@ export declare class FmpTransportPacketProcessor {
     private establishedRemoteEpoch;
     private removeRestartedPeerPaths;
     private stageResponderReplacement;
-    private pruneDrainingResponderLinks;
 }
 export {};
 //# sourceMappingURL=FmpTransportPacketProcessor.d.ts.map

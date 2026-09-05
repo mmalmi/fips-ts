@@ -10,6 +10,8 @@
   reporting a successful connection.
 - Bound pending responder keys by the existing handshake timeout and a 64-entry
   limit. Cleanup preserves healthy alternate paths and clears unused timers.
+- Keep the healthy path until an outgoing alternate receives authenticated
+  confirmation, preserving browser traffic during Rust key rotation.
 - Release `@fips/core` 0.0.41. Other runtime packages and wire formats are unchanged.
 
 ## Runtime packages 0.0.40 - 2026-09-05

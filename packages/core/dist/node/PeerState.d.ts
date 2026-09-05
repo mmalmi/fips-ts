@@ -23,6 +23,8 @@ export interface AdjacentPeer {
     outgoingHandshake?: {
         resolve: () => void;
         reject: (err: Error) => void;
+        confirmCarrier?: () => void;
     };
 }
+export declare function pruneDrainingResponderLinks(peer: AdjacentPeer, nowMs: number): void;
 //# sourceMappingURL=PeerState.d.ts.map

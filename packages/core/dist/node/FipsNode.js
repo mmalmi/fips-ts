@@ -7,7 +7,7 @@ import { noopLogger, transportAddressKey, } from "../transport/types.js";
 import { FipsRouting } from "./FipsRouting.js";
 import { FmpTransportPacketProcessor, } from "./FmpTransportPacketProcessor.js";
 import { FspSessionManager } from "./FspSessionManager.js";
-import { FMP_HANDSHAKE_TIMEOUT_MS } from "./PeerState.js";
+import { FMP_HANDSHAKE_TIMEOUT_MS, pruneDrainingResponderLinks } from "./PeerState.js";
 import { discoveryPublicKey } from "./routingHelpers.js";
 const defaultRandom = { bytes: (n) => randomBytes(n) };
 const FMP_HANDSHAKE_RESEND_MS = 1_000;
@@ -435,7 +435,7 @@ export class FipsNode {
     async sendHeartbeats() {
         const nowMs = Date.now();
         for (const peer of this.peers.values()) {
-            this.pruneDrainingResponderLinks(peer, nowMs);
+            pruneDrainingResponderLinks(peer, nowMs);
         }
         const peers = [...this.peers.values()].filter((peer) => peer.link.state === "established");
         await Promise.allSettled(peers.map(async (peer) => {
@@ -447,19 +447,6 @@ export class FipsNode {
                 this.emit("error", { err: err, where: "send Heartbeat" });
             }
         }));
-    }
-    pruneDrainingResponderLinks(peer, nowMs) {
-        if (!peer.drainingResponderLinks)
-            return;
-        for (const [receiverIdx, draining] of peer.drainingResponderLinks) {
-            if (draining.expiresAtMs > nowMs)
-                continue;
-            draining.link.close();
-            peer.drainingResponderLinks.delete(receiverIdx);
-        }
-        if (peer.drainingResponderLinks.size === 0) {
-            peer.drainingResponderLinks = undefined;
-        }
     }
 }
 function readU32Le(bytes) {

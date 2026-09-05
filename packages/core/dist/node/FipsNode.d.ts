@@ -58,6 +58,5 @@ export declare class FipsNode {
     private removePeerPath;
     private sendLinkMessage;
     private sendHeartbeats;
-    private pruneDrainingResponderLinks;
 }
 //# sourceMappingURL=FipsNode.d.ts.map

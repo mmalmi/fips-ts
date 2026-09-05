@@ -26,7 +26,7 @@ import {
 
 import type { FipsRouting } from "./FipsRouting.js";
 import type { FspSessionManager } from "./FspSessionManager.js";
-import type { AdjacentPeer } from "./PeerState.js";
+import { pruneDrainingResponderLinks, type AdjacentPeer } from "./PeerState.js";
 import { PendingFmpResponders } from "./PendingFmpResponders.js";
 import type { PeerEvent } from "./types.js";
 
@@ -469,13 +469,14 @@ export class FmpTransportPacketProcessor {
     const handshake = peer.outgoingHandshake;
     const link = peer.link;
     if (!handshake) return;
-    try {
-      // Accept the confirmation before connect can send direct FSP data.
-      await peer.transport.send(
-        peer.remoteAddr, link.encryptOutgoing(new Uint8Array(0), FMP_INNER_KEEPALIVE),
-      );
-      if (peer.outgoingHandshake !== handshake || peer.link !== link
+    let confirmationSent = false;
+    let confirmationReceived = false;
+    const complete = () => {
+      if (!confirmationSent || peer.outgoingHandshake !== handshake || peer.link !== link
         || link.state !== "established") return;
+      const current = this.cfg.peersByPubkey.get(peer.pubkeyHex);
+      if (current !== peer && current?.link.state === "established"
+        && !confirmationReceived) return;
       this.retireDisplacedMsg2Peer(remoteAddr, peer);
       this.rememberPeer(peer);
       this.cfg.emitPeer({
@@ -487,6 +488,19 @@ export class FmpTransportPacketProcessor {
       peer.outgoingHandshake = undefined;
       this.cfg.routing.scheduleTreeAnnounce(peer);
       this.replayPendingLookupsAfterEstablishment(peer);
+    };
+    handshake.confirmCarrier = () => {
+      confirmationReceived = true;
+      complete();
+    };
+    try {
+      // Sending confirms our side; an alternate must also receive confirmation
+      // before it can replace the healthy path used by direct FSP data.
+      await peer.transport.send(
+        peer.remoteAddr, link.encryptOutgoing(new Uint8Array(0), FMP_INNER_KEEPALIVE),
+      );
+      confirmationSent = true;
+      complete();
     } catch (error) {
       if (peer.outgoingHandshake === handshake && peer.link === link) {
         handshake.reject(error as Error);
@@ -587,6 +601,7 @@ export class FmpTransportPacketProcessor {
     }
     const { peer, link, promotePending } = match;
     const { msgType, payload } = link.decryptIncoming(packet);
+    if (peer.link === link) peer.outgoingHandshake?.confirmCarrier?.();
     if (promotePending) {
       const previous = peer.link;
       peer.link = link;
@@ -628,7 +643,7 @@ export class FmpTransportPacketProcessor {
     }>();
     const nowMs = Date.now();
     for (const peer of new Set(this.cfg.peers.values())) {
-      this.pruneDrainingResponderLinks(peer, nowMs);
+      pruneDrainingResponderLinks(peer, nowMs);
       if (
         peer.link.state === "established"
         && peer.link.localSessionIdx === receiverIdx
@@ -816,17 +831,5 @@ export class FmpTransportPacketProcessor {
     const result = replacement.handleMsg1(packet, this.cfg.randomBytes);
     this.pendingResponders.set(peer, replacement);
     return result;
-  }
-
-  private pruneDrainingResponderLinks(peer: AdjacentPeer, nowMs: number): void {
-    if (!peer.drainingResponderLinks) return;
-    for (const [receiverIdx, draining] of peer.drainingResponderLinks) {
-      if (draining.expiresAtMs > nowMs) continue;
-      draining.link.close();
-      peer.drainingResponderLinks.delete(receiverIdx);
-    }
-    if (peer.drainingResponderLinks.size === 0) {
-      peer.drainingResponderLinks = undefined;
-    }
   }
 }

@@ -31,9 +31,11 @@ class ControlledTransport implements Transport {
   readonly mtu = 1400;
   localPubkey = "";
   holdOutgoing = false;
+  holdEstablished = false;
   rejectNextEstablished = false;
   confirmationGate?: Promise<void>;
   heartbeatSends = 0;
+  establishedSends = 0;
 
   private ctx?: TransportContext;
   private readonly held: Array<() => void> = [];
@@ -57,6 +59,7 @@ class ControlledTransport implements Transport {
   }
 
   async send(addr: TransportAddress, packet: Uint8Array): Promise<void> {
+    if (packet[0] === 0) this.establishedSends++;
     if (packet[0] === 0 && packet.length === FMP_ESTABLISHED_HEADER_LEN + FMP_AEAD_TAG_LEN + 5) {
       this.heartbeatSends++;
     }
@@ -64,11 +67,8 @@ class ControlledTransport implements Transport {
       this.rejectNextEstablished = false;
       throw new Error("confirmation send rejected");
     }
-    if (packet[0] === 0 && this.confirmationGate) {
-      const gate = this.confirmationGate;
-      this.confirmationGate = undefined;
-      await gate;
-    }
+    const confirmationGate = packet[0] === 0 ? this.confirmationGate : undefined;
+    if (confirmationGate) this.confirmationGate = undefined;
     const remote = this.hub.peer(this.type, addr.addr);
     if (!remote?.ctx) throw new Error("peer unavailable");
     const deliver = () => remote.ctx?.onPacket({
@@ -77,8 +77,9 @@ class ControlledTransport implements Transport {
       data: new Uint8Array(packet),
       receivedAtMs: Date.now(),
     });
-    if (this.holdOutgoing) this.held.push(deliver);
+    if (this.holdOutgoing || (this.holdEstablished && packet[0] === 0)) this.held.push(deliver);
     else queueMicrotask(deliver);
+    if (confirmationGate) await confirmationGate;
   }
 
   disconnect(addr: TransportAddress): void {
@@ -97,6 +98,29 @@ class ControlledTransport implements Transport {
 afterEach(() => vi.useRealTimers());
 
 describe("physical path upgrade", () => {
+  it("keeps the healthy path until the remote confirms an outgoing alternate", async () => {
+    const pair = await startPair(["bootstrap", "direct"]);
+    pair.b.registerService(9000, async ({ payload, reply }) => reply(payload));
+    try {
+      await pair.connect(0);
+      const healthy = (pair.a as any).peersByPubkey.get(pair.bPubkey);
+      pair.aTransports[1]!.holdEstablished = true;
+      let connected = false;
+      const upgrade = pair.connect(1).then(() => { connected = true; });
+      await waitUntil(() => pair.aTransports[1]!.heldCount() > 0);
+      expect(connected).toBe(false);
+      expect((pair.a as any).peersByPubkey.get(pair.bPubkey)).toBe(healthy);
+      await echo(pair.a, pair.bPubkey, "while-awaiting-remote-confirmation");
+      pair.aTransports[1]!.holdEstablished = false;
+      pair.aTransports[1]!.release();
+      await upgrade;
+      expect((pair.a as any).peersByPubkey.get(pair.bPubkey).remoteAddr.transport).toBe("direct");
+      await echo(pair.a, pair.bPubkey, "after-remote-confirmation");
+    } finally {
+      await pair.stop();
+    }
+  });
+
   it("expires unconfirmed carriers within the handshake budget without disconnect events", async () => {
     const pair = await startPair(["bootstrap", "pending"]);
     const events: string[] = [];
@@ -220,6 +244,7 @@ describe("physical path upgrade", () => {
       );
       await vi.advanceTimersByTimeAsync(1_000);
       expect(pair.aTransports[1]!.heartbeatSends).toBe(1);
+      expect(pair.bTransports[1]!.establishedSends).toBeGreaterThan(0);
       expect(settled).toBe(false);
       expect(duplicateSettled).toBe(false);
       expect((pair.a as any).peersByPubkey.get(pair.bPubkey)).toBe(healthy);
