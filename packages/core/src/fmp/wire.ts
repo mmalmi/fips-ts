@@ -207,7 +207,7 @@ export function decodeFmpEstablished(buf: Uint8Array): FmpEstablished {
 }
 
 export interface FmpInnerPacket {
-  timestamp: number; // u32 LE seconds
+  timestamp: number; // u32 LE session-relative milliseconds
   msgType: number; // u8
   payload: Uint8Array;
 }

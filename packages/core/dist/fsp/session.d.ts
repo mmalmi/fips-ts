@@ -31,6 +31,7 @@ export declare class FspSession {
     private establishedMsg3?;
     private remoteDirectFspTransport;
     private txCounter;
+    private sessionStartMs;
     private replay;
     state: "init" | "handshaking" | "established" | "closed";
     constructor(init: FspSessionInit);

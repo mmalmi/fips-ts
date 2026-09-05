@@ -79,6 +79,7 @@ export class FmpLink {
   private establishedMsg1?: Uint8Array;
   private establishedMsg2?: Uint8Array;
   private txCounter = 0n;
+  private sessionStartMs = 0;
   private rxReplay = new ReplayWindow();
 
   state: "init" | "handshaking" | "established" | "closed" = "init";
@@ -192,6 +193,7 @@ export class FmpLink {
     const { tx, rx } = this.hs.splitTxRx();
     this.tx = tx;
     this.rx = rx;
+    this.sessionStartMs = performance.now();
     this.state = "established";
     this.hs = undefined;
   }
@@ -203,7 +205,7 @@ export class FmpLink {
     if (this.txCounter >= 0xffff_ffff_ffff_ffffn) throw new Error("FMP nonce exhausted");
     const counter = this.txCounter++;
     const inner = encodeFmpInner({
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp: Math.floor(performance.now() - this.sessionStartMs) >>> 0,
       msgType,
       payload,
     });

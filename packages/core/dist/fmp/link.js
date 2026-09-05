@@ -32,6 +32,7 @@ export class FmpLink {
     establishedMsg1;
     establishedMsg2;
     txCounter = 0n;
+    sessionStartMs = 0;
     rxReplay = new ReplayWindow();
     state = "init";
     constructor(init) {
@@ -144,6 +145,7 @@ export class FmpLink {
         const { tx, rx } = this.hs.splitTxRx();
         this.tx = tx;
         this.rx = rx;
+        this.sessionStartMs = performance.now();
         this.state = "established";
         this.hs = undefined;
     }
@@ -155,7 +157,7 @@ export class FmpLink {
             throw new Error("FMP nonce exhausted");
         const counter = this.txCounter++;
         const inner = encodeFmpInner({
-            timestamp: Math.floor(Date.now() / 1000),
+            timestamp: Math.floor(performance.now() - this.sessionStartMs) >>> 0,
             msgType,
             payload,
         });

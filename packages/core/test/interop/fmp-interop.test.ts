@@ -6,7 +6,7 @@
  * and decrypt established link frames byte-for-byte with Rust.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   FMP_INNER_DATA,
@@ -26,6 +26,7 @@ describe("FMP interop: TS initiator ↔ Rust responder", () => {
   itIfBridge("handshakes and exchanges established link frames", async () => {
     const identity = await identityFromSecretKey(TS_INITIATOR_SK);
     const bridge = spawnBridge("fmp", RUST_RESPONDER_SK_HEX);
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1_000);
     try {
       const responderStatic = await bridge.readFrame();
       expect(responderStatic.length).toBe(33);
@@ -49,9 +50,11 @@ describe("FMP interop: TS initiator ↔ Rust responder", () => {
       expect(link.remoteEpoch).toEqual(new Uint8Array(8));
 
       const payload = new TextEncoder().encode("hello-rust-fmp");
+      clock.mockReturnValue(2_234);
       await bridge.writeFrame(link.encryptOutgoing(payload, FMP_INNER_DATA));
 
       const rustPlaintext = await bridge.readFrame();
+      expect(new DataView(rustPlaintext.buffer, rustPlaintext.byteOffset).getUint32(0, true)).toBe(1_234);
       expect(rustPlaintext[4]).toBe(FMP_INNER_DATA);
       expect(new TextDecoder().decode(rustPlaintext.slice(5))).toBe("hello-rust-fmp");
 
@@ -60,6 +63,7 @@ describe("FMP interop: TS initiator ↔ Rust responder", () => {
       expect(decoded.msgType).toBe(FMP_INNER_DATA);
       expect(new TextDecoder().decode(decoded.payload)).toBe("pong-from-rust-fmp");
     } finally {
+      clock.mockRestore();
       await bridge.close();
     }
   });

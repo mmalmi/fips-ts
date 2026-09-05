@@ -46,6 +46,7 @@ export declare class FmpLink {
     private establishedMsg1?;
     private establishedMsg2?;
     private txCounter;
+    private sessionStartMs;
     private rxReplay;
     state: "init" | "handshaking" | "established" | "closed";
     constructor(init: FmpLinkInit);

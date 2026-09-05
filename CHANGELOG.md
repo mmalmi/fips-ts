@@ -1,5 +1,13 @@
 # Changelog
 
+## Runtime packages 0.0.40 - 2026-09-05
+
+- Encode FMP/FSP timestamps as session-relative milliseconds, matching Rust,
+  so peer measurements do not mistake elapsed seconds for network jitter.
+  Use monotonic time, preserve the existing 32-bit wrap, and start a fresh
+  timestamp origin for each established key epoch.
+- Release `@fips/core` 0.0.40. Other runtime packages and wire formats are unchanged.
+
 ## Runtime packages 0.0.39 - 2026-09-05
 
 - Send authenticated FSP receiver reports using the existing wire format so

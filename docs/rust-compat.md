@@ -22,14 +22,14 @@ byte 2-3 : payload_len (u16 LE)
 - Phase 0x0 (Established, encrypted):
   - Header (AAD): 4 prefix + 4 receiver_idx (u32 LE) + 8 counter (u64 LE) = 16 bytes
   - Body: AEAD ciphertext + 16-byte ChaCha20-Poly1305 tag
-  - Inner plaintext: 4-byte timestamp (u32 LE) + 1-byte msg_type + payload
+  - Inner plaintext: 4-byte session-relative millisecond timestamp (u32 LE) + 1-byte msg_type + payload
 
 Source: `crates/fips-core/src/node/wire.rs`.
 
 ### FSP (end-to-end session)
 Same 4-byte common prefix. Phases 0x1/0x2/0x3 are Noise_XK msg1/2/3. Phase 0x0 (Established) header is 4 prefix + 8 counter (u64 LE) = **12 bytes** (no receiver_idx — dispatched by FMP src_addr).
 
-Inner plaintext: 4-byte timestamp + 1-byte msg_type + 1-byte inner_flags + payload.
+Inner plaintext: 4-byte session-relative millisecond timestamp (u32 LE) + 1-byte msg_type + 1-byte inner_flags + payload.
 
 Source: `crates/fips-core/src/node/session_wire.rs`.
 

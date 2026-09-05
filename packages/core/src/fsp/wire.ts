@@ -214,7 +214,7 @@ export function decodeFspEstablished(buf: Uint8Array): FspEstablished {
 }
 
 export interface FspInnerPacket {
-  timestamp: number; // u32 LE seconds
+  timestamp: number; // u32 LE session-relative milliseconds
   msgType: number; // u8
   innerFlags: number; // u8
   payload: Uint8Array;

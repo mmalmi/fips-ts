@@ -71,6 +71,7 @@ export class FspSession {
   private establishedMsg3?: Uint8Array;
   private remoteDirectFspTransport = false;
   private txCounter = 0n;
+  private sessionStartMs = 0;
   private replay = new ReplayWindow();
 
   state: "init" | "handshaking" | "established" | "closed" = "init";
@@ -276,6 +277,7 @@ export class FspSession {
     const { tx, rx } = this.hs.splitTxRx();
     this.tx = tx;
     this.rx = rx;
+    this.sessionStartMs = performance.now();
     this.state = "established";
     this.hs = undefined;
   }
@@ -296,7 +298,7 @@ export class FspSession {
     if (this.txCounter >= 0xffff_ffff_ffff_ffffn) throw new Error("FSP nonce exhausted");
     const counter = this.txCounter++;
     const inner = encodeFspInner({
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp: Math.floor(performance.now() - this.sessionStartMs) >>> 0,
       msgType,
       innerFlags: 0,
       payload,
