@@ -1,4 +1,4 @@
-import { type FipsIdentity } from "../identity/index.js";
+import type { FipsIdentity } from "../identity/index.js";
 import { type TransportAddress } from "../transport/types.js";
 import type { FipsEventName, FipsNodeConfig, FipsServiceHandler } from "./types.js";
 export declare class FipsNode {

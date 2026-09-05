@@ -1,11 +1,8 @@
 import { randomBytes } from "@noble/hashes/utils";
 
-import { bytesEqual, toHex } from "../codec/hex.js";
+import { bytesEqual, fromHex, toHex } from "../codec/hex.js";
 import { FmpLink } from "../fmp/link.js";
-import {
-  compressedPubkeyFromXOnly,
-  type FipsIdentity,
-} from "../identity/index.js";
+import type { FipsIdentity } from "../identity/index.js";
 import { deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
 import { LinkMessageType } from "../protocol/link.js";
 import {
@@ -34,6 +31,7 @@ import {
 } from "./FmpTransportPacketProcessor.js";
 import { FspSessionManager } from "./FspSessionManager.js";
 import type { AdjacentPeer } from "./PeerState.js";
+import { discoveryPublicKey } from "./routingHelpers.js";
 
 const defaultRandom: RandomSource = { bytes: (n) => randomBytes(n) };
 const FMP_HANDSHAKE_TIMEOUT_MS = 15_000;
@@ -275,7 +273,7 @@ export class FipsNode {
     if (addr.addr.length !== 66) {
       throw new Error("transport addr must be 33-byte compressed pubkey hex");
     }
-    const remotePubkey = hexBytes(addr.addr);
+    const remotePubkey = fromHex(addr.addr);
     await this.connectKnownPeer(transport, addr, remotePubkey);
   }
 
@@ -530,33 +528,6 @@ export class FipsNode {
       peer.drainingResponderLinks = undefined;
     }
   }
-}
-
-function discoveryPublicKey(discovered: {
-  publicKey?: Uint8Array;
-  remoteAddr: TransportAddress;
-}): Uint8Array {
-  const hinted = discovered.publicKey;
-  if (hinted?.length === 32) return compressedPubkeyFromXOnly(hinted);
-  if (hinted?.length === 33) {
-    if (hinted[0] !== 0x02 && hinted[0] !== 0x03) {
-      throw new Error("discovered compressed pubkey has invalid prefix");
-    }
-    return new Uint8Array(hinted);
-  }
-  if (!hinted && discovered.remoteAddr.addr.length === 66) {
-    return hexBytes(discovered.remoteAddr.addr);
-  }
-  throw new Error("discovered peer did not include a FIPS public key");
-}
-
-function hexBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("hex length");
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
 }
 
 function readU32Le(bytes: Uint8Array): number {

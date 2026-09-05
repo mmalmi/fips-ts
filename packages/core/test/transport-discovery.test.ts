@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   FipsNode,
@@ -86,6 +86,35 @@ class LifecycleTransport implements Transport {
 }
 
 describe("FipsNode transport discovery", () => {
+  it.each(["configured", "discovered"])("rejects malformed %s peer hex before connecting", async (source) => {
+    const remoteAddr = { transport: "invalid-hex", addr: `02${"1g".repeat(32)}` };
+    const connect = vi.fn(async () => { throw new Error("unexpected transport connection"); });
+    const transport: Transport = {
+      type: remoteAddr.transport,
+      mtu: 1_200,
+      start: async () => {},
+      stop: async () => {},
+      send: async () => {},
+      connect,
+      discover: source === "discovered" ? async function* () { yield { remoteAddr }; } : undefined,
+    };
+    const node = new FipsNode({ identity: await generateIdentity(), transports: [transport] });
+    const discoveryError = new Promise<Error>((resolve) => {
+      node.on("error", (event) => resolve((event as { err: Error }).err));
+    });
+    await node.start();
+    try {
+      if (source === "configured") {
+        await expect(node.connect(remoteAddr)).rejects.toThrow(/hex/u);
+      } else {
+        expect((await discoveryError).message).toMatch(/hex/u);
+      }
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      await node.stop();
+    }
+  });
+
   it("keeps standard FIPS service ports out of application registration", async () => {
     const node = new FipsNode({
       identity: await generateIdentity(),

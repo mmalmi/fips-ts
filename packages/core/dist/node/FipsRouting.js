@@ -77,7 +77,11 @@ export class FipsRouting {
             return;
         }
         if (msgType === LinkMessageType.LookupRequest) {
-            await this.handleLookupRequest(peer, payload);
+            const request = decodeLookupRequest(payload);
+            // The origin field is unsigned; identify our looped requests by ID and target.
+            if (this.originLookups.findRequest(request.requestId)?.targetHex === nodeAddrToHex(request.target))
+                return;
+            await this.handleLookupRequest(peer, request);
             return;
         }
         if (msgType === LinkMessageType.LookupResponse) {
@@ -288,8 +292,7 @@ export class FipsRouting {
             return;
         this.coordCache.set(nodeAddrToHex(nodeAddr), coords.map((entry) => new Uint8Array(entry)));
     }
-    async handleLookupRequest(sourcePeer, payload) {
-        const request = decodeLookupRequest(payload);
+    async handleLookupRequest(sourcePeer, request) {
         const targetHex = nodeAddrToHex(request.target);
         if (bytesEqual(request.target, this.cfg.identity.nodeAddr)) {
             const targetCoords = this.treeState.coords;

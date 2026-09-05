@@ -1,3 +1,4 @@
+import { fromHex } from "../codec/hex.js";
 import { compressedPubkeyFromXOnly, } from "../identity/index.js";
 import { deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
 import { LinkMessageType } from "../protocol/link.js";
@@ -20,7 +21,7 @@ export function discoveryPublicKey(discovered) {
         return new Uint8Array(hinted);
     }
     if (!hinted && discovered.remoteAddr.addr.length === 66) {
-        return hexBytes(discovered.remoteAddr.addr);
+        return fromHex(discovered.remoteAddr.addr);
     }
     throw new Error("discovered peer did not include a FIPS public key");
 }
@@ -34,14 +35,5 @@ export function isKnownUnhandledLinkMessage(msgType) {
         || msgType === LinkMessageType.ReceiverReport
         || msgType === LinkMessageType.TreeAnnounce
         || msgType === LinkMessageType.FilterAnnounce);
-}
-function hexBytes(hex) {
-    if (hex.length % 2 !== 0)
-        throw new Error("hex length");
-    const out = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < out.length; i++) {
-        out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    }
-    return out;
 }
 //# sourceMappingURL=routingHelpers.js.map

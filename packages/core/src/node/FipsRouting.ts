@@ -39,8 +39,7 @@ import type {
 
 import { BloomRouting } from "./BloomRouting.js";
 import { LearnedRouteTable } from "./LearnedRouteTable.js";
-import { OriginLookupRegistry } from "./OriginLookupRegistry.js";
-import type { PendingOriginLookup } from "./OriginLookupRegistry.js";
+import { OriginLookupRegistry, type PendingOriginLookup } from "./OriginLookupRegistry.js";
 import type { AdjacentPeer } from "./PeerState.js";
 import {
   delay,
@@ -172,7 +171,10 @@ export class FipsRouting {
       return;
     }
     if (msgType === LinkMessageType.LookupRequest) {
-      await this.handleLookupRequest(peer, payload);
+      const request = decodeLookupRequest(payload);
+      // The origin field is unsigned; identify our looped requests by ID and target.
+      if (this.originLookups.findRequest(request.requestId)?.targetHex === nodeAddrToHex(request.target)) return;
+      await this.handleLookupRequest(peer, request);
       return;
     }
     if (msgType === LinkMessageType.LookupResponse) {
@@ -451,9 +453,8 @@ export class FipsRouting {
 
   private async handleLookupRequest(
     sourcePeer: AdjacentPeer,
-    payload: Uint8Array,
+    request: LookupRequest,
   ): Promise<void> {
-    const request = decodeLookupRequest(payload);
     const targetHex = nodeAddrToHex(request.target);
     if (bytesEqual(request.target, this.cfg.identity.nodeAddr)) {
       const targetCoords = this.treeState.coords;

@@ -1,5 +1,15 @@
 # Changelog
 
+## Runtime packages 0.0.38 - 2026-09-05
+
+- Drop looped discovery requests matching a pending local request ID and target
+  before recording a transit reverse path, matching Rust FIPS 0.4.73. The
+  unsigned origin field cannot bypass this check or suppress unrelated requests.
+- Share strict peer-key decoding across configured connections, transport
+  discovery, and route resolution; reject malformed hex before connecting.
+- Release `@fips/core` 0.0.38. Other runtime packages remain unchanged from
+  runtime bundle 0.0.37. Wire formats and replay-window sizes are unchanged.
+
 ## Runtime packages 0.0.37 - 2026-09-05
 
 - Replace per-packet replay-window scans with bounded, constant-time counter

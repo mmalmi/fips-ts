@@ -1,3 +1,4 @@
+import { fromHex } from "../codec/hex.js";
 import {
   compressedPubkeyFromXOnly,
 } from "../identity/index.js";
@@ -34,7 +35,7 @@ export function discoveryPublicKey(discovered: {
     return new Uint8Array(hinted);
   }
   if (!hinted && discovered.remoteAddr.addr.length === 66) {
-    return hexBytes(discovered.remoteAddr.addr);
+    return fromHex(discovered.remoteAddr.addr);
   }
   throw new Error("discovered peer did not include a FIPS public key");
 }
@@ -52,13 +53,4 @@ export function isKnownUnhandledLinkMessage(msgType: number): boolean {
     || msgType === LinkMessageType.TreeAnnounce
     || msgType === LinkMessageType.FilterAnnounce
   );
-}
-
-function hexBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new Error("hex length");
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
 }

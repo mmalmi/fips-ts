@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   FipsNode,
+  deriveNodeAddr,
   FMP_PHASE_ESTABLISHED,
   identityFromSecretKey,
   nodeAddrToHex,
@@ -96,6 +97,31 @@ afterEach(() => {
 });
 
 describe("FipsNode on-demand route resolution", () => {
+  it("rejects malformed resolved key hex before connecting to its parsed alias", async () => {
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
+    const transport = new RoutedTransport("invalid-hex");
+    transport.resolveImpl = async () => ({
+      remoteAddr: { transport: transport.type, addr: `02${"1g".repeat(32)}` },
+    });
+    const connect = vi.spyOn(transport, "connect");
+    const node = new FipsNode({ identity: local, transports: [transport] });
+    // A permissive parser truncates each "1g" pair to 0x01.
+    const destAddr = deriveNodeAddr(new Uint8Array([2, ...new Uint8Array(32).fill(1)]));
+    await node.start();
+    try {
+      await expect(sendSessionDatagram(node, {
+        ttl: 63,
+        pathMtu: 1_200,
+        srcAddr: local.nodeAddr,
+        destAddr,
+        payload: new Uint8Array([1]),
+      })).rejects.toThrow(`no route to ${nodeAddrToHex(destAddr)}`);
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      await node.stop();
+    }
+  });
+
   it("advertises an Ethernet leaf through a browser transit to its upstream seed", async () => {
     const identities = await Promise.all(
       [0x41, 0x42, 0x43].map((value) =>
