@@ -92,16 +92,17 @@ async function startRustFixture(
   const cwd = path.dirname(manifestPath);
   const port = await availableLoopbackPort();
   const websocketUrl = `ws://127.0.0.1:${port}/fips`;
+  const fixtureBin = process.env.FIPS_RS_FIXTURE_BIN
+    ? path.resolve(process.env.FIPS_RS_FIXTURE_BIN)
+    : undefined;
+  if (fixtureBin) fs.accessSync(fixtureBin, fs.constants.X_OK);
   const proc = spawn(
-    "cargo",
+    fixtureBin ?? "cargo",
     [
-      "run",
-      "--quiet",
-      "--manifest-path",
-      manifestPath,
-      "--bin",
-      "fips-webrtc-echo-fixture",
-      "--",
+      ...(fixtureBin ? [] : [
+        "run", "--quiet", "--manifest-path", manifestPath,
+        "--bin", "fips-webrtc-echo-fixture", "--",
+      ]),
       "--websocket-bind",
       `127.0.0.1:${port}`,
       "--secret",
@@ -130,6 +131,10 @@ async function startRustFixture(
     const timer = setTimeout(() => {
       reject(new Error(`Rust fixture did not become ready\n${stderr}`));
     }, 90_000);
+    proc.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     proc.once("exit", (code, signal) => {
       clearTimeout(timer);
       reject(new Error(`Rust fixture exited before ready code=${code} signal=${signal}\n${stderr}`));
@@ -155,6 +160,10 @@ async function startRustFixture(
         });
       }
     });
+  }).catch(async (error) => {
+    lines.close();
+    await stopProcess(proc);
+    throw error;
   });
 
   return {
@@ -183,7 +192,7 @@ async function availableLoopbackPort(): Promise<number> {
 }
 
 async function stopProcess(proc: ChildProcessWithoutNullStreams): Promise<void> {
-  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  if (!proc.pid || proc.exitCode !== null || proc.signalCode !== null) return;
   if (process.platform !== "win32" && proc.pid) {
     try {
       process.kill(-proc.pid, "SIGTERM");

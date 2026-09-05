@@ -32,6 +32,17 @@ pnpm --filter '@fips/core' test:unit
 (They auto-skip if the bridge binary isn't built, so the rest of the suite
 stays green in environments without a Rust toolchain.)
 
+For the browser WebRTC interop test, build the native fixture before running
+Playwright so compilation does not consume its 90-second startup deadline:
+
+```sh
+cargo build --manifest-path ../fips/Cargo.toml --bin fips-webrtc-echo-fixture
+FIPS_RS_FIXTURE_BIN=../fips/target/debug/fips-webrtc-echo-fixture pnpm test:e2e
+```
+
+Point `FIPS_RS_FIXTURE_BIN` at the resulting executable when using a custom
+`CARGO_TARGET_DIR`. Without it, the test retains its `cargo run` convenience path.
+
 ## What this proves
 
 A handshake-and-transport round-trip end-to-end through the Rust
