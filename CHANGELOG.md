@@ -1,5 +1,14 @@
 # Changelog
 
+## Runtime packages 0.0.41 - 2026-09-05
+
+- Clean up peer and handshake state when the initial Msg1 send fails, so a
+  later connection starts cleanly without retaining stale peer aliases.
+- Preserve an established carrier when a captured Msg1 is replayed on another
+  address. A replacement carrier must decrypt an authenticated frame before it
+  becomes active; initiators send a heartbeat promptly to confirm the new key.
+- Release `@fips/core` 0.0.41. Other runtime packages and wire formats are unchanged.
+
 ## Runtime packages 0.0.40 - 2026-09-05
 
 - Encode FMP/FSP timestamps as session-relative milliseconds, matching Rust,

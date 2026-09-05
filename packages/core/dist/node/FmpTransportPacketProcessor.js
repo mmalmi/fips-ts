@@ -3,7 +3,7 @@ import { FmpLink } from "../fmp/link.js";
 import { DirectFspTransportReassembler, isDirectFspTransportFragment, } from "../fsp/directTransport.js";
 import { isDirectFspEstablished } from "../fsp/wire.js";
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
-import { decodeFmpEstablished, decodeFmpMsg2, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
+import { decodeFmpEstablished, decodeFmpMsg2, FMP_INNER_KEEPALIVE, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
 import { transportAddressKey, } from "../transport/types.js";
 const FMP_REPLACED_LINK_DRAIN_MS = 10_000;
 const FMP_REMOTE_EPOCH_HISTORY_LIMIT = 8;
@@ -72,7 +72,8 @@ export class FmpTransportPacketProcessor {
         let wasEstablished = replacedEstablishedInitiator || peer.link.state === "established";
         let result;
         let handshakeLink;
-        if (stageEstablishedInitiator) {
+        if (stageEstablishedInitiator
+            || (peer.pendingResponderLink && peer.link.state !== "established")) {
             result = this.stageResponderReplacement(peer, packet);
             handshakeLink = peer.pendingResponderLink;
             this.cfg.logger.debug("staged responder link for established initiator", remoteAddr.transport, remoteAddr.addr);
@@ -147,7 +148,12 @@ export class FmpTransportPacketProcessor {
                     peer.pendingResponderLink = undefined;
                 throw new Error("fresh FMP Msg1 changed the authenticated peer identity");
             }
-            this.removeRestartedPeerPaths(peer.pubkeyHex, handshakeLink, transport);
+            if (peer.link.state === "established") {
+                this.removeRestartedPeerPaths(peer.pubkeyHex, handshakeLink, transport);
+            }
+            else {
+                peer.link.close();
+            }
             peer = {
                 pubkey: result.remotePubkey,
                 pubkeyHex: remotePubkeyHex,
@@ -191,8 +197,26 @@ export class FmpTransportPacketProcessor {
         }
         peer.pubkey = result.remotePubkey;
         peer.pubkeyHex = remotePubkeyHex;
-        this.rememberPeer(peer);
+        if (!identityRebound && !replacedHandshake
+            && this.stageUnconfirmedCarrier(peer, handshakeLink)) {
+            wasEstablished = true;
+        }
+        else {
+            this.rememberPeer(peer);
+        }
         return { peer, wasEstablished, identityRebound };
+    }
+    stageUnconfirmedCarrier(peer, handshakeLink) {
+        if (peer.link !== handshakeLink) {
+            return peer.link.state !== "established" && peer.pendingResponderLink === handshakeLink;
+        }
+        if (!this.establishedRemoteEpoch(peer.pubkeyHex, handshakeLink))
+            return false;
+        // Msg1 authenticates an identity, but a captured Msg1 can be replayed on
+        // another carrier. Keep that carrier inactive until it decrypts a frame.
+        peer.link = this.newResponderLink();
+        peer.pendingResponderLink = handshakeLink;
+        return true;
     }
     prepareMsg1Peer(transport, remoteAddr, key, initialPeer) {
         let peer = initialPeer;
@@ -282,6 +306,8 @@ export class FmpTransportPacketProcessor {
         this.retireDisplacedMsg2Peer(remoteAddr, peer);
         this.rememberPeer(peer);
         if (!wasEstablished) {
+            // Confirm the responder's key before connect can send direct FSP data.
+            void peer.transport.send(peer.remoteAddr, peer.link.encryptOutgoing(new Uint8Array(0), FMP_INNER_KEEPALIVE)).catch((error) => this.cfg.emitError(error, "confirm FMP handshake"));
             this.cfg.emitPeer({
                 remotePubkey: peer.pubkeyHex,
                 remoteAddr: peer.remoteAddr,
@@ -368,19 +394,26 @@ export class FmpTransportPacketProcessor {
         }
         const { peer, link, promotePending } = match;
         const { msgType, payload } = link.decryptIncoming(packet);
-        this.cfg.routing.scheduleTreeAnnounce(peer);
         if (promotePending) {
             const previous = peer.link;
             peer.link = link;
             peer.pendingResponderLink = undefined;
-            const draining = peer.drainingResponderLinks ?? new Map();
-            draining.set(previous.localSessionIdx, {
-                link: previous,
-                expiresAtMs: Date.now() + FMP_REPLACED_LINK_DRAIN_MS,
-            });
-            peer.drainingResponderLinks = draining;
+            if (previous.state === "established") {
+                this.drainAuthenticatedLink(peer, previous);
+            }
+            else {
+                previous.close();
+                this.rememberPeer(peer);
+                this.cfg.emitPeer({
+                    remotePubkey: peer.pubkeyHex,
+                    remoteAddr: peer.remoteAddr,
+                    state: "connected",
+                });
+                this.replayPendingLookupsAfterEstablishment(peer);
+            }
             this.cfg.logger.debug("promoted authenticated responder link", remoteAddr.transport, remoteAddr.addr, receiverIdx);
         }
+        this.cfg.routing.scheduleTreeAnnounce(peer);
         this.cfg.routing.handleLinkMessage(peer, msgType, payload).catch((error) => {
             this.cfg.emitError(error, "link-message");
         });

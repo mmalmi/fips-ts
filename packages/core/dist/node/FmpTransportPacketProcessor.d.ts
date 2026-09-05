@@ -28,6 +28,7 @@ export declare class FmpTransportPacketProcessor {
     process(transport: Transport, received: ReceivedTransportPacket): void;
     private handleMsg1;
     private reconcileAuthenticatedMsg1;
+    private stageUnconfirmedCarrier;
     private prepareMsg1Peer;
     private rejectRetiredEpoch;
     private handleMsg2;

@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FipsNode,
   FmpLink,
+  FMP_PHASE_ESTABLISHED,
+  FMP_PHASE_MSG1,
   FMP_PHASE_MSG2,
   identityFromSecretKey,
   peekFmpPhase,
@@ -19,10 +21,14 @@ class ReplayTransport implements Transport {
   readonly mtu = 1_200;
   delayFirstMsg2 = false;
   sentMsg2 = 0;
+  capturedMsg1?: Uint8Array;
+  capturedEstablished?: Uint8Array;
 
   private ctx?: TransportContext;
   private localAddr = "";
   private delayedMsg2?: { addr: TransportAddress; packet: Uint8Array };
+
+  constructor(readonly identityMayChangeAtAddress = false) {}
 
   async start(ctx: TransportContext): Promise<void> {
     this.ctx = ctx;
@@ -40,6 +46,12 @@ class ReplayTransport implements Transport {
   }
 
   async send(addr: TransportAddress, packet: Uint8Array): Promise<void> {
+    if (peekFmpPhase(packet) === FMP_PHASE_MSG1 && !this.capturedMsg1) {
+      this.capturedMsg1 = new Uint8Array(packet);
+    }
+    if (peekFmpPhase(packet) === FMP_PHASE_ESTABLISHED && !this.capturedEstablished) {
+      this.capturedEstablished = new Uint8Array(packet);
+    }
     if (peekFmpPhase(packet) === FMP_PHASE_MSG2) {
       this.sentMsg2 += 1;
       if (this.delayFirstMsg2 && this.sentMsg2 === 1) {
@@ -74,6 +86,78 @@ afterEach(() => {
 });
 
 describe("FipsNode exact FMP handshake replay", () => {
+  it.each([false, true])("keeps the healthy carrier when a captured Msg1 is replayed on a fresh address (changed index: %s)", async (changeIndex) => {
+    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x61));
+    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x62));
+    const attackerIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x63));
+    const initiatorTransport = new ReplayTransport();
+    const responderTransport = new ReplayTransport(true);
+    const attackerTransport = new ReplayTransport();
+    const initiator = new FipsNode({ identity: initiatorIdentity, transports: [initiatorTransport] });
+    const responder = new FipsNode({ identity: responderIdentity, transports: [responderTransport] });
+    const responderAddr = { transport: "replay", addr: toHex(responderIdentity.publicKey) };
+    const attackerPackets: Uint8Array[] = [];
+    const errors: Error[] = [];
+    responder.on("error", (event) => errors.push((event as { err: Error }).err));
+    let received: Uint8Array | undefined;
+    initiator.registerService(7_009, ({ payload }) => { received = payload; });
+    let connected = 0;
+    responder.on("peer", (event) => {
+      if ((event as { state: string }).state === "connected") connected += 1;
+    });
+    await responder.start();
+    await initiator.start();
+    await attackerTransport.start({
+      localIdentity: attackerIdentity,
+      onPacket: ({ data }) => attackerPackets.push(data),
+    });
+    try {
+      await initiator.connect(responderAddr);
+      const healthyPeer = (responder as any).peersByPubkey.get(toHex(initiatorIdentity.publicKey));
+      const replay = initiatorTransport.capturedMsg1!.slice();
+      if (changeIndex) replay[4] ^= 1; // The outer sender index is not authenticated by Noise.
+      await attackerTransport.send(responderAddr, replay);
+      expect((responder as any).peersByPubkey.get(toHex(initiatorIdentity.publicKey)))
+        .toBe(healthyPeer);
+      expect(connected).toBe(1);
+      const forged = initiatorTransport.capturedEstablished!.slice();
+      new DataView(forged.buffer).setUint32(
+        4, new DataView(attackerPackets[0]!.buffer).getUint32(4, true), true,
+      );
+      await attackerTransport.send(responderAddr, forged);
+      expect(errors).toHaveLength(1);
+      expect((responder as any).peersByPubkey.get(toHex(initiatorIdentity.publicKey)))
+        .toBe(healthyPeer);
+      await (responder as any).sendHeartbeats();
+      expect(attackerPackets.map(peekFmpPhase)).toEqual([FMP_PHASE_MSG2]);
+      await responder.sendDatagram({
+        dst: toHex(initiatorIdentity.publicKey),
+        dstPort: 7_009,
+        payload: new Uint8Array([7, 0, 9]),
+      });
+      await vi.waitFor(() => expect(received).toEqual(new Uint8Array([7, 0, 9])));
+      // Reusing the unconfirmed mutable address for its sender's own identity
+      // must not retire the healthy paths of the captured Msg1's identity.
+      const ownHandshake = new FmpLink({
+        identity: attackerIdentity,
+        remotePubkey: responderIdentity.publicKey,
+        role: "initiator",
+        sessionIdx: 0x6363,
+        localEpoch: new Uint8Array(8).fill(0x63),
+      });
+      await attackerTransport.send(
+        responderAddr, ownHandshake.buildMsg1((length) => new Uint8Array(length)).packet,
+      );
+      expect(healthyPeer.link.state).toBe("established");
+      expect((responder as any).peersByPubkey.get(toHex(initiatorIdentity.publicKey)))
+        .toBe(healthyPeer);
+    } finally {
+      await initiator.stop();
+      await responder.stop();
+      await attackerTransport.stop();
+    }
+  });
+
   it("accepts only byte-exact Msg1 and Msg2 replays after establishment", async () => {
     const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
     const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x32));
