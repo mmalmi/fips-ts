@@ -1,5 +1,19 @@
 # Changelog
 
+## Runtime packages 0.0.37 - 2026-09-05
+
+- Replace per-packet replay-window scans with bounded, constant-time counter
+  slots while retaining the existing 2,048-packet window and wire formats.
+- Reject the reserved maximum nonce on FMP/FSP send and receive paths, matching
+  Rust's nonce-exhaustion handling. Forged high counters cannot advance the
+  replay window before authentication.
+- Share FSP record encryption and existing AEAD/byte utilities; reject malformed
+  hex pairs that were previously parsed as partial bytes.
+- Replace fixed test delays with virtual time, consolidate redundant replay
+  coverage, and share Rust bridge discovery across all interoperability tests.
+- Release `@fips/core` 0.0.37. Other runtime packages remain unchanged from
+  runtime bundle 0.0.36.
+
 ## Runtime packages 0.0.36 - 2026-08-20
 
 - Share one bounded waiter for concurrent sends during FSP setup and fully
