@@ -9,12 +9,15 @@ import {
   segmentDirectFspTransportRecord,
 } from "../fsp/directTransport.js";
 import { FspSession } from "../fsp/session.js";
+import { FspReceiverReports } from "../fsp/receiverReports.js";
 import {
   decodeFspEstablished,
+  encodeDataPacket,
   FSP_FLAG_DIRECT_TRANSPORT,
   FSP_FLAG_K,
   FSP_MSG_DATA,
   FSP_MSG_ENDPOINT_DATA,
+  FSP_MSG_RECEIVER_REPORT,
   FSP_PHASE_ESTABLISHED,
   peekFspPhase,
 } from "../fsp/wire.js";
@@ -52,6 +55,7 @@ interface Session {
   setupTimer?: ReturnType<typeof setTimeout>;
   setupResolve?: () => void;
   setupReject?: (err: Error) => void;
+  receiverReports?: FspReceiverReports;
 }
 
 interface FspSessionManagerConfig {
@@ -79,6 +83,8 @@ export class FspSessionManager {
   private readonly services = new Map<number, FipsServiceHandler>();
   private readonly sessions = new Map<string, Session>();
   private readonly localEpoch: Uint8Array;
+  private reportTimer?: ReturnType<typeof setInterval>;
+  private reportsSending = false;
 
   constructor(private readonly cfg: FspSessionManagerConfig) {
     if (cfg.localEpoch.length !== 8) throw new Error("FSP local epoch must be 8 bytes");
@@ -95,7 +101,14 @@ export class FspSessionManager {
     };
   }
 
+  start(): void {
+    if (this.reportTimer) return;
+    this.reportTimer = setInterval(() => { void this.sendReceiverReports(); }, 1_000);
+  }
+
   stop(): void {
+    if (this.reportTimer) clearInterval(this.reportTimer);
+    this.reportTimer = undefined;
     for (const [nodeHex, session] of [...this.sessions]) {
       if (session.setupPromise) {
         this.rejectSessionSetup(session, nodeHex, new Error("FSP session manager stopped"));
@@ -130,18 +143,11 @@ export class FspSessionManager {
     payload: Uint8Array;
   }): Promise<void> {
     const session = await this.ensureSession(args.dst);
-    const directPeer = this.directPeerForSession(session);
-    const epochFlag = session.currentKBit ? FSP_FLAG_K : 0;
-    const fspFrame = session.fsp.encryptDatagram(
-      {
-        srcPort: args.srcPort ?? 0,
-        dstPort: args.dstPort,
-        payload: args.payload,
-      },
-      epochFlag | (directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0),
-    );
-    if (directPeer) await this.sendDirectFsp(directPeer, fspFrame);
-    else await this.cfg.routing.sendFspToward(session.remoteNodeAddr, fspFrame);
+    await this.sendSessionMessage(session, FSP_MSG_DATA, encodeDataPacket({
+      srcPort: args.srcPort ?? 0,
+      dstPort: args.dstPort,
+      payload: args.payload,
+    }));
   }
 
   async sendEndpointData(args: {
@@ -149,14 +155,38 @@ export class FspSessionManager {
     payload: Uint8Array;
   }): Promise<void> {
     const session = await this.ensureSession(args.dst);
+    await this.sendSessionMessage(session, FSP_MSG_ENDPOINT_DATA, args.payload);
+  }
+
+  private async sendSessionMessage(session: Session, msgType: number, payload: Uint8Array): Promise<void> {
     const directPeer = this.directPeerForSession(session);
     const epochFlag = session.currentKBit ? FSP_FLAG_K : 0;
-    const fspFrame = session.fsp.encryptEndpointData(
-      args.payload,
+    const fspFrame = session.fsp.encryptMessage(
+      msgType,
+      payload,
       epochFlag | (directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0),
     );
     if (directPeer) await this.sendDirectFsp(directPeer, fspFrame);
     else await this.cfg.routing.sendFspToward(session.remoteNodeAddr, fspFrame);
+  }
+
+  async sendReceiverReports(): Promise<void> {
+    if (this.reportsSending) return;
+    this.reportsSending = true;
+    try {
+      await Promise.all([...this.sessions.values()].map(async (session) => {
+        if (session.fsp.state !== "established") return;
+        const report = session.receiverReports?.build(performance.now());
+        if (!report) return;
+        try {
+          await this.sendSessionMessage(session, FSP_MSG_RECEIVER_REPORT, report);
+        } catch (error) {
+          this.cfg.logger.warn("FSP receiver report send failed", error);
+        }
+      }));
+    } finally {
+      this.reportsSending = false;
+    }
   }
 
   async sendLinkNegotiation(
@@ -244,9 +274,12 @@ export class FspSessionManager {
         );
       }
     }
-    const result = receiveFsp.decryptIncoming(fspFrame);
-    this.cfg.routing.learnReverseRoute(srcNodeHex, peer);
-    if (promotePending) this.promotePendingSession(session, receiveFsp, receivedKBit, srcNodeHex);
+    const result = receiveFsp.decryptIncoming(fspFrame, (received) => {
+      this.cfg.routing.learnReverseRoute(srcNodeHex, peer);
+      if (promotePending) this.promotePendingSession(session, receiveFsp, receivedKBit, srcNodeHex);
+      session.receiverReports ??= new FspReceiverReports();
+      session.receiverReports.record(received, performance.now(), receiveFsp === session.fsp);
+    });
     const srcHex = session.remotePubkeyHex ?? srcNodeHex;
     if (result.msgType === FSP_MSG_DATA && result.data) {
       await this.deliverDatagram(srcHex, result.data);
@@ -274,6 +307,7 @@ export class FspSessionManager {
       expiresAtMs: Date.now() + FSP_REKEY_DRAIN_MS,
     };
     session.fsp = receiveFsp;
+    session.receiverReports?.resetEpoch();
     session.currentKBit = receivedKBit;
     session.pendingResponderFsp = undefined;
     if (receiveFsp.remotePubkey) {
@@ -493,6 +527,7 @@ export class FspSessionManager {
     session.currentKBit = false;
     session.pendingResponderFsp = undefined;
     session.previousFsp = undefined;
+    session.receiverReports = undefined;
     if (replacement.remotePubkey) {
       session.remotePubkey = replacement.remotePubkey;
       session.remotePubkeyHex = toHex(replacement.remotePubkey);

@@ -119,6 +119,10 @@ describe("FipsNode FSP rekey epochs", () => {
       ),
     );
     expect(received).toEqual(["old-before-cutover", "new-promotes", "old-during-drain"]);
+    const report = new DataView(session.receiverReports!.build(performance.now())!.buffer);
+    expect(report.getBigUint64(2, true)).toBe(0n); // Current epoch's only received counter
+    expect(report.getBigUint64(10, true)).toBe(3n); // Includes both authenticated draining records
+    expect(report.getUint32(58, true)).toBe(1);
 
     const reply = session.fsp.encryptEndpointData(
       new TextEncoder().encode("reply-on-new-epoch"),

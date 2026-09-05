@@ -280,7 +280,7 @@ export class FspSession {
     encryptKeepalive(flags = 0) {
         return this.encryptMessage(FSP_MSG_KEEPALIVE, new Uint8Array(0), flags);
     }
-    decryptIncoming(packet) {
+    decryptIncoming(packet, onAuthenticated) {
         if (this.state !== "established" || !this.rx)
             throw new Error("FSP not established");
         const est = decodeFspEstablished(packet);
@@ -291,6 +291,7 @@ export class FspSession {
         const plaintext = aeadOpen(this.rx.getKey(), est.counter, est.ciphertext, aad);
         this.replay.accept(est.counter);
         const inner = decodeFspInner(plaintext);
+        onAuthenticated?.({ counter: est.counter, timestamp: inner.timestamp, bytes: plaintext.length });
         if (inner.msgType === FSP_MSG_DATA) {
             return { msgType: inner.msgType, data: decodeDataPacket(inner.payload) };
         }

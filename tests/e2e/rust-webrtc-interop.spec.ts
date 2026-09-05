@@ -16,12 +16,13 @@ interface RustFixture {
   pubkeyHex: string;
   websocketUrl: string;
   stderr: () => string;
+  deliveryRecovery: () => string[];
   close(): Promise<void>;
 }
 
 test.setTimeout(180_000);
 
-test("Rust WebRTC stays responsive after a browser peer disconnects", async ({ page, context }) => {
+test("Rust WebRTC sustains delivery past the report deadline and survives browser disconnect", async ({ page, context }) => {
   const manifest = rustManifestPath();
   test.skip(
     !fs.existsSync(manifest),
@@ -47,10 +48,13 @@ test("Rust WebRTC stays responsive after a browser peer disconnects", async ({ p
       return window.__fipsHarness.echoWithRustWebRtcPeer(
         pubkeyHex,
         "hello-rust-fips",
+        70,
       );
     }, { pubkeyHex: rust.pubkeyHex });
 
     expect(reply).toBe("hello-rust-fips");
+    expect(rust.deliveryRecovery(), "healthy traffic must not trigger delivery-failure recovery")
+      .toEqual([]);
 
     await page.close();
     await new Promise<void>((resolve) => {
@@ -116,14 +120,21 @@ async function startRustFixture(
         RUSTC_WRAPPER: "",
         RUST_LOG:
           process.env.FIPS_RUST_LOG ??
-          "fips_core::transport::websocket=debug,fips_core::transport::webrtc=debug,info",
+          "fips_core::node::handlers::mmp=debug,fips_core::transport::websocket=debug,fips_core::transport::webrtc=debug,info",
       },
     },
   );
 
   let stderr = "";
+  const deliveryRecovery = new Set<string>();
   proc.stderr.on("data", (chunk) => {
     stderr = trimLog(stderr + chunk.toString("utf8"));
+    for (const diagnostic of [
+      "Warming fallback lookup for path with fresh control but unreturned endpoint data",
+      "Keeping automatic fallback active while probing direct payload recovery",
+    ]) {
+      if (stderr.includes(diagnostic)) deliveryRecovery.add(diagnostic);
+    }
   });
 
   const lines = createInterface({ input: proc.stdout });
@@ -171,6 +182,7 @@ async function startRustFixture(
     ...ready,
     websocketUrl,
     stderr: () => stderr,
+    deliveryRecovery: () => [...deliveryRecovery],
     close: () => stopProcess(proc),
   };
 }

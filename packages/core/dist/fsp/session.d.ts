@@ -49,7 +49,11 @@ export declare class FspSession {
     encryptEndpointData(payload: Uint8Array, flags?: number): Uint8Array;
     encryptMessage(msgType: number, payload: Uint8Array, flags?: number): Uint8Array;
     encryptKeepalive(flags?: number): Uint8Array;
-    decryptIncoming(packet: Uint8Array): {
+    decryptIncoming(packet: Uint8Array, onAuthenticated?: (received: {
+        counter: bigint;
+        timestamp: number;
+        bytes: number;
+    }) => void): {
         msgType: number;
         data?: DataPacket;
         endpointData?: Uint8Array;

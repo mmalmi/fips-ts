@@ -148,6 +148,7 @@ export class FipsNode {
             throw err;
         }
         this.started = true;
+        this.sessionManager.start();
         this.heartbeatTimer = setInterval(() => {
             void this.sendHeartbeats();
         }, this.heartbeatIntervalMs);

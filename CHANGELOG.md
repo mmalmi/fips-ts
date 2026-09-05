@@ -1,5 +1,17 @@
 # Changelog
 
+## Runtime packages 0.0.39 - 2026-09-05
+
+- Send authenticated FSP receiver reports using the existing wire format so
+  Rust peers with default Full MMP retain healthy direct paths during sustained
+  traffic instead of starting unnecessary fallback and recovery.
+- Count only authenticated, replay-accepted records; preserve lifetime receive
+  totals through rekey while keeping draining counters out of the current epoch.
+  Report work is bounded to one batch per second and stops with the node.
+- Extend live browser/Rust coverage beyond the feedback deadline with an
+  available forwarding path and verify subsequent browser reconnection.
+- Release `@fips/core` 0.0.39. Other runtime packages and wire formats are unchanged.
+
 ## Runtime packages 0.0.38 - 2026-09-05
 
 - Drop looped discovery requests matching a pending local request ID and target

@@ -19,9 +19,8 @@ import { MemoryHub, MemoryTransport } from "@fips/transport-memory";
 import {
   NostrRelayClient,
   WebRtcTransport,
-  type WebRtcTransportConfig,
 } from "@fips/transport-webrtc";
-import { WebSocketTransport } from "@fips/transport-websocket";
+import { webSocketSeedTransport, webRtcTransports, waitForPeerState } from "./test-transports.js";
 
 interface NodePair {
   a: FipsNode;
@@ -57,16 +56,6 @@ declare global {
   }
 }
 
-function webSocketSeedTransport(): WebSocketTransport {
-  const seedUrl = window.__fipsTestWebSocketSeedUrl
-    ?? new URL(window.location.href).searchParams.get("fipsSeed");
-  if (!seedUrl) throw new Error("fipsSeed WebSocket URL is required");
-  return new WebSocketTransport({ seedUrls: [seedUrl] });
-}
-
-function webRtcTransports(config: WebRtcTransportConfig): [WebSocketTransport, WebRtcTransport] {
-  return [webSocketSeedTransport(), new WebRtcTransport(config)];
-}
 
 async function makeWebRtcPair(relayUrl: string): Promise<NodePair> {
   const logger = {
@@ -362,34 +351,6 @@ async function connectThroughStaleAdvertBacklog(relayUrl: string): Promise<{
   }
 }
 
-function waitForPeerState(
-  node: FipsNode,
-  remotePubkey: string | undefined,
-  state: "connected" | "disconnected",
-  transport = "webrtc",
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      off();
-      reject(new Error(`${transport} peer ${remotePubkey ?? "any"} did not become ${state}`));
-    }, 20_000);
-    const off = node.on("peer", (event) => {
-      const peer = event as {
-        remotePubkey: string;
-        remoteAddr: { transport: string };
-        state: string;
-      };
-      if (
-        (remotePubkey !== undefined && peer.remotePubkey !== remotePubkey)
-        || peer.remoteAddr.transport !== transport
-        || peer.state !== state
-      ) return;
-      clearTimeout(timer);
-      off();
-      resolve();
-    });
-  });
-}
 
 async function duplicateWebRtcConnect(relayUrl: string): Promise<string> {
   const logger = {
@@ -647,6 +608,7 @@ async function reconnectMemoryPair(): Promise<{ first: string; second: string }>
 async function echoWithRustWebRtcPeer(
   rustPubkeyHex: string,
   payload: string,
+  rounds = 1,
 ): Promise<string> {
   const logger = {
     debug: (...a: unknown[]) => console.log("[rust-webrtc]", ...a),
@@ -655,10 +617,18 @@ async function echoWithRustWebRtcPeer(
     error: (...a: unknown[]) => console.error("[rust-webrtc:err]", ...a),
   };
   const identity = await generateIdentity();
+  const hub = new MemoryHub();
+  const forwarderIdentity = await generateIdentity();
+  const forwarder = rounds > 1 ? new FipsNode({
+    identity: forwarderIdentity,
+    forwarding: true,
+    routingMode: "reply_learned",
+    transports: [webSocketSeedTransport(), new MemoryTransport({ hub })],
+  }) : undefined;
   const node = new FipsNode({
     identity,
     logger,
-    transports: webRtcTransports({
+    transports: [new MemoryTransport({ hub }), ...webRtcTransports({
         relays: [],
         advertiseOnNostr: false,
         acceptConnections: true,
@@ -667,7 +637,7 @@ async function echoWithRustWebRtcPeer(
         connectTimeoutMs: 20_000,
         iceGatherTimeoutMs: 1_500,
         logger,
-      }),
+      })],
   });
 
   node.on("error", (event) => {
@@ -679,30 +649,44 @@ async function echoWithRustWebRtcPeer(
 
   await node.start();
   try {
+    if (forwarder) {
+      // Give Rust an independent fallback route so erroneous delivery-failure
+      // recovery is exercised, even while this WebRTC path keeps working.
+      const ready = waitForPeerState(forwarder, rustPubkeyHex, "connected", "websocket");
+      await forwarder.start();
+      await ready;
+      await forwarder.connect({ transport: "memory", addr: toHex(identity.publicKey) });
+    }
     await node.connect({ transport: "webrtc", addr: rustPubkeyHex });
-    return await new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        off();
-        reject(new Error("rust echo timeout"));
-      }, 20_000);
-      const off = node.on("endpointData", (evt) => {
-        const msg = evt as { src: string; payload: Uint8Array };
-        if (msg.src !== rustPubkeyHex) return;
-        clearTimeout(timer);
-        off();
-        resolve(new TextDecoder().decode(msg.payload));
+    for (let round = 0; round < rounds; round++) {
+      if (round > 0) await new Promise((resolve) => { setTimeout(resolve, 400); });
+      const expected = `${payload}:${round}`;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          off();
+          reject(new Error("rust echo timeout"));
+        }, 20_000);
+        const off = node.on("endpointData", (evt) => {
+          const msg = evt as { src: string; payload: Uint8Array };
+          if (msg.src !== rustPubkeyHex) return;
+          if (new TextDecoder().decode(msg.payload) !== expected) return;
+          clearTimeout(timer);
+          off();
+          resolve();
+        });
+        void node.sendEndpointData({
+          dst: rustPubkeyHex,
+          payload: new TextEncoder().encode(expected),
+        }).catch((err) => {
+          clearTimeout(timer);
+          off();
+          reject(err);
+        });
       });
-      void node.sendEndpointData({
-        dst: rustPubkeyHex,
-        payload: new TextEncoder().encode(payload),
-      }).catch((err) => {
-        clearTimeout(timer);
-        off();
-        reject(err);
-      });
-    });
+    }
+    return payload;
   } finally {
-    await node.stop();
+    await Promise.all([node.stop(), forwarder?.stop()]);
   }
 }
 

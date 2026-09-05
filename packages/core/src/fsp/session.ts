@@ -313,6 +313,7 @@ export class FspSession {
 
   decryptIncoming(
     packet: Uint8Array,
+    onAuthenticated?: (received: { counter: bigint; timestamp: number; bytes: number }) => void,
   ): { msgType: number; data?: DataPacket; endpointData?: Uint8Array; payload?: Uint8Array } {
     if (this.state !== "established" || !this.rx) throw new Error("FSP not established");
     const est = decodeFspEstablished(packet);
@@ -326,6 +327,7 @@ export class FspSession {
     const plaintext = aeadOpen(this.rx.getKey(), est.counter, est.ciphertext, aad);
     this.replay.accept(est.counter);
     const inner = decodeFspInner(plaintext);
+    onAuthenticated?.({ counter: est.counter, timestamp: inner.timestamp, bytes: plaintext.length });
     if (inner.msgType === FSP_MSG_DATA) {
       return { msgType: inner.msgType, data: decodeDataPacket(inner.payload) };
     }

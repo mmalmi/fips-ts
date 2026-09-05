@@ -22,8 +22,11 @@ export declare class FspSessionManager {
     private readonly services;
     private readonly sessions;
     private readonly localEpoch;
+    private reportTimer?;
+    private reportsSending;
     constructor(cfg: FspSessionManagerConfig);
     registerService(port: number, handler: FipsServiceHandler): () => void;
+    start(): void;
     stop(): void;
     closePeerSessions(remotePubkeyHex: string): void;
     sendDatagram(args: {
@@ -36,6 +39,8 @@ export declare class FspSessionManager {
         dst: string;
         payload: Uint8Array;
     }): Promise<void>;
+    private sendSessionMessage;
+    sendReceiverReports(): Promise<void>;
     sendLinkNegotiation(remotePubkeyHex: string, message: LinkNegotiationMessage): Promise<void>;
     handleFromPeer(peer: AdjacentPeer, srcNodeAddr: NodeAddr, fspFrame: Uint8Array): Promise<void>;
     private handleEstablished;
