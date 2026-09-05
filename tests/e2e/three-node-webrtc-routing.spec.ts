@@ -25,15 +25,22 @@ test("Three-node FIPS routing A -> B -> C upgrades from WSS to real WebRTC", asy
     window.__fipsTestWebSocketSeedUrl = url;
   }, seed.url);
   page.on("pageerror", (err) => console.log("pageerror:", err.message));
+  await page.exposeFunction("__closeFipsTestWebSocketSeed", () => seed.close());
 
   await page.goto("/");
   await page.waitForFunction(() => !!window.__fipsHarness);
 
-  const reply = await page.evaluate(async () => {
+  const result = await page.evaluate(async () => {
     const h = window.__fipsHarness;
     const three = await h.makeWebRtcChain(window.__fipsTestRelayUrl!);
-    return h.echoOverChain(three, "webrtc-routed");
+    try {
+      const reply = await h.echoOverChain(three, "webrtc-routed");
+      return { reply, forwardedDatagrams: three.forwardedDatagrams() };
+    } finally {
+      await Promise.all([three.a.stop(), three.b.stop(), three.c.stop()]);
+    }
   });
 
-  expect(reply).toBe("webrtc-routed");
+  expect(result.reply).toBe("webrtc-routed");
+  expect(result.forwardedDatagrams).toBeGreaterThan(0);
 });

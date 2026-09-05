@@ -53,6 +53,7 @@ declare global {
     __fipsHarness: typeof harness;
     __fipsTestRelayUrl?: string;
     __fipsTestWebSocketSeedUrl?: string;
+    __closeFipsTestWebSocketSeed?: () => Promise<void>;
   }
 }
 
@@ -363,13 +364,14 @@ async function connectThroughStaleAdvertBacklog(relayUrl: string): Promise<{
 
 function waitForPeerState(
   node: FipsNode,
-  remotePubkey: string,
+  remotePubkey: string | undefined,
   state: "connected" | "disconnected",
+  transport = "webrtc",
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       off();
-      reject(new Error(`WebRTC peer ${remotePubkey} did not become ${state}`));
+      reject(new Error(`${transport} peer ${remotePubkey ?? "any"} did not become ${state}`));
     }, 20_000);
     const off = node.on("peer", (event) => {
       const peer = event as {
@@ -378,8 +380,8 @@ function waitForPeerState(
         state: string;
       };
       if (
-        peer.remotePubkey !== remotePubkey
-        || peer.remoteAddr.transport !== "webrtc"
+        (remotePubkey !== undefined && peer.remotePubkey !== remotePubkey)
+        || peer.remoteAddr.transport !== transport
         || peer.state !== state
       ) return;
       clearTimeout(timer);
@@ -478,7 +480,7 @@ async function echoOverPair(pair: NodePair, payload: string, port = 9000): Promi
 
 async function echoOverChain(three: ThreeNodes, payload: string, port = 9000): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timeout")), 20_000);
+    const timer = setTimeout(() => { off(); reject(new Error("chain echo timeout")); }, 20_000);
     const off = three.a.on("datagram", (evt) => {
       const dg = evt as { src: string; dstPort: number; payload: Uint8Array };
       if (dg.src === three.cPub && dg.dstPort === port) {
@@ -492,20 +494,21 @@ async function echoOverChain(three: ThreeNodes, payload: string, port = 9000): P
       srcPort: port,
       dstPort: port,
       payload: new TextEncoder().encode(payload),
-    });
+    }).catch((error) => { clearTimeout(timer); off(); reject(error); });
   });
 }
 
-async function makeWebRtcChain(relayUrl: string): Promise<ThreeNodes> {
-  const logger = {
-    debug: (..._a: unknown[]) => {},
-    info: (...a: unknown[]) => console.log("[webrtc:info]", ...a),
-    warn: (...a: unknown[]) => console.warn("[webrtc:warn]", ...a),
-    error: (...a: unknown[]) => console.error("[webrtc:err]", ...a),
+async function makeWebRtcChain(relayUrl: string): Promise<ThreeNodes & { forwardedDatagrams(): number }> {
+  const diagnostics: string[] = [];
+  const record = (...args: unknown[]) => {
+    diagnostics.push(args.map(String).join(" "));
+    if (diagnostics.length > 20) diagnostics.shift();
   };
+  const logger = { debug: record, info: record, warn: record, error: record };
   const aId = await generateIdentity();
   const bId = await generateIdentity();
   const cId = await generateIdentity();
+  let forwardedDatagrams = 0;
   const a = new FipsNode({
     identity: aId,
     logger,
@@ -514,8 +517,12 @@ async function makeWebRtcChain(relayUrl: string): Promise<ThreeNodes> {
   });
   const b = new FipsNode({
     identity: bId,
-    logger,
+    logger: { ...logger, debug: (...args) => {
+      if (args[0] === "session datagram forwarded") forwardedDatagrams++;
+      record(...args);
+    } },
     forwarding: true,
+    routingMode: "reply_learned",
     transports: webRtcTransports({ relays: [relayUrl], advertiseOnNostr: true, logger }),
   });
   const c = new FipsNode({
@@ -527,13 +534,24 @@ async function makeWebRtcChain(relayUrl: string): Promise<ThreeNodes> {
   c.registerService(9000, async ({ payload, reply }) => {
     await reply(payload);
   });
-  await a.start();
-  await b.start();
-  await c.start();
-  // A<->B and B<->C, but NOT A<->C.
-  await a.connect({ transport: "webrtc", addr: toHex(bId.publicKey) });
-  await b.connect({ transport: "webrtc", addr: toHex(cId.publicKey) });
-  return { a, b, c, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey), cPub: toHex(cId.publicKey) };
+  try {
+    await a.start();
+    await b.start();
+    await c.start();
+    await a.connect({ transport: "webrtc", addr: toHex(bId.publicKey) });
+    await b.connect({ transport: "webrtc", addr: toHex(cId.publicKey) });
+    if (!window.__closeFipsTestWebSocketSeed) throw new Error("chain bootstrap closer is required");
+    await Promise.all([
+      ...[a, b, c].map((node) => waitForPeerState(node, undefined, "disconnected", "websocket")),
+      window.__closeFipsTestWebSocketSeed(),
+    ]);
+    forwardedDatagrams = 0;
+    return { a, b, c, aPub: toHex(aId.publicKey), bPub: toHex(bId.publicKey), cPub: toHex(cId.publicKey),
+      forwardedDatagrams: () => forwardedDatagrams };
+  } catch (error) {
+    await Promise.all([a.stop(), b.stop(), c.stop()]);
+    throw new Error(`${String(error)}\n${diagnostics.join("\n")}`);
+  }
 }
 
 async function webRtcReconnect(relayUrl: string): Promise<{ first: string; second: string }> {
