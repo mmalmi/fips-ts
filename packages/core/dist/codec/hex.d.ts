@@ -1,5 +1,3 @@
-export declare function toHex(bytes: Uint8Array): string;
-export declare function fromHex(hex: string): Uint8Array;
+export { bytesToHex as toHex, hexToBytes as fromHex, concatBytes } from "@noble/hashes/utils";
 export declare function bytesEqual(a: Uint8Array, b: Uint8Array): boolean;
-export declare function concatBytes(...arrs: Uint8Array[]): Uint8Array;
 //# sourceMappingURL=hex.d.ts.map

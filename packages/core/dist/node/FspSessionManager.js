@@ -1,4 +1,4 @@
-import { bytesEqual, toHex } from "../codec/hex.js";
+import { bytesEqual, fromHex, toHex } from "../codec/hex.js";
 import { decodeLinkNegotiationMessage, encodeLinkNegotiationMessage, LINK_NEGOTIATION_SERVICE_PORT, } from "../linkNegotiation.js";
 import { segmentDirectFspTransportRecord, } from "../fsp/directTransport.js";
 import { FspSession } from "../fsp/session.js";
@@ -349,7 +349,7 @@ export class FspSessionManager {
         this.cfg.logger.debug("replaced restarted FSP session", srcNodeHex);
     }
     async ensureSession(remotePubkeyHex) {
-        const remotePubkey = hexBytes(remotePubkeyHex);
+        const remotePubkey = fromHex(remotePubkeyHex);
         const remoteNodeAddr = deriveNodeAddr(remotePubkey);
         const remoteNodeHex = nodeAddrToHex(remoteNodeAddr);
         let session = this.sessions.get(remoteNodeHex);
@@ -449,14 +449,5 @@ export class FspSessionManager {
             await peer.transport.send(peer.remoteAddr, packet);
         }
     }
-}
-function hexBytes(hex) {
-    if (hex.length % 2 !== 0)
-        throw new Error("hex length");
-    const out = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < out.length; i++) {
-        out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    }
-    return out;
 }
 //# sourceMappingURL=FspSessionManager.js.map
