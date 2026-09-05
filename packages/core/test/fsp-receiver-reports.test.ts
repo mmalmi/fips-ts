@@ -5,6 +5,7 @@ import { FspSession } from "../src/fsp/session.js";
 import { FSP_MSG_DATA, FSP_MSG_RECEIVER_REPORT } from "../src/fsp/wire.js";
 import { identityFromSecretKey } from "../src/identity/index.js";
 import { FspSessionManager } from "../src/node/FspSessionManager.js";
+import type { FipsRouting } from "../src/node/FipsRouting.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -81,9 +82,13 @@ describe("FSP receiver reports", () => {
       logger: { debug() {}, info() {}, warn() {}, error() {} },
       routing: {
         coords: [responderIdentity.nodeAddr],
+        coordinatesFor: () => undefined,
         learnReverseRoute() {},
         async sendFspReplyToward(_addr: Uint8Array, frame: Uint8Array) { replies.push(frame); },
-        async sendFspToward(_addr: Uint8Array, frame: Uint8Array) { replies.push(frame); await sendBarrier; },
+        async sendFspToward(_addr: Uint8Array, frame: Parameters<FipsRouting["sendFspToward"]>[1]) {
+          replies.push(...(typeof frame === "function" ? frame({} as never) : [frame]));
+          await sendBarrier;
+        },
       } as never,
       getPeerByNodeAddr: () => undefined,
       emitDatagram() {},

@@ -6,7 +6,7 @@
  */
 import type { FipsIdentity } from "../identity/index.js";
 import type { NodeAddr } from "../nodeaddr/index.js";
-import { type DataPacket } from "./wire.js";
+import { type DataPacket, type FspEstablished } from "./wire.js";
 export type FspRole = "initiator" | "responder";
 export interface FspSessionInit {
     identity: FipsIdentity;
@@ -48,7 +48,7 @@ export declare class FspSession {
     private finalize;
     encryptDatagram(data: DataPacket, flags?: number): Uint8Array;
     encryptEndpointData(payload: Uint8Array, flags?: number): Uint8Array;
-    encryptMessage(msgType: number, payload: Uint8Array, flags?: number): Uint8Array;
+    encryptMessage(msgType: number, payload: Uint8Array, flags?: number, coords?: Pick<FspEstablished, "srcCoords" | "destCoords">): Uint8Array;
     encryptKeepalive(flags?: number): Uint8Array;
     decryptIncoming(packet: Uint8Array, onAuthenticated?: (received: {
         counter: bigint;

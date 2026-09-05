@@ -16,6 +16,7 @@ interface RustFixture {
   pubkeyHex: string;
   websocketUrl: string;
   stderr: () => string;
+  receivedCoordsWarmup: () => boolean;
   deliveryRecovery: () => string[];
   close(): Promise<void>;
 }
@@ -53,6 +54,8 @@ test("Rust WebRTC sustains delivery past the report deadline and survives browse
     }, { pubkeyHex: rust.pubkeyHex });
 
     expect(reply).toBe("hello-rust-fips");
+    expect(rust.receivedCoordsWarmup(), "Rust must authenticate the routed coordinate warmup before the direct upgrade")
+      .toBe(true);
     expect(rust.deliveryRecovery(), "healthy traffic must not trigger delivery-failure recovery")
       .toEqual([]);
 
@@ -119,16 +122,19 @@ async function startRustFixture(
         ...process.env,
         RUSTC_WRAPPER: "",
         RUST_LOG:
-          process.env.FIPS_RUST_LOG ??
-          "fips_core::node::handlers::mmp=debug,fips_core::transport::websocket=debug,fips_core::transport::webrtc=debug,info",
+          (process.env.FIPS_RUST_LOG ??
+          "fips_core::node::handlers::mmp=debug,fips_core::transport::websocket=debug,fips_core::transport::webrtc=debug,info")
+          + ",fips_core::node::handlers::session=trace",
       },
     },
   );
 
   let stderr = "";
+  let receivedCoordsWarmup = false;
   const deliveryRecovery = new Set<string>();
   proc.stderr.on("data", (chunk) => {
     stderr = trimLog(stderr + chunk.toString("utf8"));
+    receivedCoordsWarmup ||= stderr.includes("CoordsWarmup received");
     for (const diagnostic of [
       "Warming fallback lookup for path with fresh control but unreturned endpoint data",
       "Keeping automatic fallback active while probing direct payload recovery",
@@ -182,6 +188,7 @@ async function startRustFixture(
     ...ready,
     websocketUrl,
     stderr: () => stderr,
+    receivedCoordsWarmup: () => receivedCoordsWarmup,
     deliveryRecovery: () => [...deliveryRecovery],
     close: () => stopProcess(proc),
   };

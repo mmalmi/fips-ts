@@ -18,6 +18,7 @@ import {
   FSP_MSG_DATA,
   FSP_MSG_ENDPOINT_DATA,
   FSP_MSG_RECEIVER_REPORT,
+  FSP_MSG_COORDS_WARMUP,
   FSP_PHASE_ESTABLISHED,
   peekFspPhase,
 } from "../fsp/wire.js";
@@ -56,6 +57,7 @@ interface Session {
   setupResolve?: () => void;
   setupReject?: (err: Error) => void;
   receiverReports?: FspReceiverReports;
+  routeWarmup?: { peer: AdjacentPeer; remaining: number };
 }
 
 interface FspSessionManagerConfig {
@@ -160,14 +162,29 @@ export class FspSessionManager {
 
   private async sendSessionMessage(session: Session, msgType: number, payload: Uint8Array): Promise<void> {
     const directPeer = this.directPeerForSession(session);
-    const epochFlag = session.currentKBit ? FSP_FLAG_K : 0;
-    const fspFrame = session.fsp.encryptMessage(
-      msgType,
-      payload,
-      epochFlag | (directPeer ? FSP_FLAG_DIRECT_TRANSPORT : 0),
-    );
-    if (directPeer) await this.sendDirectFsp(directPeer, fspFrame);
-    else await this.cfg.routing.sendFspToward(session.remoteNodeAddr, fspFrame);
+    if (directPeer) {
+      session.routeWarmup = undefined;
+      await this.sendDirectFsp(directPeer, session.fsp.encryptMessage(
+        msgType, payload, FSP_FLAG_DIRECT_TRANSPORT | (session.currentKBit ? FSP_FLAG_K : 0),
+      ));
+      return;
+    }
+    await this.cfg.routing.sendFspToward(session.remoteNodeAddr, (nextHop) => {
+      // Resolve the actual route before encrypting, including any key cutover while waiting.
+      const flags = session.currentKBit ? FSP_FLAG_K : 0;
+      if (session.routeWarmup?.peer !== nextHop) session.routeWarmup = { peer: nextHop, remaining: 5 };
+      const frames: Uint8Array[] = [];
+      const destCoords = this.cfg.routing.coordinatesFor(nodeAddrToHex(session.remoteNodeAddr));
+      if (session.routeWarmup.remaining > 0 && destCoords
+        && !bytesEqual(deriveNodeAddr(nextHop.pubkey), session.remoteNodeAddr)) {
+        frames.push(session.fsp.encryptMessage(FSP_MSG_COORDS_WARMUP, new Uint8Array(), flags, {
+          srcCoords: this.cfg.routing.coords, destCoords,
+        }));
+        session.routeWarmup.remaining--;
+      }
+      frames.push(session.fsp.encryptMessage(msgType, payload, flags));
+      return frames;
+    });
   }
 
   async sendReceiverReports(): Promise<void> {

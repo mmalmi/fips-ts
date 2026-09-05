@@ -1,7 +1,11 @@
 import { type FipsIdentity } from "../identity/index.js";
 import { type NodeAddr } from "../nodeaddr/index.js";
+import { type SessionDatagram } from "../protocol/link.js";
 import type { Logger, Transport, TransportAddress } from "../transport/types.js";
 import type { AdjacentPeer } from "./PeerState.js";
+type OutboundSessionDatagram = Omit<SessionDatagram, "payload"> & {
+    payload: Uint8Array | ((nextHop: AdjacentPeer) => Uint8Array[]);
+};
 interface FipsRoutingConfig {
     identity: FipsIdentity;
     forwarding: boolean;
@@ -39,8 +43,9 @@ export declare class FipsRouting {
     replayPendingLookupsFor(peer: AdjacentPeer): Promise<void>;
     ensureFirstContactRoute(target: NodeAddr, targetHex: string, targetPubkey: Uint8Array): Promise<void>;
     private refreshTransitRoute;
-    sendFspToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array): Promise<void>;
+    sendFspToward(remoteNodeAddr: NodeAddr, fspFrame: OutboundSessionDatagram["payload"]): Promise<void>;
     sendFspReplyToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array, previousHop: AdjacentPeer): Promise<void>;
+    private sendSessionDatagramVia;
     learnReverseRoute(destinationNodeHex: string, nextHop: AdjacentPeer): void;
     private sendTreeAnnounceToAll;
     private handleTreeAnnounce;

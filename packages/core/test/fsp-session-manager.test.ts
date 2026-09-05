@@ -9,6 +9,7 @@ import {
 import { FspSession } from "../src/fsp/session.js";
 import { identityFromSecretKey } from "../src/identity/index.js";
 import { FspSessionManager } from "../src/node/FspSessionManager.js";
+import type { FipsRouting } from "../src/node/FipsRouting.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -120,7 +121,11 @@ describe("FspSessionManager", () => {
       coords: [initiatorIdentity.nodeAddr],
       coordinatesFor: () => [responderIdentity.nodeAddr],
       learnReverseRoute: () => {},
-      sendFspToward: async (_remoteNodeAddr: Uint8Array, frame: Uint8Array) => {
+      sendFspToward: async (_remoteNodeAddr: Uint8Array, frame: Parameters<FipsRouting["sendFspToward"]>[1]) => {
+        if (typeof frame === "function") {
+          for (const packet of frame(peer)) responder!.decryptIncoming(packet);
+          return;
+        }
         const phase = peekFspPhase(frame);
         if (phase === 1) {
           setupAttempts += 1;

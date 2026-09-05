@@ -647,6 +647,29 @@ async function echoWithRustWebRtcPeer(
   node.on("peer", (e) => console.log("[rust-webrtc] peer", e));
   node.on("session", (e) => console.log("[rust-webrtc] session", e));
 
+  const echo = (expected: string, sender = node) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      off();
+      reject(new Error("rust echo timeout"));
+    }, 20_000);
+    const off = sender.on("endpointData", (evt) => {
+      const msg = evt as { src: string; payload: Uint8Array };
+      if (msg.src !== rustPubkeyHex) return;
+      if (new TextDecoder().decode(msg.payload) !== expected) return;
+      clearTimeout(timer);
+      off();
+      resolve();
+    });
+    void sender.sendEndpointData({
+      dst: rustPubkeyHex,
+      payload: new TextEncoder().encode(expected),
+    }).catch((err) => {
+      clearTimeout(timer);
+      off();
+      reject(err);
+    });
+  });
+
   await node.start();
   try {
     if (forwarder) {
@@ -656,33 +679,23 @@ async function echoWithRustWebRtcPeer(
       await forwarder.start();
       await ready;
       await forwarder.connect({ transport: "memory", addr: toHex(identity.publicKey) });
+      const routedIdentity = await generateIdentity();
+      const routed = new FipsNode({
+        identity: routedIdentity, transports: [new MemoryTransport({ hub })], routingMode: "reply_learned",
+      });
+      await routed.start();
+      try {
+        await forwarder.connect({ transport: "memory", addr: toHex(routedIdentity.publicKey) });
+        await echo(`${payload}:routed-coordinates`, routed);
+      } finally {
+        await routed.stop();
+      }
     }
     await node.connect({ transport: "webrtc", addr: rustPubkeyHex });
     for (let round = 0; round < rounds; round++) {
       if (round > 0) await new Promise((resolve) => { setTimeout(resolve, 400); });
       const expected = `${payload}:${round}`;
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          off();
-          reject(new Error("rust echo timeout"));
-        }, 20_000);
-        const off = node.on("endpointData", (evt) => {
-          const msg = evt as { src: string; payload: Uint8Array };
-          if (msg.src !== rustPubkeyHex) return;
-          if (new TextDecoder().decode(msg.payload) !== expected) return;
-          clearTimeout(timer);
-          off();
-          resolve();
-        });
-        void node.sendEndpointData({
-          dst: rustPubkeyHex,
-          payload: new TextEncoder().encode(expected),
-        }).catch((err) => {
-          clearTimeout(timer);
-          off();
-          reject(err);
-        });
-      });
+      await echo(expected);
     }
     return payload;
   } finally {

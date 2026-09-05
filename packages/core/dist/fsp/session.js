@@ -9,7 +9,7 @@ import { ReplayWindow } from "../crypto/replay.js";
 import { bytesEqual } from "../codec/hex.js";
 import { NoiseHandshake } from "../noise/index.js";
 import { decodeSessionAck, decodeSessionMsg3, decodeSessionSetup, encodeSessionAck, encodeSessionMsg3, encodeSessionSetup, SESSION_FLAG_DIRECT_FSP_TRANSPORT, } from "../protocol/session.js";
-import { decodeDataPacket, decodeFspEstablished, decodeFspHandshake, decodeFspInner, encodeDataPacket, encodeFspEstablished, encodeFspEstablishedHeader, encodeFspHandshake, encodeFspInner, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_KEEPALIVE, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, NOISE_XK_MSG1_LEN, NOISE_XK_MSG2_LEN, NOISE_XK_MSG3_LEN, } from "./wire.js";
+import { decodeDataPacket, decodeFspEstablished, decodeFspHandshake, decodeFspInner, encodeDataPacket, encodeFspEstablished, encodeFspEstablishedHeader, encodeFspHandshake, encodeFspInner, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_KEEPALIVE, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_CP, FSP_FLAG_K, NOISE_XK_MSG1_LEN, NOISE_XK_MSG2_LEN, NOISE_XK_MSG3_LEN, } from "./wire.js";
 const EPOCH_LEN = 8;
 export class FspSession {
     identity;
@@ -259,7 +259,7 @@ export class FspSession {
     encryptEndpointData(payload, flags = 0) {
         return this.encryptMessage(FSP_MSG_ENDPOINT_DATA, payload, flags);
     }
-    encryptMessage(msgType, payload, flags = 0) {
+    encryptMessage(msgType, payload, flags = 0, coords) {
         if (this.state !== "established" || !this.tx)
             throw new Error("FSP not established");
         if (!Number.isInteger(msgType) || msgType < 0 || msgType > 0xff) {
@@ -275,9 +275,11 @@ export class FspSession {
             payload,
         });
         validateEstablishedFlags(flags);
+        if (coords)
+            flags |= FSP_FLAG_CP;
         const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
         const ciphertext = aeadSeal(this.tx.getKey(), counter, inner, aad);
-        return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
+        return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext, ...coords });
     }
     encryptKeepalive(flags = 0) {
         return this.encryptMessage(FSP_MSG_KEEPALIVE, new Uint8Array(0), flags);

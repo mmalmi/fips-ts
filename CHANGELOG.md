@@ -1,5 +1,17 @@
 # Changelog
 
+## Runtime packages 0.0.42 - 2026-09-06
+
+- Warm routing coordinates before the first five payloads on a new transit path,
+  using the existing CoordsWarmup records. Forwarders learn those coordinates
+  even when they did not carry the original handshake. Data record sizes stay
+  unchanged and direct transports do not send redundant warmups.
+- Choose the route before encrypting queued session records so any key rotation
+  during route discovery uses the current keys and epoch flag.
+- Share routed and reply-path carrier encoding. Test coordinate propagation and
+  bounded warmup, and verify routed Rust traffic before the direct WebRTC upgrade.
+- Release `@fips/core` 0.0.42. Other runtime packages and wire formats are unchanged.
+
 ## Runtime packages 0.0.41 - 2026-09-05
 
 - Clean up peer and handshake state when the initial Msg1 send fails, so a

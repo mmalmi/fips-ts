@@ -4,6 +4,7 @@ import { signSchnorr, verifySchnorr, } from "../identity/index.js";
 import { deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
 import { decodeSessionDatagramPayload, encodeSessionDatagram, LinkMessageType, } from "../protocol/link.js";
 import { decodeSessionAck, decodeSessionSetup } from "../protocol/session.js";
+import { decodeFspEstablished, FSP_FLAG_CP } from "../fsp/wire.js";
 import { decodeTreeAnnouncePayload, encodeTreeAnnounce, verifyTreeAnnounce, } from "../protocol/tree.js";
 import { decodeLookupRequest, decodeLookupResponse, encodeLookupRequestPayload, encodeLookupResponsePayload, lookupResponseProofBytes, } from "../protocol/discovery.js";
 import { BloomRouting } from "./BloomRouting.js";
@@ -234,9 +235,12 @@ export class FipsRouting {
             destAddr: remoteNodeAddr,
             payload: fspFrame,
         };
-        this.cfg.logger.debug("session datagram reply routed", nodeAddrToHex(datagram.srcAddr), nodeAddrToHex(datagram.destAddr), "phase", datagram.payload[0] & 0x0f, "bytes", datagram.payload.length, previousHop.remoteAddr.transport, previousHop.remoteAddr.addr);
+        await this.sendSessionDatagramVia(previousHop, datagram);
+    }
+    async sendSessionDatagramVia(peer, datagram) {
+        this.cfg.logger.debug("session datagram routed", nodeAddrToHex(datagram.srcAddr), nodeAddrToHex(datagram.destAddr), "phase", datagram.payload[0] & 0x0f, "bytes", datagram.payload.length, peer.remoteAddr.transport, peer.remoteAddr.addr);
         const encoded = encodeSessionDatagram(datagram);
-        await this.cfg.sendLinkMessage(previousHop, LinkMessageType.SessionDatagram, encoded.subarray(1));
+        await this.cfg.sendLinkMessage(peer, LinkMessageType.SessionDatagram, encoded.subarray(1));
     }
     learnReverseRoute(destinationNodeHex, nextHop) {
         if (this.cfg.routingMode !== "reply_learned")
@@ -281,6 +285,11 @@ export class FipsRouting {
                 const ack = decodeSessionAck(datagram.payload);
                 this.cacheCoordinates(datagram.srcAddr, ack.srcCoords);
                 this.cacheCoordinates(datagram.destAddr, ack.destCoords);
+            }
+            else if (phase === 0 && (datagram.payload[1] & FSP_FLAG_CP) !== 0) {
+                const established = decodeFspEstablished(datagram.payload);
+                this.cacheCoordinates(datagram.srcAddr, established.srcCoords ?? []);
+                this.cacheCoordinates(datagram.destAddr, established.destCoords ?? []);
             }
         }
         catch (error) {
@@ -492,10 +501,12 @@ export class FipsRouting {
         }
         if (!nextHop)
             throw new Error(`no route to ${destNodeHex}`);
-        this.cfg.logger.debug("session datagram routed", nodeAddrToHex(datagram.srcAddr), destNodeHex, "phase", datagram.payload[0] & 0x0f, "bytes", datagram.payload.length, nextHop.remoteAddr.transport, nextHop.remoteAddr.addr);
-        const encoded = encodeSessionDatagram(datagram);
-        const outer = nextHop.link.encryptOutgoing(encoded.subarray(1), LinkMessageType.SessionDatagram);
-        await nextHop.transport.send(nextHop.remoteAddr, outer);
+        const frames = typeof datagram.payload === "function"
+            ? datagram.payload(nextHop)
+            : [datagram.payload];
+        for (const payload of frames) {
+            await this.sendSessionDatagramVia(nextHop, { ...datagram, payload });
+        }
     }
     nextHopFor(destNodeHex, excludedPeer) {
         const direct = this.cfg.getPeerByNodeAddr(destNodeHex);

@@ -35,11 +35,13 @@ import {
   FSP_MSG_ENDPOINT_DATA,
   FSP_MSG_KEEPALIVE,
   FSP_FLAG_DIRECT_TRANSPORT,
+  FSP_FLAG_CP,
   FSP_FLAG_K,
   NOISE_XK_MSG1_LEN,
   NOISE_XK_MSG2_LEN,
   NOISE_XK_MSG3_LEN,
   type DataPacket,
+  type FspEstablished,
 } from "./wire.js";
 
 export type FspRole = "initiator" | "responder";
@@ -290,7 +292,12 @@ export class FspSession {
     return this.encryptMessage(FSP_MSG_ENDPOINT_DATA, payload, flags);
   }
 
-  encryptMessage(msgType: number, payload: Uint8Array, flags = 0): Uint8Array {
+  encryptMessage(
+    msgType: number,
+    payload: Uint8Array,
+    flags = 0,
+    coords?: Pick<FspEstablished, "srcCoords" | "destCoords">,
+  ): Uint8Array {
     if (this.state !== "established" || !this.tx) throw new Error("FSP not established");
     if (!Number.isInteger(msgType) || msgType < 0 || msgType > 0xff) {
       throw new Error("FSP message type must be one byte");
@@ -304,9 +311,10 @@ export class FspSession {
       payload,
     });
     validateEstablishedFlags(flags);
+    if (coords) flags |= FSP_FLAG_CP;
     const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
     const ciphertext = aeadSeal(this.tx.getKey(), counter, inner, aad);
-    return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
+    return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext, ...coords });
   }
 
   encryptKeepalive(flags = 0): Uint8Array {

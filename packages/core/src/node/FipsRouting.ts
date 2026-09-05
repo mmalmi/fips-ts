@@ -18,6 +18,7 @@ import {
   type SessionDatagram,
 } from "../protocol/link.js";
 import { decodeSessionAck, decodeSessionSetup } from "../protocol/session.js";
+import { decodeFspEstablished, FSP_FLAG_CP } from "../fsp/wire.js";
 import {
   decodeTreeAnnouncePayload,
   encodeTreeAnnounce,
@@ -54,6 +55,10 @@ interface PendingRouteResolution {
   promise: Promise<void>;
   abort: AbortController;
 }
+
+type OutboundSessionDatagram = Omit<SessionDatagram, "payload"> & {
+  payload: Uint8Array | ((nextHop: AdjacentPeer) => Uint8Array[]);
+};
 
 interface ResolvedRoute {
   transport: Transport;
@@ -343,7 +348,7 @@ export class FipsRouting {
     }
   }
 
-  async sendFspToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array): Promise<void> {
+  async sendFspToward(remoteNodeAddr: NodeAddr, fspFrame: OutboundSessionDatagram["payload"]): Promise<void> {
     await this.sendSessionDatagram({
       ttl: 64,
       pathMtu: FSP_DEFAULT_PATH_MTU,
@@ -365,23 +370,17 @@ export class FipsRouting {
       destAddr: remoteNodeAddr,
       payload: fspFrame,
     };
+    await this.sendSessionDatagramVia(previousHop, datagram);
+  }
+
+  private async sendSessionDatagramVia(peer: AdjacentPeer, datagram: SessionDatagram): Promise<void> {
     this.cfg.logger.debug(
-      "session datagram reply routed",
-      nodeAddrToHex(datagram.srcAddr),
-      nodeAddrToHex(datagram.destAddr),
-      "phase",
-      datagram.payload[0]! & 0x0f,
-      "bytes",
-      datagram.payload.length,
-      previousHop.remoteAddr.transport,
-      previousHop.remoteAddr.addr,
+      "session datagram routed", nodeAddrToHex(datagram.srcAddr), nodeAddrToHex(datagram.destAddr),
+      "phase", datagram.payload[0]! & 0x0f, "bytes", datagram.payload.length,
+      peer.remoteAddr.transport, peer.remoteAddr.addr,
     );
     const encoded = encodeSessionDatagram(datagram);
-    await this.cfg.sendLinkMessage(
-      previousHop,
-      LinkMessageType.SessionDatagram,
-      encoded.subarray(1),
-    );
+    await this.cfg.sendLinkMessage(peer, LinkMessageType.SessionDatagram, encoded.subarray(1));
   }
 
   learnReverseRoute(destinationNodeHex: string, nextHop: AdjacentPeer): void {
@@ -440,6 +439,10 @@ export class FipsRouting {
         const ack = decodeSessionAck(datagram.payload);
         this.cacheCoordinates(datagram.srcAddr, ack.srcCoords);
         this.cacheCoordinates(datagram.destAddr, ack.destCoords);
+      } else if (phase === 0 && (datagram.payload[1]! & FSP_FLAG_CP) !== 0) {
+        const established = decodeFspEstablished(datagram.payload);
+        this.cacheCoordinates(datagram.srcAddr, established.srcCoords ?? []);
+        this.cacheCoordinates(datagram.destAddr, established.destCoords ?? []);
       }
     } catch (error) {
       this.cfg.logger.warn("invalid FSP session coordinates", error);
@@ -700,7 +703,7 @@ export class FipsRouting {
   }
 
   private async sendSessionDatagram(
-    datagram: SessionDatagram,
+    datagram: OutboundSessionDatagram,
     previousHop?: AdjacentPeer,
   ): Promise<void> {
     const destNodeHex = nodeAddrToHex(datagram.destAddr);
@@ -715,24 +718,12 @@ export class FipsRouting {
     }
     if (!nextHop) throw new Error(`no route to ${destNodeHex}`);
 
-    this.cfg.logger.debug(
-      "session datagram routed",
-      nodeAddrToHex(datagram.srcAddr),
-      destNodeHex,
-      "phase",
-      datagram.payload[0]! & 0x0f,
-      "bytes",
-      datagram.payload.length,
-      nextHop.remoteAddr.transport,
-      nextHop.remoteAddr.addr,
-    );
-
-    const encoded = encodeSessionDatagram(datagram);
-    const outer = nextHop.link.encryptOutgoing(
-      encoded.subarray(1),
-      LinkMessageType.SessionDatagram,
-    );
-    await nextHop.transport.send(nextHop.remoteAddr, outer);
+    const frames = typeof datagram.payload === "function"
+      ? datagram.payload(nextHop)
+      : [datagram.payload];
+    for (const payload of frames) {
+      await this.sendSessionDatagramVia(nextHop, { ...datagram, payload });
+    }
   }
 
   private nextHopFor(
