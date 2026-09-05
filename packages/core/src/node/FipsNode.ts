@@ -30,11 +30,10 @@ import {
   FmpTransportPacketProcessor,
 } from "./FmpTransportPacketProcessor.js";
 import { FspSessionManager } from "./FspSessionManager.js";
-import type { AdjacentPeer } from "./PeerState.js";
+import { FMP_HANDSHAKE_TIMEOUT_MS, type AdjacentPeer } from "./PeerState.js";
 import { discoveryPublicKey } from "./routingHelpers.js";
 
 const defaultRandom: RandomSource = { bytes: (n) => randomBytes(n) };
-const FMP_HANDSHAKE_TIMEOUT_MS = 15_000;
 const FMP_HANDSHAKE_RESEND_MS = 1_000;
 const FMP_HEARTBEAT_INTERVAL_MS = 5_000;
 
@@ -138,6 +137,10 @@ export class FipsNode {
       sessionManager: this.sessionManager,
       emitError: (error, where) => this.emit("error", { err: error, where }),
       emitPeer: (event) => this.emit("peer", event),
+      removePeerPath: (peer) => {
+        const key = transportAddressKey(peer.remoteAddr);
+        if (this.peers.get(key) === peer) this.removePeerPath(key, peer, true);
+      },
       handlePeerRestart: (remotePubkeyHex, preserveTransport) => {
         for (const transport of this.transports) {
           if (transport === preserveTransport || !transport.handlePeerRestart) continue;
@@ -198,6 +201,7 @@ export class FipsNode {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = undefined;
     this.discoveryGeneration++;
+    this.packetProcessor.clear();
     for (const peer of this.peers.values()) {
       peer.outgoingHandshake?.reject(new Error("FIPS node stopped"));
       peer.link.close();
@@ -223,7 +227,6 @@ export class FipsNode {
     this.peersByPubkey.clear();
     this.peersByNodeAddr.clear();
     this.pendingPeerConnects.clear();
-    this.packetProcessor.clear();
   }
 
   private async consumeDiscovery(
@@ -287,12 +290,12 @@ export class FipsNode {
       throw new Error("remote pubkey must be 33-byte compressed secp256k1 key");
     }
     const key = transportAddressKey(addr);
-    if (this.peers.has(key) && this.peers.get(key)!.link.state === "established") return;
     const pendingConnect = this.pendingPeerConnects.get(key);
     if (pendingConnect) {
       await pendingConnect;
       return;
     }
+    if (this.peers.get(key)?.link.state === "established") return;
     const connectPromise = this.connectAdjacentPeer(transport, addr, remotePubkey, key);
     this.pendingPeerConnects.set(key, connectPromise);
     try {
@@ -315,6 +318,10 @@ export class FipsNode {
     this.logger.debug("fips connect transport ready", addr.transport, addr.addr);
     const concurrentlyEstablished = this.peers.get(key);
     if (concurrentlyEstablished?.link.state === "established") return;
+    if (concurrentlyEstablished) {
+      this.packetProcessor.discardPendingResponder(concurrentlyEstablished);
+      concurrentlyEstablished.link.close();
+    }
     const link = new FmpLink({
       identity: this.identity,
       remotePubkey,
@@ -330,13 +337,13 @@ export class FipsNode {
       link,
     };
     this.peers.set(key, peer);
-    this.rememberPeer(peer);
 
     const handshakeDone = new Promise<void>((resolve, reject) => {
       peer.outgoingHandshake = { resolve, reject };
     });
     let resendTimer: ReturnType<typeof setInterval> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let connected = false;
     try {
       const msg1 = link.buildMsg1((n) => this.random.bytes(n));
       const sendMsg1 = async (resend: boolean): Promise<void> => {
@@ -360,11 +367,14 @@ export class FipsNode {
         peer.outgoingHandshake?.reject(new Error("FMP handshake timeout"));
       }, FMP_HANDSHAKE_TIMEOUT_MS);
       await handshakeDone;
+      connected = true;
     } finally {
       clearTimeout(timer);
       clearInterval(resendTimer);
       peer.outgoingHandshake = undefined;
-      if (peer.link.state !== "established" && this.peers.get(key) === peer) {
+      if (!connected && this.peers.get(key) === peer) {
+        peer.link.close();
+        this.packetProcessor.discardPendingResponder(peer);
         this.removePeerPath(key, peer, false);
       }
     }
@@ -429,17 +439,21 @@ export class FipsNode {
       const key = transportAddressKey(e.remoteAddr);
       const peer = this.peers.get(key);
       if (peer) {
+        const wasConnected = peer.link.state === "established" && !peer.outgoingHandshake;
+        peer.outgoingHandshake?.reject(new Error("FMP transport disconnected"));
         peer.link.close();
-        peer.pendingResponderLink?.close();
+        this.packetProcessor.discardPendingResponder(peer);
         for (const draining of peer.drainingResponderLinks?.values() ?? []) {
           draining.link.close();
         }
         this.removePeerPath(key, peer, true);
-        this.emit("peer", {
-          remotePubkey: peer.pubkeyHex,
-          remoteAddr: peer.remoteAddr,
-          state: "disconnected",
-        });
+        if (wasConnected) {
+          this.emit("peer", {
+            remotePubkey: peer.pubkeyHex,
+            remoteAddr: peer.remoteAddr,
+            state: "disconnected",
+          });
+        }
       }
     }
   }
@@ -456,7 +470,7 @@ export class FipsNode {
     closeSessionWithoutAlternate: boolean,
   ): void {
     this.peers.delete(key);
-    const alternate = [...this.peers.values()].find((candidate) =>
+    const alternates = [...this.peers.values()].filter((candidate) =>
       candidate !== peer
       && candidate.pubkeyHex === peer.pubkeyHex
       && (
@@ -465,11 +479,12 @@ export class FipsNode {
         || candidate.pendingResponderLink !== undefined
       )
     );
+    const alternate = alternates.find((candidate) =>
+      candidate.link.state === "established" && !candidate.outgoingHandshake
+    );
     if (alternate) {
-      if (alternate.link.state === "established") {
-        this.rememberPeer(alternate);
-        this.routing.scheduleTreeAnnounce(alternate);
-      }
+      this.rememberPeer(alternate);
+      this.routing.scheduleTreeAnnounce(alternate);
       return;
     }
     if (this.peersByPubkey.get(peer.pubkeyHex) === peer) {
@@ -483,7 +498,7 @@ export class FipsNode {
       }
       this.routing.removePeer(peerNodeAddr);
     }
-    if (closeSessionWithoutAlternate) {
+    if (closeSessionWithoutAlternate && alternates.length === 0) {
       this.sessionManager.closePeerSessions(peer.pubkeyHex);
     }
   }

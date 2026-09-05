@@ -6,7 +6,10 @@
   later connection starts cleanly without retaining stale peer aliases.
 - Preserve an established carrier when a captured Msg1 is replayed on another
   address. A replacement carrier must decrypt an authenticated frame before it
-  becomes active; initiators send a heartbeat promptly to confirm the new key.
+  becomes active; initiators wait for the confirmation send to be accepted before
+  reporting a successful connection.
+- Bound pending responder keys by the existing handshake timeout and a 64-entry
+  limit. Cleanup preserves healthy alternate paths and clears unused timers.
 - Release `@fips/core` 0.0.41. Other runtime packages and wire formats are unchanged.
 
 ## Runtime packages 0.0.40 - 2026-09-05

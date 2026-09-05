@@ -2,6 +2,9 @@ import type { FmpLink } from "../fmp/link.js";
 import type { BloomFilter } from "../bloom/index.js";
 import type { Transport, TransportAddress } from "../transport/types.js";
 
+export const FMP_HANDSHAKE_TIMEOUT_MS = 15_000;
+export const MAX_PENDING_FMP_RESPONDERS = 64;
+
 export interface AdjacentPeer {
   pubkey: Uint8Array;
   pubkeyHex: string;

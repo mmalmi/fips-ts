@@ -17,14 +17,17 @@ interface FmpTransportPacketProcessorConfig {
     sessionManager: FspSessionManager;
     emitError: (error: Error, where: string) => void;
     emitPeer: (event: PeerEvent) => void;
+    removePeerPath: (peer: AdjacentPeer) => void;
     handlePeerRestart: (remotePubkeyHex: string, preserveTransport: Transport) => void;
 }
 export declare class FmpTransportPacketProcessor {
     private readonly cfg;
     private readonly reassembler;
     private readonly remoteEpochHistory;
+    private readonly pendingResponders;
     constructor(cfg: FmpTransportPacketProcessorConfig);
     clear(): void;
+    discardPendingResponder(peer: AdjacentPeer): void;
     process(transport: Transport, received: ReceivedTransportPacket): void;
     private handleMsg1;
     private reconcileAuthenticatedMsg1;
@@ -32,6 +35,7 @@ export declare class FmpTransportPacketProcessor {
     private prepareMsg1Peer;
     private rejectRetiredEpoch;
     private handleMsg2;
+    private confirmOutgoingHandshake;
     private replayPendingLookupsAfterEstablishment;
     private matchMsg2Peer;
     private retireDisplacedMsg2Peer;
