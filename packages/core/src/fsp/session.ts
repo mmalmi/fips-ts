@@ -5,9 +5,7 @@
  * payload).
  */
 
-import { chacha20poly1305 } from "@noble/ciphers/chacha";
-
-import { noiseNonce } from "../crypto/aead.js";
+import { aeadOpen, aeadSeal } from "../crypto/aead.js";
 import { ReplayWindow } from "../crypto/replay.js";
 import { bytesEqual } from "../codec/hex.js";
 import type { FipsIdentity } from "../identity/index.js";
@@ -283,18 +281,7 @@ export class FspSession {
   }
 
   encryptDatagram(data: DataPacket, flags = 0): Uint8Array {
-    if (this.state !== "established" || !this.tx) throw new Error("FSP not established");
-    const counter = this.txCounter++;
-    const inner = encodeFspInner({
-      timestamp: Math.floor(Date.now() / 1000),
-      msgType: FSP_MSG_DATA,
-      innerFlags: 0,
-      payload: encodeDataPacket(data),
-    });
-    validateEstablishedFlags(flags);
-    const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
-    const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-    return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
+    return this.encryptMessage(FSP_MSG_DATA, encodeDataPacket(data), flags);
   }
 
   encryptEndpointData(payload: Uint8Array, flags = 0): Uint8Array {
@@ -306,6 +293,7 @@ export class FspSession {
     if (!Number.isInteger(msgType) || msgType < 0 || msgType > 0xff) {
       throw new Error("FSP message type must be one byte");
     }
+    if (this.txCounter >= 0xffff_ffff_ffff_ffffn) throw new Error("FSP nonce exhausted");
     const counter = this.txCounter++;
     const inner = encodeFspInner({
       timestamp: Math.floor(Date.now() / 1000),
@@ -315,23 +303,12 @@ export class FspSession {
     });
     validateEstablishedFlags(flags);
     const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
-    const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
+    const ciphertext = aeadSeal(this.tx.getKey(), counter, inner, aad);
     return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
   }
 
   encryptKeepalive(flags = 0): Uint8Array {
-    if (this.state !== "established" || !this.tx) throw new Error("FSP not established");
-    const counter = this.txCounter++;
-    const inner = encodeFspInner({
-      timestamp: Math.floor(Date.now() / 1000),
-      msgType: FSP_MSG_KEEPALIVE,
-      innerFlags: 0,
-      payload: new Uint8Array(0),
-    });
-    validateEstablishedFlags(flags);
-    const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
-    const ciphertext = chacha20poly1305(this.tx.getKey(), noiseNonce(counter), aad).encrypt(inner);
-    return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext });
+    return this.encryptMessage(FSP_MSG_KEEPALIVE, new Uint8Array(0), flags);
   }
 
   decryptIncoming(
@@ -346,11 +323,7 @@ export class FspSession {
       { flags: est.flags, counter: est.counter },
       est.payloadLen,
     );
-    const plaintext = chacha20poly1305(
-      this.rx.getKey(),
-      noiseNonce(est.counter),
-      aad,
-    ).decrypt(est.ciphertext);
+    const plaintext = aeadOpen(this.rx.getKey(), est.counter, est.ciphertext, aad);
     this.replay.accept(est.counter);
     const inner = decodeFspInner(plaintext);
     if (inner.msgType === FSP_MSG_DATA) {

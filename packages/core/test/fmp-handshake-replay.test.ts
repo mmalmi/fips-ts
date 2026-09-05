@@ -109,6 +109,20 @@ describe("FipsNode exact FMP handshake replay", () => {
     expect(() => initiator.handleMsg2(changedMsg2)).toThrow(
       "unexpected FMP Msg2 after establishment",
     );
+
+    const payload = new Uint8Array([1, 2, 3]);
+    const packet = initiator.encryptOutgoing(payload);
+    const forged = packet.slice();
+    new DataView(forged.buffer).setBigUint64(8, 0xffff_ffff_ffff_fffen, true);
+    expect(() => responder.decryptIncoming(forged)).toThrow();
+    expect(responder.decryptIncoming(packet).payload).toEqual(payload);
+    expect(() => responder.decryptIncoming(packet)).toThrow(/replay/);
+
+    // Reach the u64 boundary without sending 2^64 packets.
+    Reflect.set(initiator, "txCounter", 0xffff_ffff_ffff_fffen);
+    expect(responder.decryptIncoming(initiator.encryptOutgoing(payload)).payload).toEqual(payload);
+    expect(() => initiator.encryptOutgoing(payload)).toThrow(/nonce exhausted/);
+    expect(() => initiator.encryptOutgoing(payload)).toThrow(/nonce exhausted/);
   });
 
   it("reuses Msg2 after a Msg1 resend and keeps one usable authenticated peer", async () => {

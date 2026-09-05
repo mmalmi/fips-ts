@@ -102,11 +102,24 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
       dstPort: 9000,
       payload: new TextEncoder().encode("once"),
     });
+    const forged = frame.slice();
+    new DataView(forged.buffer).setBigUint64(4, 0xffff_ffff_ffff_fffen, true);
+    expect(() => resp.decryptIncoming(forged)).toThrow();
+    // Failed authentication must not move the receive window past this packet.
     const { data } = resp.decryptIncoming(frame);
     expect(new TextDecoder().decode(data!.payload)).toBe("once");
 
     // Replay: same encrypted FSP frame must be rejected by the ReplayWindow.
     expect(() => resp.decryptIncoming(frame)).toThrow(/replay|duplicate/i);
+
+    expect(resp.decryptIncoming(init.encryptKeepalive()).payload).toEqual(new Uint8Array());
+    // Reach the u64 boundary without sending 2^64 packets.
+    Reflect.set(init, "txCounter", 0xffff_ffff_ffff_fffen);
+    expect(resp.decryptIncoming(init.encryptKeepalive()).payload).toEqual(new Uint8Array());
+    expect(() => init.encryptKeepalive()).toThrow(/nonce exhausted/);
+    expect(() => init.encryptEndpointData(new Uint8Array())).toThrow(/nonce exhausted/);
+    expect(() => init.encryptDatagram({ srcPort: 1, dstPort: 2, payload: new Uint8Array() }))
+      .toThrow(/nonce exhausted/);
   });
 
   it("FspSession endpoint data carries opaque payloads without service ports", async () => {

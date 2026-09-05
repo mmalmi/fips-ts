@@ -10,8 +10,6 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -25,12 +23,9 @@ import {
   fromHex,
   toHex,
 } from "../../src/index.js";
+import { bridgeAvailable, BRIDGE_BIN as BRIDGE } from "./bridge.js";
 
-const BRIDGE = resolve(
-  __dirname,
-  "../../../../interop/rust-bridge/target/release/fips-rust-bridge",
-);
-const itIf = existsSync(BRIDGE) ? it : it.skip;
+const itIf = bridgeAvailable() ? it : it.skip;
 
 function rustFilterAnnounce(sequence: bigint, keys: string[]): Uint8Array {
   const out = execFileSync(

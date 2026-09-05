@@ -12,6 +12,7 @@
  *   - enforce replay window on the receive side
  */
 
+import { aeadOpen, aeadSeal } from "../crypto/aead.js";
 import { ReplayWindow } from "../crypto/replay.js";
 import { bytesEqual } from "../codec/hex.js";
 import type { FipsIdentity } from "../identity/index.js";
@@ -199,6 +200,7 @@ export class FmpLink {
     if (this.state !== "established" || !this.tx || this.remoteSessionIdx === undefined) {
       throw new Error("FMP link not established");
     }
+    if (this.txCounter >= 0xffff_ffff_ffff_ffffn) throw new Error("FMP nonce exhausted");
     const counter = this.txCounter++;
     const inner = encodeFmpInner({
       timestamp: Math.floor(Date.now() / 1000),
@@ -213,7 +215,7 @@ export class FmpLink {
     // the explicit u64 counter from the frame header. We bypass CipherState's
     // internal counter and use the AEAD primitive with the frame counter so
     // both endpoints derive the same 12-byte nonce.
-    const ciphertext = aeadWithCounter(this.tx, counter, aad, inner);
+    const ciphertext = aeadSeal(this.tx.getKey(), counter, inner, aad);
     return encodeFmpEstablished({
       flags: 0,
       receiverIdx: this.remoteSessionIdx,
@@ -242,7 +244,7 @@ export class FmpLink {
       { flags: est.flags, receiverIdx: est.receiverIdx, counter: est.counter },
       est.payloadLen,
     );
-    const plaintext = openWithCounter(this.rx, est.counter, aad, est.ciphertext);
+    const plaintext = aeadOpen(this.rx.getKey(), est.counter, est.ciphertext, aad);
     this.rxReplay.accept(est.counter);
     const inner = decodeFmpInner(plaintext);
     return { msgType: inner.msgType, payload: inner.payload };
@@ -257,28 +259,4 @@ export { FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2 };
 
 export function isEqualPubkey(a: Uint8Array, b: Uint8Array): boolean {
   return bytesEqual(a, b);
-}
-
-// --- AEAD helpers that use an explicit u64 counter for the FIPS Established
-// header counter, bypassing CipherState's internal monotonic counter ---
-
-import { chacha20poly1305 } from "@noble/ciphers/chacha";
-import { noiseNonce } from "../crypto/aead.js";
-
-function aeadWithCounter(
-  cs: CipherState,
-  counter: bigint,
-  aad: Uint8Array,
-  pt: Uint8Array,
-): Uint8Array {
-  return chacha20poly1305(cs.getKey(), noiseNonce(counter), aad).encrypt(pt);
-}
-
-function openWithCounter(
-  cs: CipherState,
-  counter: bigint,
-  aad: Uint8Array,
-  ct: Uint8Array,
-): Uint8Array {
-  return chacha20poly1305(cs.getKey(), noiseNonce(counter), aad).decrypt(ct);
 }

@@ -16,7 +16,9 @@ const BRIDGE_DIR = resolve(REPO_ROOT, "interop/rust-bridge");
 const BRIDGE_TARGET_DIR = process.env.CARGO_TARGET_DIR
   ? resolve(REPO_ROOT, process.env.CARGO_TARGET_DIR)
   : resolve(BRIDGE_DIR, "target");
-const BRIDGE_BIN = resolve(
+export const BRIDGE_BIN = process.env.FIPS_RUST_BRIDGE_BIN
+  ? resolve(REPO_ROOT, process.env.FIPS_RUST_BRIDGE_BIN)
+  : resolve(
   BRIDGE_TARGET_DIR,
   "release",
   `fips-rust-bridge${process.platform === "win32" ? ".exe" : ""}`,
@@ -131,7 +133,9 @@ export function spawnBridge(
         resolve(proc.exitCode ?? -1);
         return;
       }
-      proc.on("close", (code) => {
+      const timer = setTimeout(() => proc.kill(), 2000);
+      proc.once("close", (code) => {
+        clearTimeout(timer);
         resolve(code ?? -1);
       });
       try {
@@ -139,9 +143,6 @@ export function spawnBridge(
       } catch {
         /* ignore */
       }
-      setTimeout(() => {
-        if (!closed) proc.kill();
-      }, 2000);
     });
   }
 

@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 import { BinaryReader, BinaryWriter, fromHex, toHex } from "../src/index.js";
 
 describe("BinaryWriter / BinaryReader (little-endian)", () => {
+  it("hex decoding rejects incomplete bytes and partially valid pairs", () => {
+    for (const malformed of ["0", "gg", "1g", "g1", " 1", "1 ", "+1", "-1", "0x"]) {
+      expect(() => fromHex(malformed), malformed).toThrow();
+    }
+    expect(toHex(fromHex("00aAfF"))).toBe("00aaff");
+    expect(fromHex("")).toEqual(new Uint8Array());
+  });
+
   it("u8 round-trip", () => {
     const w = new BinaryWriter();
     w.u8(0x12);

@@ -19,6 +19,10 @@ Two pieces:
 cargo build --release --manifest-path interop/rust-bridge/Cargo.toml
 ```
 
+To reuse a debug build or another checkout's build, set `FIPS_RUST_BRIDGE_BIN`
+to the bridge executable path when running the tests. All interop cases share
+this setting and also honor `CARGO_TARGET_DIR` for the default release build.
+
 ## Run the interop tests
 
 ```sh

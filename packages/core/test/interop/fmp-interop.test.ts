@@ -63,11 +63,4 @@ describe("FMP interop: TS initiator ↔ Rust responder", () => {
       await bridge.close();
     }
   });
-
-  if (!bridgeAvailable()) {
-    it.skip("(skipped — fips-rust-bridge binary not built)", () => {});
-    console.warn(
-      "[fmp-interop] skipping; build with: cargo build --release --manifest-path interop/rust-bridge/Cargo.toml",
-    );
-  }
 });

@@ -6,29 +6,14 @@
 export class ReplayWindow {
   static readonly WINDOW = 2048n;
   private high = -1n;
-  private readonly seen = new Set<bigint>();
+  // Counters inside a window occupy distinct slots. Keeping the full counter
+  // distinguishes stale slots after wraparound without pruning on every packet.
+  private readonly seen = new Array<bigint | undefined>(Number(ReplayWindow.WINDOW));
 
   accept(counter: bigint): boolean {
-    if (counter < 0n) return false;
-    if (this.high < 0n) {
-      this.high = counter;
-      this.seen.add(counter);
-      return true;
-    }
-    if (counter > this.high) {
-      // advance window; drop entries below new low
-      const newLow = counter > ReplayWindow.WINDOW - 1n ? counter - (ReplayWindow.WINDOW - 1n) : 0n;
-      for (const c of this.seen) {
-        if (c < newLow) this.seen.delete(c);
-      }
-      this.high = counter;
-      this.seen.add(counter);
-      return true;
-    }
-    const low = this.high > ReplayWindow.WINDOW - 1n ? this.high - (ReplayWindow.WINDOW - 1n) : 0n;
-    if (counter < low) return false;
-    if (this.seen.has(counter)) return false;
-    this.seen.add(counter);
+    if (!this.check(counter)) return false;
+    if (counter > this.high) this.high = counter;
+    this.seen[Number(counter % ReplayWindow.WINDOW)] = counter;
     return true;
   }
 
@@ -37,13 +22,10 @@ export class ReplayWindow {
    * Mirrors Rust ReplayWindow::check.
    */
   check(counter: bigint): boolean {
-    if (counter < 0n) return false;
-    if (this.high < 0n) return true;
-    if (counter > this.high) return true;
-    const low =
-      this.high > ReplayWindow.WINDOW - 1n ? this.high - (ReplayWindow.WINDOW - 1n) : 0n;
-    if (counter < low) return false;
-    return !this.seen.has(counter);
+    // Rust reserves u64::MAX for nonce exhaustion.
+    return counter >= 0n && counter < 0xffff_ffff_ffff_ffffn
+      && this.high - counter < ReplayWindow.WINDOW
+      && this.seen[Number(counter % ReplayWindow.WINDOW)] !== counter;
   }
 
   /** Highest counter ever accepted, or 0 if none (Rust returns 0 too). */
@@ -54,6 +36,6 @@ export class ReplayWindow {
   /** Forget all state. */
   reset(): void {
     this.high = -1n;
-    this.seen.clear();
+    this.seen.fill(undefined);
   }
 }

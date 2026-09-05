@@ -3,33 +3,6 @@ import { describe, expect, it } from "vitest";
 import { ReplayWindow } from "../src/index.js";
 
 describe("ReplayWindow", () => {
-  it("accepts strictly-increasing counters", () => {
-    const w = new ReplayWindow();
-    expect(w.accept(0n)).toBe(true);
-    expect(w.accept(1n)).toBe(true);
-    expect(w.accept(2n)).toBe(true);
-    expect(w.accept(100n)).toBe(true);
-  });
-
-  it("rejects duplicates within window", () => {
-    const w = new ReplayWindow();
-    expect(w.accept(5n)).toBe(true);
-    expect(w.accept(5n)).toBe(false);
-  });
-
-  it("rejects counters far below window", () => {
-    const w = new ReplayWindow();
-    expect(w.accept(5000n)).toBe(true);
-    expect(w.accept(0n)).toBe(false);
-  });
-
-  it("accepts out-of-order but still inside window", () => {
-    const w = new ReplayWindow();
-    expect(w.accept(100n)).toBe(true);
-    expect(w.accept(95n)).toBe(true);
-    expect(w.accept(95n)).toBe(false);
-  });
-
   // Ported from Rust ~/src/fips/crates/fips-core/src/noise/tests.rs.
   const WINDOW = ReplayWindow.WINDOW;
 
@@ -59,16 +32,39 @@ describe("ReplayWindow", () => {
     expect(w.check(1n)).toBe(true);
   });
 
-  it("test_replay_window_sequential", () => {
+  it("matches a reference model across ring wrap, reordering and full-width jumps", () => {
     const w = new ReplayWindow();
-    for (let i = 0; i < 1000; i++) {
-      expect(w.check(BigInt(i))).toBe(true);
-      expect(w.accept(BigInt(i))).toBe(true);
+    const seen = new Set<bigint>();
+    let highest = 0n;
+    const verify = (counter: bigint) => {
+      const expected = counter >= 0n && counter < 0xffff_ffff_ffff_ffffn
+        && highest - counter < WINDOW && !seen.has(counter);
+      if (w.check(counter) !== expected || w.check(counter) !== expected
+        || w.accept(counter) !== expected) {
+        throw new Error(`replay mismatch at ${counter}, highest ${highest}`);
+      }
+      if (expected) {
+        seen.add(counter);
+        if (counter > highest) highest = counter;
+      }
+    };
+    for (const start of [0n, 1n << 32n, 1n << 53n, 0xffff_ffff_ffff_ffffn - WINDOW * 3n]) {
+      for (let offset = 0n; offset < WINDOW * 2n; offset += 1n) {
+        verify(start + offset);
+        verify(start + offset - WINDOW);
+        verify(start + offset - 1n);
+      }
+      // Out-of-order packets on both sides of the retained-window boundary.
+      verify(start + WINDOW * 3n);
+      verify(start + WINDOW * 2n + 1n);
+      verify(start + WINDOW * 2n);
     }
-    for (let i = 0; i < 1000; i++) {
-      expect(w.check(BigInt(i))).toBe(false);
-    }
-    expect(w.highest).toBe(999n);
+    verify(-1n);
+    verify(0xffff_ffff_ffff_fffen);
+    verify(0xffff_ffff_ffff_fffen);
+    verify(0xffff_ffff_ffff_ffffn);
+    verify(1n << 64n);
+    expect(w.highest).toBe(highest);
   });
 
   it("test_replay_window_reset", () => {
@@ -79,5 +75,6 @@ describe("ReplayWindow", () => {
     w.reset();
     expect(w.highest).toBe(0n);
     expect(w.check(100n)).toBe(true);
+    expect(w.accept(100n)).toBe(true);
   });
 });

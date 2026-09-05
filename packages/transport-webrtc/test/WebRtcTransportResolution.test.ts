@@ -385,6 +385,7 @@ describe("WebRtcTransport NodeAddr resolution", () => {
   });
 
   it("rotates to another cached advert when an auto-connected candidate fails", async () => {
+    vi.useFakeTimers();
     const local = await identityFromSecretKey(new Uint8Array(32).fill(0x73));
     const stale = await identityFromSecretKey(new Uint8Array(32).fill(0x74));
     const live = await identityFromSecretKey(new Uint8Array(32).fill(0x75));
@@ -402,6 +403,7 @@ describe("WebRtcTransport NodeAddr resolution", () => {
       const discovered = transport.discover()[Symbol.asyncIterator]();
       relay.emit(advertEvent(stale));
       relay.emit(advertEvent(live));
+      await vi.advanceTimersByTimeAsync(750);
       const first = await discovered.next();
       expect(first.value?.remoteAddr.addr).toBe(toHex(stale.publicKey));
 
@@ -453,6 +455,7 @@ describe("WebRtcTransport NodeAddr resolution", () => {
   });
 
   it("settles the initial relay backlog before choosing the freshest advert", async () => {
+    vi.useFakeTimers();
     const local = await identityFromSecretKey(new Uint8Array(32).fill(0x76));
     const shorter = await identityFromSecretKey(new Uint8Array(32).fill(0x77));
     const fresher = await identityFromSecretKey(new Uint8Array(32).fill(0x78));
@@ -470,6 +473,7 @@ describe("WebRtcTransport NodeAddr resolution", () => {
       const discovered = transport.discover()[Symbol.asyncIterator]();
       relay.emit(advertEvent(shorter, 60));
       relay.emit(advertEvent(fresher, 120));
+      await vi.advanceTimersByTimeAsync(750);
       expect((await discovered.next()).value?.remoteAddr.addr).toBe(toHex(fresher.publicKey));
     } finally {
       await transport.stop();

@@ -121,14 +121,4 @@ describe("Noise interop: TS initiator ↔ Rust responder (live handshake)", () =
       await bridge.close();
     }
   });
-
-  if (!bridgeAvailable()) {
-    it.skip("(skipped — fips-rust-bridge binary not built)", () => {});
-    console.warn(
-      "[noise-interop] skipping; build with: cargo build --release --manifest-path interop/rust-bridge/Cargo.toml",
-    );
-  }
-
-  // Help TS compiler — keep toHex imported for callers using the same module.
-  void toHex;
 });

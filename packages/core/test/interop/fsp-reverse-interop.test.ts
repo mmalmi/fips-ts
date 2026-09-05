@@ -87,8 +87,4 @@ describe("FSP interop: Rust initiator -> TS responder", () => {
       await bridge.close();
     }
   });
-
-  if (!bridgeAvailable()) {
-    it.skip("(skipped - fips-rust-bridge binary not built)", () => {});
-  }
 });

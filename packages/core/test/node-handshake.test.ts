@@ -156,6 +156,7 @@ describe("FipsNode FMP handshake", () => {
   }, 10_000);
 
   it("resends Msg1 so a dropped first WebRTC-style packet does not stall connect", async () => {
+    vi.useFakeTimers();
     const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xa1));
     const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0xb2));
     const initiatorTransport = new FlakyMemoryTransport();
@@ -173,15 +174,18 @@ describe("FipsNode FMP handshake", () => {
     await responder.start();
     await initiator.start();
     try {
-      await initiator.connect({
+      const connecting = initiator.connect({
         transport: "memory",
         addr: toHex(responderIdentity.publicKey),
       });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await connecting;
       expect(initiatorTransport.droppedMsg1).toBe(1);
       expect(initiatorTransport.sentMsg1).toBeGreaterThanOrEqual(2);
     } finally {
       await initiator.stop();
       await responder.stop();
+      vi.useRealTimers();
     }
   });
 
