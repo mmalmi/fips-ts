@@ -15,6 +15,27 @@ afterEach(() => {
 });
 
 describe("FspSessionManager", () => {
+  it("rejects malformed destination keys before route lookup", async () => {
+    const identity = await identityFromSecretKey(new Uint8Array(32).fill(0x21));
+    const ensureFirstContactRoute = vi.fn(async () => { throw new Error("unexpected route lookup"); });
+    const manager = new FspSessionManager({
+      identity,
+      random: { bytes: (length) => new Uint8Array(length) },
+      localEpoch: new Uint8Array(8),
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      routing: { coordinatesFor: () => undefined, ensureFirstContactRoute } as never,
+      getPeerByNodeAddr: () => undefined,
+      emitDatagram: () => {},
+      emitEndpointData: () => {},
+      handleLinkNegotiation: async () => {},
+      emitSession: () => {},
+    });
+    const args = { dst: `02${"1g".repeat(32)}`, payload: new Uint8Array() };
+    await expect(manager.sendDatagram({ ...args, dstPort: 4_242 })).rejects.toThrow(/hex/i);
+    await expect(manager.sendEndpointData(args)).rejects.toThrow(/hex/i);
+    expect(ensureFirstContactRoute).not.toHaveBeenCalled();
+  });
+
   it("delivers a direct record that arrives before the routed final handshake", async () => {
     const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
     const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x72));
