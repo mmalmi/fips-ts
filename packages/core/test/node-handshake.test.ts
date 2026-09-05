@@ -87,6 +87,32 @@ class FlakyMemoryTransport implements Transport {
 }
 
 describe("FipsNode FMP handshake", () => {
+  it("cleans a rejected first Msg1 send before retrying the same peer", async () => {
+    const identityA = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
+    const identityB = await identityFromSecretKey(new Uint8Array(32).fill(0x32));
+    const nodeA = new FipsNode({ identity: identityA, transports: [new FlakyMemoryTransport()] });
+    const nodeB = new FipsNode({ identity: identityB, transports: [new FlakyMemoryTransport()] });
+    const addressB = { transport: "memory", addr: toHex(identityB.publicKey) };
+    await nodeA.start();
+    try {
+      await expect(nodeA.connect(addressB)).rejects.toThrow("memory peer not found");
+      const afterFailure = {
+        paths: (nodeA as any).peers.size,
+        publicKeys: (nodeA as any).peersByPubkey.size,
+        nodeAddresses: (nodeA as any).peersByNodeAddr.size,
+        connects: (nodeA as any).pendingPeerConnects.size,
+      };
+      await nodeB.start();
+      await nodeA.connect(addressB);
+      expect(afterFailure).toEqual({ paths: 0, publicKeys: 0, nodeAddresses: 0, connects: 0 });
+      expect([...(nodeA as any).peers.values()].map((peer: any) => peer.link.state))
+        .toEqual(["established"]);
+    } finally {
+      await nodeA.stop();
+      await nodeB.stop();
+    }
+  });
+
   it("forgets disconnected peers' tree state before reconnect", async () => {
     const identityA = await identityFromSecretKey(new Uint8Array(32).fill(0x11));
     const identityB = await identityFromSecretKey(new Uint8Array(32).fill(0x22));

@@ -293,24 +293,26 @@ export class FipsNode {
         const handshakeDone = new Promise((resolve, reject) => {
             peer.outgoingHandshake = { resolve, reject };
         });
-        const msg1 = link.buildMsg1((n) => this.random.bytes(n));
-        const sendMsg1 = async (resend) => {
-            await transport.send(addr, msg1.packet);
-            this.logger.debug(resend ? "fips msg1 resent" : "fips msg1 sent", addr.transport, addr.addr, msg1.packet.length);
-        };
-        await sendMsg1(false);
-        const resendTimer = setInterval(() => {
-            if (!peer.outgoingHandshake)
-                return;
-            void sendMsg1(true).catch((err) => {
-                this.emit("error", { err: err, where: "resend Msg1" });
-            });
-        }, FMP_HANDSHAKE_RESEND_MS);
-        const timer = setTimeout(() => {
-            this.logger.warn("fips handshake timeout", addr.transport, addr.addr);
-            peer.outgoingHandshake?.reject(new Error("FMP handshake timeout"));
-        }, FMP_HANDSHAKE_TIMEOUT_MS);
+        let resendTimer;
+        let timer;
         try {
+            const msg1 = link.buildMsg1((n) => this.random.bytes(n));
+            const sendMsg1 = async (resend) => {
+                await transport.send(addr, msg1.packet);
+                this.logger.debug(resend ? "fips msg1 resent" : "fips msg1 sent", addr.transport, addr.addr, msg1.packet.length);
+            };
+            await sendMsg1(false);
+            resendTimer = setInterval(() => {
+                if (!peer.outgoingHandshake)
+                    return;
+                void sendMsg1(true).catch((err) => {
+                    this.emit("error", { err: err, where: "resend Msg1" });
+                });
+            }, FMP_HANDSHAKE_RESEND_MS);
+            timer = setTimeout(() => {
+                this.logger.warn("fips handshake timeout", addr.transport, addr.addr);
+                peer.outgoingHandshake?.reject(new Error("FMP handshake timeout"));
+            }, FMP_HANDSHAKE_TIMEOUT_MS);
             await handshakeDone;
         }
         finally {
