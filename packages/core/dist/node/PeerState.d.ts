@@ -3,6 +3,8 @@ import type { BloomFilter } from "../bloom/index.js";
 import type { Transport, TransportAddress } from "../transport/types.js";
 export declare const FMP_HANDSHAKE_TIMEOUT_MS = 15000;
 export declare const MAX_PENDING_FMP_RESPONDERS = 64;
+/** FIPS identity uses all x-only bytes; Noise retains the actual key parity. */
+export declare function sameCompressedIdentity(a: Uint8Array, b: Uint8Array): boolean;
 export interface AdjacentPeer {
     pubkey: Uint8Array;
     pubkeyHex: string;

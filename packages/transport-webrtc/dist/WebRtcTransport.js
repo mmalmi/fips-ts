@@ -6,6 +6,7 @@ import { WebRtcConnection } from "./WebRtcConnection.js";
 import { WebRtcAdvertCache } from "./WebRtcAdvertCache.js";
 import { AsyncEventStream, cloneDiscoveredPeer, emptyAsyncIterable, hasPendingInboundForPeer, incomingOfferReplacesPendingDial, randomId, waitForIceGatheringComplete, } from "./WebRtcTransportSupport.js";
 import { validateWebRtcSignal, } from "./WebRtcSignal.js";
+import { DEFAULT_STUN_SERVERS, DEFAULT_ICE_GATHER_TIMEOUT_MS, } from "./WebRtcTransportConfig.js";
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
 const AUTO_RECONNECT_DELAY_MS = 500;
 const PREFERRED_AUTO_CONNECT_FAILURE_COOLDOWN_MS = 1_000;
@@ -55,10 +56,11 @@ export class WebRtcTransport {
             maxAutoConnections: Math.min(maxConnections, Math.max(0, config.maxAutoConnections ?? maxConnections)),
             connectTimeoutMs: 30_000,
             relayConnectTimeoutMs: 5_000,
-            iceGatherTimeoutMs: 10_000,
             dataChannelLabel: "fips",
             ordered: true,
             ...config,
+            stunServers: [...(config.stunServers ?? DEFAULT_STUN_SERVERS)],
+            iceGatherTimeoutMs: config.iceGatherTimeoutMs ?? DEFAULT_ICE_GATHER_TIMEOUT_MS,
         };
         this.autoConnectPolicy = new WebRtcAutoConnectPolicy(config.preferredAutoConnectPeers ?? []);
         this.advertCache = new WebRtcAdvertCache(this.cfg.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS, (remoteAddr) => this.autoConnectAttempts.delete(remoteAddr));
@@ -259,7 +261,7 @@ export class WebRtcTransport {
             endpoints: [
                 { transport: "webrtc", addr: toHex(this.ctx.localIdentity.publicKey) },
             ],
-            stunServers: this.cfg.stunServers ?? [],
+            stunServers: this.cfg.stunServers,
         });
     }
     async resolve(nodeAddr, signal) {
@@ -341,7 +343,7 @@ export class WebRtcTransport {
         this.knownSessionIds.add(sessionId);
         this.logger.debug("webrtc connect start", remotePubkeyHex, sessionId);
         const pc = new this.RTCPC({
-            iceServers: (this.cfg.stunServers ?? []).map((u) => ({ urls: u })),
+            iceServers: this.cfg.stunServers.map((u) => ({ urls: u })),
         });
         const dataChannelOptions = {
             ordered: this.cfg.ordered,
@@ -423,9 +425,7 @@ export class WebRtcTransport {
             dial.reject(new Error("WebRTC path closed"));
         }
         const provenPeer = this.peersWithTraffic.delete(addr.addr);
-        const conn = this.conns.get(addr.addr);
-        conn?.close();
-        this.conns.delete(addr.addr);
+        this.retireExistingConnection(addr.addr);
         if (provenPeer || this.autoReconnectTimers.has(addr.addr)) {
             this.scheduleAutoReconnect(addr.addr);
             return;
@@ -436,11 +436,20 @@ export class WebRtcTransport {
         return this.close({ transport: this.type, addr: remotePubkeyHex });
     }
     async startInitiatorHandshake(dial, addr) {
+        const ownsDial = () => this.pendingDials.get(dial.sessionId) === dial;
         dial.phase = "creating-offer";
         const offer = await dial.pc.createOffer();
+        if (!ownsDial())
+            return;
         dial.phase = "gathering-ice";
         await dial.pc.setLocalDescription(offer);
+        if (!ownsDial())
+            return;
         await waitForIceGatheringComplete(dial.pc, this.cfg.iceGatherTimeoutMs);
+        // An incoming offer can win while any of these operations is pending.
+        // Never send the canceled offer or attach callbacks to its closed PC.
+        if (!ownsDial())
+            return;
         const signal = {
             version: 1,
             negotiationId: dial.sessionId,
@@ -452,16 +461,22 @@ export class WebRtcTransport {
         };
         dial.phase = "sending-offer";
         await this.sendWebRtcSignal(dial.remotePubkeyHex, signal);
+        if (!ownsDial())
+            return;
         dial.phase = "awaiting-answer";
         this.logger.debug("webrtc offer sent", dial.remotePubkeyHex, dial.sessionId);
         // Wire connection state to dialer promise once data channel opens.
         let conn = null;
+        const ownsConnection = () => ownsDial()
+            || (conn !== null && this.conns.get(dial.remotePubkeyHex) === conn);
         conn = new WebRtcConnection({
             remotePubkeyHex: dial.remotePubkeyHex,
             remoteAddr: addr,
             pc: dial.pc,
             dataChannel: dial.dataChannel,
             onPacket: (data) => {
+                if (!ownsConnection())
+                    return;
                 this.peersWithTraffic.add(dial.remotePubkeyHex);
                 this.ctx?.onPacket({
                     transportType: "webrtc",
@@ -471,6 +486,8 @@ export class WebRtcTransport {
                 });
             },
             onState: (state) => {
+                if (!ownsConnection())
+                    return;
                 if (conn && this.supersededConnections.has(conn))
                     return;
                 this.ctx?.onConnectionState?.({ remoteAddr: addr, state });
@@ -570,7 +587,7 @@ export class WebRtcTransport {
         }
         const remoteAddr = { transport: "webrtc", addr: remotePubkeyHex };
         const pc = new this.RTCPC({
-            iceServers: (this.cfg.stunServers ?? []).map((u) => ({ urls: u })),
+            iceServers: this.cfg.stunServers.map((u) => ({ urls: u })),
         });
         const timer = setTimeout(() => {
             this.pendingInbound.delete(offer.negotiationId);
@@ -670,7 +687,7 @@ export class WebRtcTransport {
             state: "disconnected",
         });
         existing.close();
-        this.logger.debug("webrtc stale connection retired", remotePubkeyHex);
+        this.logger.debug("webrtc connection retired", remotePubkeyHex);
     }
     handleAutoConnectFailure(remotePubkeyHex) {
         if (!this.cfg.autoConnect || this.stopping)

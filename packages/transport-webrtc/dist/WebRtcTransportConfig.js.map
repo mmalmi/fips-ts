@@ -1,1 +1,1 @@
-{"version":3,"file":"WebRtcTransportConfig.js","sourceRoot":"","sources":["../src/WebRtcTransportConfig.ts"],"names":[],"mappings":""}
+{"version":3,"file":"WebRtcTransportConfig.js","sourceRoot":"","sources":["../src/WebRtcTransportConfig.ts"],"names":[],"mappings":"AAIA,MAAM,CAAC,MAAM,oBAAoB,GAAsB,MAAM,CAAC,MAAM,CAAC;IACnE,8BAA8B;IAC9B,+BAA+B;CAChC,CAAC,CAAC;AACH,MAAM,CAAC,MAAM,6BAA6B,GAAG,KAAK,CAAC"}

@@ -4,7 +4,7 @@ import { type NodeAddr } from "../nodeaddr/index.js";
 import type { Logger } from "../transport/types.js";
 import type { DatagramEvent, EndpointDataEvent, FipsServiceHandler, RandomSource, SessionEvent } from "./types.js";
 import type { FipsRouting } from "./FipsRouting.js";
-import type { AdjacentPeer } from "./PeerState.js";
+import { type AdjacentPeer } from "./PeerState.js";
 interface FspSessionManagerConfig {
     identity: FipsIdentity;
     random: RandomSource;

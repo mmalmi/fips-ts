@@ -5,7 +5,7 @@ import { isDirectFspEstablished } from "../fsp/wire.js";
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
 import { decodeFmpEstablished, decodeFmpMsg2, FMP_INNER_KEEPALIVE, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
 import { transportAddressKey, } from "../transport/types.js";
-import { pruneDrainingResponderLinks } from "./PeerState.js";
+import { pruneDrainingResponderLinks, sameCompressedIdentity } from "./PeerState.js";
 import { PendingFmpResponders } from "./PendingFmpResponders.js";
 const FMP_REPLACED_LINK_DRAIN_MS = 10_000;
 const FMP_REMOTE_EPOCH_HISTORY_LIMIT = 8;
@@ -147,7 +147,7 @@ export class FmpTransportPacketProcessor {
         const { result, handshakeLink, peerEpochBeforeMsg1, transport, remoteAddr, key, replacedHandshake, } = context;
         const remotePubkeyHex = toHex(result.remotePubkey);
         const identityChanged = peer.pubkey.length > 0
-            && !bytesEqual(peer.pubkey, result.remotePubkey);
+            && !sameCompressedIdentity(peer.pubkey, result.remotePubkey);
         let identityRebound = false;
         if (identityChanged) {
             if (!transport.identityMayChangeAtAddress) {

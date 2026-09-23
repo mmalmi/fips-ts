@@ -1,4 +1,5 @@
 export { WebRtcTransport, } from "./WebRtcTransport.js";
+export { DEFAULT_STUN_SERVERS, DEFAULT_ICE_GATHER_TIMEOUT_MS, } from "./WebRtcTransportConfig.js";
 export { WebRtcConnection } from "./WebRtcConnection.js";
 export { NostrPeerDiscovery, FIPS_ADVERT_KIND, FIPS_ADVERT_D_TAG, FIPS_DEFAULT_DISCOVERY_APP, FIPS_PROTOCOL_VERSION, DEFAULT_FIPS_ADVERT_TTL_MS, } from "./NostrPeerDiscovery.js";
 export { NostrRelayClient, } from "./NostrRelayClient.js";

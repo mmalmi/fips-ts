@@ -5,6 +5,7 @@ import { FspSession } from "../fsp/session.js";
 import { FspReceiverReports } from "../fsp/receiverReports.js";
 import { decodeFspEstablished, encodeDataPacket, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_RECEIVER_REPORT, FSP_MSG_COORDS_WARMUP, FSP_PHASE_ESTABLISHED, peekFspPhase, } from "../fsp/wire.js";
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
+import { sameCompressedIdentity } from "./PeerState.js";
 const FSP_REKEY_DRAIN_MS = 45_000;
 const FSP_DEFAULT_PATH_MTU = 1_200;
 const MAX_EARLY_ESTABLISHED_RECORDS = 16;
@@ -337,7 +338,14 @@ export class FspSessionManager {
                 }
                 throw new Error("FSP msg3 authenticated key does not match claimed source NodeAddr");
             }
-            if (session.remotePubkey && !bytesEqual(session.remotePubkey, handshakeFsp.remotePubkey)) {
+            if (session.remotePubkey && !sameCompressedIdentity(session.remotePubkey, handshakeFsp.remotePubkey)) {
+                handshakeFsp.close();
+                if (session.pendingResponderFsp === handshakeFsp) {
+                    session.pendingResponderFsp = undefined;
+                }
+                else {
+                    this.sessions.delete(srcNodeHex);
+                }
                 throw new Error("FSP rekey changed the authenticated remote identity");
             }
             session.remotePubkey = handshakeFsp.remotePubkey;
@@ -416,6 +424,15 @@ export class FspSessionManager {
             && !this.cfg.routing.coordinatesFor(remoteNodeHex)) {
             await this.cfg.routing.ensureFirstContactRoute(remoteNodeAddr, remoteNodeHex, remotePubkey);
         }
+        // Route resolution yields to incoming handshakes and other senders. Reuse
+        // any session they created instead of replacing its authenticated state.
+        session = this.sessions.get(remoteNodeHex);
+        if (session?.fsp.state === "established")
+            return session;
+        if (session?.fsp.state === "handshaking") {
+            await this.waitForSessionSetup(session, remoteNodeHex);
+            return session;
+        }
         const fsp = new FspSession({
             identity: this.cfg.identity,
             role: "initiator",
@@ -450,6 +467,9 @@ export class FspSessionManager {
                 this.rejectSessionSetup(session, remoteNodeHex, new Error("FSP handshake timeout"));
             }, 15_000);
         });
+        // The carrier write may still be pending when the setup timer rejects.
+        // Observe immediately; actual waiters still receive the rejected promise.
+        void session.setupPromise.catch(() => { });
         return session.setupPromise;
     }
     resolveSessionSetup(session) {

@@ -1,5 +1,5 @@
 import { type DiscoveredPeer, type LinkNegotiationMessage, type NodeAddr, type Transport, type TransportAddress, type TransportContext } from "@fips/core";
-import type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
+import { type WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
 export declare class WebRtcTransport implements Transport {
     readonly type = "webrtc";
     readonly mtu: number;
