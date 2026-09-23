@@ -18,7 +18,9 @@ export function incomingOfferReplacesPendingDial(
   localPubkeyHex: string,
   remotePubkeyHex: string,
 ): boolean {
-  return localPubkeyHex > remotePubkeyHex;
+  // Rust FIPS orders the complete x-only identity, independent of the
+  // compressed key's parity. Discovery advertises the even encoding.
+  return localPubkeyHex.slice(2).toLowerCase() > remotePubkeyHex.slice(2).toLowerCase();
 }
 
 export function hasPendingInboundForPeer(
