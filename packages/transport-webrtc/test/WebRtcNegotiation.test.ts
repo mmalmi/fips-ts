@@ -12,12 +12,15 @@ function deferred<T>() {
 class FakeDataChannel extends EventTarget {
   readyState = 'connecting'
   binaryType = 'arraybuffer'
+  deferCloseEvents = false
   sent: Uint8Array[] = []
   send(data: Uint8Array) { this.sent.push(new Uint8Array(data)) }
   close() {
     if (this.readyState === 'closed') return
     this.readyState = 'closed'
-    this.dispatchEvent(new Event('close'))
+    const notify = () => this.dispatchEvent(new Event('close'))
+    if (this.deferCloseEvents) setTimeout(notify, 1)
+    else notify()
   }
 }
 
@@ -29,6 +32,7 @@ class FakePeerConnection extends EventTarget {
   iceConnectionState = 'new'
   iceGatheringState = 'gathering'
   signalingState = 'stable'
+  deferCloseEvents = false
   localDescription: RTCSessionDescriptionInit | null = null
   remoteDescription: RTCSessionDescriptionInit | null = null
   ondatachannel?: (event: { channel: FakeDataChannel }) => void
@@ -60,7 +64,9 @@ class FakePeerConnection extends EventTarget {
     this.connectionState = 'closed'
     this.iceConnectionState = 'closed'
     this.channel.close()
-    this.dispatchEvent(new Event('connectionstatechange'))
+    const notify = () => this.dispatchEvent(new Event('connectionstatechange'))
+    if (this.deferCloseEvents) setTimeout(notify, 1)
+    else notify()
   }
   finishGathering() {
     this.iceGatheringState = 'complete'
@@ -117,17 +123,17 @@ async function fixture(
   return { transport, sent, states, result }
 }
 
-async function incomingWins(transport: WebRtcTransport) {
+async function incomingWins(transport: WebRtcTransport, negotiationId = 'winning-incoming-offer') {
   await transport.handleLinkNegotiation(remote.addr, {
     version: 1,
-    negotiationId: 'winning-incoming-offer',
+    negotiationId,
     linkType: 'webrtc',
     kind: 'offer',
     createdAtMs: Date.now(),
     expiresAtMs: Date.now() + 60_000,
     payload: { sdp: 'incoming-sdp' },
   })
-  const replacement = FakePeerConnection.instances[1]
+  const replacement = FakePeerConnection.instances.at(-1)!
   replacement.ondatachannel?.({ channel: replacement.channel })
   await flush()
   replacement.connectChannel()
@@ -183,6 +189,38 @@ describe('WebRTC connection configuration', () => {
 })
 
 describe('WebRTC simultaneous negotiation ownership', () => {
+  it.each(['outgoing', 'incoming'])(
+    'reports an explicit %s close immediately and preserves its replacement after delayed close events',
+    async direction => {
+      const { transport, states, result } = await fixture()
+      let current = FakePeerConnection.instances[0]
+      if (direction === 'outgoing') {
+        current.finishGathering()
+        await flush()
+        current.connectChannel()
+        await flush()
+        expect(await result).toBe('connected')
+      } else {
+        current = await incomingWins(transport)
+      }
+      expect(states).toEqual(['connected'])
+      current.deferCloseEvents = true
+      current.channel.deferCloseEvents = true
+
+      await transport.close(remote)
+      expect(states).toEqual(['connected', 'disconnected'])
+      await transport.close(remote)
+      expect(states).toEqual(['connected', 'disconnected'])
+
+      const replacement = await incomingWins(transport, 'replacement-after-explicit-close')
+      expect(states).toEqual(['connected', 'disconnected', 'connected'])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(states).toEqual(['connected', 'disconnected', 'connected'])
+      await transport.send(remote, new Uint8Array([45]))
+      expect(replacement.channel.sent.at(-1)).toEqual(new Uint8Array([45]))
+    },
+  )
+
   it.each([[22, 1, false], [1, 22, true], [22, 22, false]] as const)(
     'uses full x-only ordering for local scalar%s versus remote scalar%s',
     async (localScalar: number, remoteScalar: number, accept: boolean) => {

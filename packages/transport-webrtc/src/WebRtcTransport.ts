@@ -525,9 +525,7 @@ export class WebRtcTransport implements Transport {
       dial.reject(new Error("WebRTC path closed"));
     }
     const provenPeer = this.peersWithTraffic.delete(addr.addr);
-    const conn = this.conns.get(addr.addr);
-    conn?.close();
-    this.conns.delete(addr.addr);
+    this.retireExistingConnection(addr.addr);
     if (provenPeer || this.autoReconnectTimers.has(addr.addr)) {
       this.scheduleAutoReconnect(addr.addr);
       return;
@@ -789,7 +787,7 @@ export class WebRtcTransport implements Transport {
       state: "disconnected",
     });
     existing.close();
-    this.logger.debug("webrtc stale connection retired", remotePubkeyHex);
+    this.logger.debug("webrtc connection retired", remotePubkeyHex);
   }
 
   private handleAutoConnectFailure(remotePubkeyHex: string): void {
