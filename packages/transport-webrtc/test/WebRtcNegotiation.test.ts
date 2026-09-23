@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WebRtcTransport } from '../src/WebRtcTransport.js'
 import { identityFromSecretKey, toHex } from '@fips/core'
+import type { WebRtcTransportConfig } from '../src/WebRtcTransportConfig.js'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -35,7 +36,7 @@ class FakePeerConnection extends EventTarget {
   setLocalCalls = 0
   private readonly initiator = FakePeerConnection.instances.length === 0
 
-  constructor() {
+  constructor(readonly configuration?: RTCConfiguration) {
     super()
     FakePeerConnection.instances.push(this)
     if (!this.initiator) this.iceGatheringState = 'complete'
@@ -81,7 +82,12 @@ const remote = { transport: 'webrtc', addr: '' }
 const transports: WebRtcTransport[] = []
 const flush = () => vi.advanceTimersByTimeAsync(0)
 
-async function fixture(sendGate?: ReturnType<typeof deferred<void>>, localScalar = 2, remoteScalar = 1) {
+async function fixture(
+  sendGate?: ReturnType<typeof deferred<void>>,
+  localScalar = 2,
+  remoteScalar = 1,
+  config: Partial<WebRtcTransportConfig> = {},
+) {
   const secret = (scalar: number) => {
     const bytes = new Uint8Array(32)
     bytes[31] = scalar
@@ -94,7 +100,7 @@ async function fixture(sendGate?: ReturnType<typeof deferred<void>>, localScalar
   const transport = new WebRtcTransport({
     rtcPeerConnection: FakePeerConnection as unknown as typeof RTCPeerConnection,
     acceptConnections: true,
-    iceGatherTimeoutMs: 2_000,
+    ...config,
   })
   transports.push(transport)
   await transport.start({
@@ -139,6 +145,41 @@ beforeEach(() => {
 afterEach(async () => {
   for (const transport of transports.splice(0)) await transport.stop()
   vi.useRealTimers()
+})
+
+describe('WebRTC connection configuration', () => {
+  const defaultServers = ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478']
+  it.each([
+    { name: 'omitted settings', config: {}, servers: defaultServers, timeout: 2_000 },
+    {
+      name: 'undefined settings',
+      config: { stunServers: undefined, iceGatherTimeoutMs: undefined },
+      servers: defaultServers,
+      timeout: 2_000,
+    },
+    {
+      name: 'explicit local-only settings',
+      config: { stunServers: [], iceGatherTimeoutMs: 75 },
+      servers: [],
+      timeout: 75,
+    },
+    {
+      name: 'custom servers and timeout',
+      config: { stunServers: ['stun:custom.example:3478'], iceGatherTimeoutMs: 125 },
+      servers: ['stun:custom.example:3478'],
+      timeout: 125,
+    },
+  ])('uses $name for outgoing and incoming connections', async ({ config, servers, timeout }) => {
+    const { transport, sent } = await fixture(undefined, 2, 1, config)
+    const expected = { iceServers: servers.map(urls => ({ urls })) }
+    expect(FakePeerConnection.instances[0].configuration).toEqual(expected)
+    await vi.advanceTimersByTimeAsync(timeout - 1)
+    expect(sent).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(sent.map(signal => signal.kind)).toEqual(['offer'])
+    const incoming = await incomingWins(transport)
+    expect(incoming.configuration).toEqual(expected)
+  })
 })
 
 describe('WebRTC simultaneous negotiation ownership', () => {

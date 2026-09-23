@@ -1,7 +1,11 @@
 export {
   WebRtcTransport,
 } from "./WebRtcTransport.js";
-export type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
+export {
+  DEFAULT_STUN_SERVERS,
+  DEFAULT_ICE_GATHER_TIMEOUT_MS,
+  type WebRtcTransportConfig,
+} from "./WebRtcTransportConfig.js";
 
 export { WebRtcConnection } from "./WebRtcConnection.js";
 

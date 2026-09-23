@@ -36,7 +36,11 @@ import {
   validateWebRtcSignal,
   type WebRtcSignal,
 } from "./WebRtcSignal.js";
-import type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
+import {
+  DEFAULT_STUN_SERVERS,
+  DEFAULT_ICE_GATHER_TIMEOUT_MS,
+  type WebRtcTransportConfig,
+} from "./WebRtcTransportConfig.js";
 
 interface PendingDial {
   sessionId: string;
@@ -74,6 +78,7 @@ export class WebRtcTransport implements Transport {
     Pick<
       WebRtcTransportConfig,
       | "relays"
+      | "stunServers"
       | "advertiseOnNostr"
       | "acceptConnections"
       | "autoConnect"
@@ -134,10 +139,11 @@ export class WebRtcTransport implements Transport {
       ),
       connectTimeoutMs: 30_000,
       relayConnectTimeoutMs: 5_000,
-      iceGatherTimeoutMs: 10_000,
       dataChannelLabel: "fips",
       ordered: true,
       ...config,
+      stunServers: [...(config.stunServers ?? DEFAULT_STUN_SERVERS)],
+      iceGatherTimeoutMs: config.iceGatherTimeoutMs ?? DEFAULT_ICE_GATHER_TIMEOUT_MS,
     };
     this.autoConnectPolicy = new WebRtcAutoConnectPolicy(
       config.preferredAutoConnectPeers ?? [],
@@ -351,7 +357,7 @@ export class WebRtcTransport implements Transport {
       endpoints: [
         { transport: "webrtc", addr: toHex(this.ctx.localIdentity.publicKey) },
       ],
-      stunServers: this.cfg.stunServers ?? [],
+      stunServers: this.cfg.stunServers,
     });
   }
 
@@ -436,7 +442,7 @@ export class WebRtcTransport implements Transport {
     this.logger.debug("webrtc connect start", remotePubkeyHex, sessionId);
 
     const pc = new this.RTCPC({
-      iceServers: (this.cfg.stunServers ?? []).map((u) => ({ urls: u })),
+      iceServers: this.cfg.stunServers.map((u) => ({ urls: u })),
     });
     const dataChannelOptions: RTCDataChannelInit = {
       ordered: this.cfg.ordered,
@@ -683,7 +689,7 @@ export class WebRtcTransport implements Transport {
     }
     const remoteAddr: TransportAddress = { transport: "webrtc", addr: remotePubkeyHex };
     const pc = new this.RTCPC({
-      iceServers: (this.cfg.stunServers ?? []).map((u) => ({ urls: u })),
+      iceServers: this.cfg.stunServers.map((u) => ({ urls: u })),
     });
     const timer = setTimeout(() => {
       this.pendingInbound.delete(offer.negotiationId);
@@ -803,10 +809,7 @@ export class WebRtcTransport implements Transport {
     this.pendingInbound.delete(sessionId);
   }
 
-  private async rejectIncomingOffer(
-    offer: WebRtcSignal,
-    remotePubkeyHex: string,
-  ): Promise<void> {
+  private async rejectIncomingOffer(offer: WebRtcSignal, remotePubkeyHex: string): Promise<void> {
     await this.sendWebRtcSignal(remotePubkeyHex, {
       version: 1,
       negotiationId: offer.negotiationId,
@@ -818,10 +821,7 @@ export class WebRtcTransport implements Transport {
     });
   }
 
-  async handleLinkNegotiation(
-    remotePubkeyHex: string,
-    message: LinkNegotiationMessage,
-  ): Promise<void> {
+  async handleLinkNegotiation(remotePubkeyHex: string, message: LinkNegotiationMessage): Promise<void> {
     await this.handleIncomingSignal(message as WebRtcSignal, remotePubkeyHex);
   }
 

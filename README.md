@@ -59,6 +59,12 @@ already reachable. Link offers and answers then use the generic service on FSP
 DataPacket port 257; they do not allocate an FSP message type. Nostr relays may
 carry signed peer adverts, but never FIPS packets or WebRTC signaling.
 
+`WebRtcTransport` defaults to `stun:stun.l.google.com:19302` and
+`stun:stun.cloudflare.com:3478`, with a 2-second ICE gathering limit so silent
+STUN servers do not block local connections. Set `stunServers: []` to gather
+host candidates only, or supply custom `stunServers` and `iceGatherTimeoutMs`.
+The package exports `DEFAULT_STUN_SERVERS` and `DEFAULT_ICE_GATHER_TIMEOUT_MS`.
+
 The invariant: **WebRTC connects adjacent peers. FIPS routes opaque bytes to node identities. Applications route their own content.** Don't push content hashes into FIPS.
 
 `VirtualEthernetTransport` takes a generic port with `onFrame(listener)` and
