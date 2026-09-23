@@ -26,7 +26,7 @@ import {
 
 import type { FipsRouting } from "./FipsRouting.js";
 import type { FspSessionManager } from "./FspSessionManager.js";
-import { pruneDrainingResponderLinks, type AdjacentPeer } from "./PeerState.js";
+import { pruneDrainingResponderLinks, sameCompressedIdentity, type AdjacentPeer } from "./PeerState.js";
 import { PendingFmpResponders } from "./PendingFmpResponders.js";
 import type { PeerEvent } from "./types.js";
 
@@ -237,7 +237,7 @@ export class FmpTransportPacketProcessor {
     } = context;
     const remotePubkeyHex = toHex(result.remotePubkey);
     const identityChanged = peer.pubkey.length > 0
-      && !bytesEqual(peer.pubkey, result.remotePubkey);
+      && !sameCompressedIdentity(peer.pubkey, result.remotePubkey);
     let identityRebound = false;
     if (identityChanged) {
       if (!transport.identityMayChangeAtAddress) {

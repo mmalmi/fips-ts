@@ -181,4 +181,81 @@ describe("FspSessionManager", () => {
     expect(setupAttempts).toBe(2);
     expect(responder?.state).toBe("established");
   });
+  it("keeps an incoming handshake created while an outgoing route lookup waits", async () => {
+    vi.useFakeTimers();
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x38));
+    const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x62));
+    let releaseRoute!: () => void;
+    const routeReady = new Promise<void>(resolve => { releaseRoute = resolve; });
+    const sent: Uint8Array[] = [];
+    const peer = { pubkey: remote.publicKey, pubkeyHex: toHex(remote.publicKey),
+      remoteAddr: { transport: "memory", addr: "remote" } } as never;
+    const manager = new FspSessionManager({
+      identity: local,
+      random: { bytes: length => new Uint8Array(length).fill(0x43) },
+      localEpoch: new Uint8Array(8).fill(0x53),
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      routing: {
+        coords: [local.nodeAddr], coordinatesFor: () => undefined,
+        ensureFirstContactRoute: () => routeReady, learnReverseRoute: () => {},
+        sendFspReplyToward: async (_: unknown, frame: Uint8Array) => { sent.push(frame); },
+        sendFspToward: async (_: unknown, frame: Uint8Array | ((nextHop: typeof peer) => Uint8Array[])) => {
+          sent.push(...(typeof frame === "function" ? frame(peer) : [frame]));
+        },
+      } as never,
+      getPeerByNodeAddr: () => undefined, emitDatagram: () => {}, emitEndpointData: () => {},
+      handleLinkNegotiation: async () => {}, emitSession: () => {},
+    });
+    const payload = new Uint8Array([17, 23, 41]);
+    let outgoingDone = false;
+    const outgoing = manager.sendDatagram({ dst: toHex(remote.publicKey), dstPort: 4_242, payload })
+      .then(() => { outgoingDone = true; }).catch(() => {});
+    const initiator = new FspSession({ identity: remote, role: "initiator", remotePubkey: local.publicKey,
+      localEpoch: new Uint8Array(8).fill(0x67) });
+    try {
+      await manager.handleFromPeer(peer, remote.nodeAddr, initiator.buildSessionSetup(
+        length => new Uint8Array(length), remote.nodeAddr, local.nodeAddr));
+      const msg3 = initiator.handleSessionAck(sent[0]!, length => new Uint8Array(length));
+      releaseRoute();
+      await vi.advanceTimersByTimeAsync(0);
+      // Resolving the route must reuse the responder, never send a competing Msg1.
+      expect(sent.map(peekFspPhase)).toEqual([2]);
+      await manager.handleFromPeer(peer, remote.nodeAddr, msg3);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outgoingDone).toBe(true);
+      const encrypted = sent.find(frame => peekFspPhase(frame) === FSP_PHASE_ESTABLISHED)!;
+      expect(initiator.decryptIncoming(encrypted).data?.payload).toEqual(payload);
+    } finally {
+      releaseRoute();
+      await vi.advanceTimersByTimeAsync(15_000);
+      manager.stop();
+      await outgoing;
+    }
+  });
+
+  it("observes the setup timeout while the initial transport send is stalled", async () => {
+    vi.useFakeTimers();
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x41));
+    const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x59));
+    let releaseSend!: () => void;
+    const sendReady = new Promise<void>(resolve => { releaseSend = resolve; });
+    const manager = new FspSessionManager({
+      identity: local, random: { bytes: length => new Uint8Array(length).fill(0x37) },
+      localEpoch: new Uint8Array(8).fill(0x54),
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      routing: { coords: [local.nodeAddr], coordinatesFor: () => [remote.nodeAddr],
+        sendFspToward: () => sendReady } as never,
+      getPeerByNodeAddr: () => undefined, emitDatagram: () => {}, emitEndpointData: () => {},
+      handleLinkNegotiation: async () => {}, emitSession: () => {},
+    });
+    const outcome = manager.sendDatagram({ dst: toHex(remote.publicKey), dstPort: 4_242,
+      payload: new Uint8Array([1]) }).then(() => "sent", error => (error as Error).message);
+    // Vitest also fails this test if setupDone rejects without an observer
+    // during the stalled carrier write, before ensureSession can await it.
+    await vi.advanceTimersByTimeAsync(15_000);
+    releaseSend();
+    expect(await outcome).toBe("FSP handshake timeout");
+    manager.stop();
+  });
+
 });

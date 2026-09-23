@@ -30,7 +30,7 @@ import {
   FmpTransportPacketProcessor,
 } from "./FmpTransportPacketProcessor.js";
 import { FspSessionManager } from "./FspSessionManager.js";
-import { FMP_HANDSHAKE_TIMEOUT_MS, pruneDrainingResponderLinks, type AdjacentPeer } from "./PeerState.js";
+import { FMP_HANDSHAKE_TIMEOUT_MS, pruneDrainingResponderLinks, sameCompressedIdentity, type AdjacentPeer } from "./PeerState.js";
 import { discoveryPublicKey } from "./routingHelpers.js";
 
 const defaultRandom: RandomSource = { bytes: (n) => randomBytes(n) };
@@ -472,7 +472,7 @@ export class FipsNode {
     this.peers.delete(key);
     const alternates = [...this.peers.values()].filter((candidate) =>
       candidate !== peer
-      && candidate.pubkeyHex === peer.pubkeyHex
+      && sameCompressedIdentity(candidate.pubkey, peer.pubkey)
       && (
         candidate.link.state === "established"
         || candidate.outgoingHandshake !== undefined
@@ -482,13 +482,17 @@ export class FipsNode {
     const alternate = alternates.find((candidate) =>
       candidate.link.state === "established" && !candidate.outgoingHandshake
     );
+    // Retarget every encoding of the removed identity. A pending alternate
+    // keeps the session alive, but must not be indexed as a usable carrier yet.
+    for (const [alias, indexed] of this.peersByPubkey) {
+      if (indexed !== peer) continue;
+      if (alternate) this.peersByPubkey.set(alias, alternate);
+      else this.peersByPubkey.delete(alias);
+    }
     if (alternate) {
       this.rememberPeer(alternate);
       this.routing.scheduleTreeAnnounce(alternate);
       return;
-    }
-    if (this.peersByPubkey.get(peer.pubkeyHex) === peer) {
-      this.peersByPubkey.delete(peer.pubkeyHex);
     }
     if (peer.pubkey.length > 0) {
       const peerNodeAddr = deriveNodeAddr(peer.pubkey);
