@@ -1,5 +1,6 @@
 export class WebRtcAutoConnectPolicy {
     preferredRanks = new Map();
+    cooldowns = new Map();
     constructor(preferredPeers) {
         for (const [rank, peer] of preferredPeers.entries()) {
             const normalized = peer.toLowerCase();
@@ -31,6 +32,28 @@ export class WebRtcAutoConnectPolicy {
     isPreferred(remote) {
         return this.preferredRanks.has(remote);
     }
+    recordFailure(remote, awaitingSessionRecovery) {
+        this.cooldowns.set(remote, {
+            until: Date.now() + (this.isPreferred(remote) ? 1_000 : 30_000),
+            awaitingSessionRecovery,
+        });
+    }
+    cooldownUntil(remote) {
+        return this.cooldowns.get(remote)?.until ?? 0;
+    }
+    pruneCooldowns(now) {
+        for (const [remote, cooldown] of this.cooldowns) {
+            if (cooldown.until <= now)
+                this.cooldowns.delete(remote);
+        }
+    }
+    recoverSession(remote) {
+        if (!this.cooldowns.get(remote)?.awaitingSessionRecovery)
+            return false;
+        this.cooldowns.delete(remote);
+        return true;
+    }
+    clearCooldowns() { this.cooldowns.clear(); }
     shouldReserveSlot(cachedPeers, ...activePeerSets) {
         if (this.preferredRanks.size === 0)
             return false;

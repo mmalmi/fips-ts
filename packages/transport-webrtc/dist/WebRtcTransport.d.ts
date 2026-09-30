@@ -23,7 +23,6 @@ export declare class WebRtcTransport implements Transport {
     private readonly peersWithTraffic;
     private readonly advertWaiters;
     private readonly autoReconnectTimers;
-    private readonly autoConnectCooldowns;
     private readonly autoConnectAttempts;
     private readonly autoConnectPolicy;
     private autoConnectAttemptSequence;
@@ -46,6 +45,7 @@ export declare class WebRtcTransport implements Transport {
     send(addr: TransportAddress, packet: Uint8Array): Promise<void>;
     close(addr: TransportAddress): Promise<void>;
     handlePeerRestart(remotePubkeyHex: string): Promise<void>;
+    handleSessionEstablished(remotePubkeyHex: string): void;
     private startInitiatorHandshake;
     private handleIncomingSignal;
     private handleIncomingOffer;

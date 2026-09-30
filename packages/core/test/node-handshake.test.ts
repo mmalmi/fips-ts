@@ -144,6 +144,10 @@ describe("FipsNode FMP handshake", () => {
     const identityB = await identityFromSecretKey(new Uint8Array(32).fill(0x42));
     const transportA = new FlakyMemoryTransport();
     const transportB = new FlakyMemoryTransport();
+    const recoveredA = vi.fn();
+    const recoveredB = vi.fn();
+    Object.assign(transportA, { handleSessionEstablished: recoveredA });
+    Object.assign(transportB, { handleSessionEstablished: recoveredB });
     const nodeA = new FipsNode({ identity: identityA, transports: [transportA] });
     const nodeB = new FipsNode({ identity: identityB, transports: [transportB] });
     const errors: Error[] = [];
@@ -175,6 +179,8 @@ describe("FipsNode FMP handshake", () => {
 
       expect(errors).toEqual([]);
       expect(received.sort((a, b) => a - b)).toEqual([0xa2, 0xb1]);
+      expect(recoveredA).toHaveBeenCalledWith(toHex(identityB.publicKey));
+      expect(recoveredB).toHaveBeenCalledWith(toHex(identityA.publicKey));
     } finally {
       await nodeA.stop();
       await nodeB.stop();

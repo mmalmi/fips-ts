@@ -97,6 +97,62 @@ afterEach(() => {
 });
 
 describe("WebRtcTransport NodeAddr resolution", () => {
+  it.each([
+    { name: "recovered signaling", failedSignaling: true, recovery: "same", retriesEarly: true },
+    { name: "unreachable signaling", failedSignaling: true, recovery: "none", retriesEarly: false },
+    { name: "unreachable ICE path", failedSignaling: false, recovery: "same", retriesEarly: false },
+    { name: "another peer recovering", failedSignaling: true, recovery: "other", retriesEarly: false },
+  ])("only bypasses cooldown for $name when authenticated signaling recovered", async ({
+    failedSignaling, recovery, retriesEarly,
+  }) => {
+    vi.useFakeTimers();
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x73));
+    const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x75));
+    const relay = new FakeRelay();
+    class SignalOnlyPeerConnection {
+      iceGatheringState = "complete";
+      localDescription?: RTCSessionDescriptionInit;
+      createDataChannel() { return new EventTarget(); }
+      async createOffer() { return { type: "offer", sdp: "test-offer" }; }
+      async setLocalDescription(description: RTCSessionDescriptionInit) {
+        this.localDescription = description;
+      }
+      addEventListener() {}
+      close() {}
+    }
+    const sendOffer = vi.fn(async () => {
+      if (failedSignaling) throw new Error("FSP handshake timeout");
+    });
+    const transport = new WebRtcTransport({
+      relays: [relay.url], relayClients: [relayClient(relay)],
+      rtcPeerConnection: SignalOnlyPeerConnection as unknown as typeof RTCPeerConnection,
+      autoConnect: true, connectTimeoutMs: 100,
+    });
+    await transport.start({ ...transportContext(local), sendLinkNegotiation: sendOffer });
+    const consume = (async () => {
+      for await (const peer of transport.discover()) {
+        void transport.connect(peer.remoteAddr).catch(() => undefined);
+      }
+    })();
+    try {
+      relay.emit(advertEvent(remote, 3_600));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sendOffer).toHaveBeenCalledTimes(1);
+      if (recovery !== "none") {
+        transport.handleSessionEstablished(toHex(
+          recovery === "same" ? remote.publicKey : local.publicKey,
+        ));
+      }
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sendOffer).toHaveBeenCalledTimes(retriesEarly ? 2 : 1);
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(sendOffer).toHaveBeenCalledTimes(2);
+    } finally {
+      await transport.stop();
+      await consume;
+    }
+  });
+
   it("lets exactly one x-only identity auto-connect while both retain the advert", async () => {
     vi.useFakeTimers();
     const identities = await Promise.all([

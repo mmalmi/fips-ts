@@ -7,6 +7,10 @@ interface AutoConnectCandidate {
 
 export class WebRtcAutoConnectPolicy {
   private readonly preferredRanks = new Map<string, number>();
+  private readonly cooldowns = new Map<string, {
+    until: number;
+    awaitingSessionRecovery: boolean;
+  }>();
 
   constructor(preferredPeers: string[]) {
     for (const [rank, peer] of preferredPeers.entries()) {
@@ -52,6 +56,31 @@ export class WebRtcAutoConnectPolicy {
   isPreferred(remote: string): boolean {
     return this.preferredRanks.has(remote);
   }
+
+  recordFailure(remote: string, awaitingSessionRecovery: boolean): void {
+    this.cooldowns.set(remote, {
+      until: Date.now() + (this.isPreferred(remote) ? 1_000 : 30_000),
+      awaitingSessionRecovery,
+    });
+  }
+
+  cooldownUntil(remote: string): number {
+    return this.cooldowns.get(remote)?.until ?? 0;
+  }
+
+  pruneCooldowns(now: number): void {
+    for (const [remote, cooldown] of this.cooldowns) {
+      if (cooldown.until <= now) this.cooldowns.delete(remote);
+    }
+  }
+
+  recoverSession(remote: string): boolean {
+    if (!this.cooldowns.get(remote)?.awaitingSessionRecovery) return false;
+    this.cooldowns.delete(remote);
+    return true;
+  }
+
+  clearCooldowns(): void { this.cooldowns.clear(); }
 
   shouldReserveSlot(
     cachedPeers: Iterable<string>,

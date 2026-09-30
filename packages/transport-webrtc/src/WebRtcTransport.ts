@@ -66,8 +66,6 @@ interface AdvertWaiter {
 
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
 const AUTO_RECONNECT_DELAY_MS = 500;
-const PREFERRED_AUTO_CONNECT_FAILURE_COOLDOWN_MS = 1_000;
-const AUTO_CONNECT_FAILURE_COOLDOWN_MS = 30_000;
 const AUTO_CONNECT_SETTLE_MS = 750;
 
 export class WebRtcTransport implements Transport {
@@ -114,7 +112,6 @@ export class WebRtcTransport implements Transport {
   private readonly peersWithTraffic = new Set<string>();
   private readonly advertWaiters = new Map<string, Set<AdvertWaiter>>(); // by NodeAddr hex
   private readonly autoReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly autoConnectCooldowns = new Map<string, number>();
   private readonly autoConnectAttempts = new Map<string, number>();
   private readonly autoConnectPolicy: WebRtcAutoConnectPolicy;
   private autoConnectAttemptSequence = 0;
@@ -238,7 +235,7 @@ export class WebRtcTransport implements Transport {
     this.advertRefreshTimer = undefined;
     for (const timer of this.autoReconnectTimers.values()) clearTimeout(timer);
     this.autoReconnectTimers.clear();
-    this.autoConnectCooldowns.clear();
+    this.autoConnectPolicy.clearCooldowns();
     this.autoConnectAttempts.clear();
     this.autoConnectAttemptSequence = 0;
     if (this.autoConnectFillTimer) clearTimeout(this.autoConnectFillTimer);
@@ -315,7 +312,7 @@ export class WebRtcTransport implements Transport {
     const localXOnlyPubkey = localPubkeyHex.slice(2);
     const now = Date.now();
     this.advertCache.prune(now);
-    for (const [remote, until] of this.autoConnectCooldowns) if (until <= now) this.autoConnectCooldowns.delete(remote);
+    this.autoConnectPolicy.pruneCooldowns(now);
     const partition = this.autoConnectPolicy.partitionByInitiator(
       [...this.advertCache.values()], localXOnlyPubkey, this.cfg.acceptConnections);
     const candidates = this.autoConnectPolicy.sort(
@@ -334,7 +331,7 @@ export class WebRtcTransport implements Transport {
       if (this.autoConnectCapacityUsed() >= autoConnectLimit) continue;
       if (this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects()) return;
       if (this.conns.has(remote) || this.pendingConnects.has(remote) || this.autoConnectPeers.has(remote)) continue;
-      if ((this.autoConnectCooldowns.get(remote) ?? 0) > now) continue;
+      if (this.autoConnectPolicy.cooldownUntil(remote) > now) continue;
       this.autoConnectAttempts.set(remote, ++this.autoConnectAttemptSequence);
       this.autoConnectPeers.add(remote);
       const push = () => {
@@ -452,6 +449,7 @@ export class WebRtcTransport implements Transport {
     }
     const dataChannel = pc.createDataChannel(this.cfg.dataChannelLabel, dataChannelOptions);
 
+    let awaitingSessionRecovery = false;
     const connectPromise = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingDials.delete(sessionId);
@@ -480,6 +478,7 @@ export class WebRtcTransport implements Transport {
       this.pendingDials.set(sessionId, dial);
 
       this.startInitiatorHandshake(dial, addr).catch((err) => {
+        awaitingSessionRecovery = dial.phase === "sending-offer";
         clearTimeout(timer);
         this.pendingDials.delete(sessionId);
         pc.close();
@@ -490,7 +489,7 @@ export class WebRtcTransport implements Transport {
     try {
       await connectPromise;
     } catch (error) {
-      this.handleAutoConnectFailure(remotePubkeyHex);
+      this.handleAutoConnectFailure(remotePubkeyHex, awaitingSessionRecovery);
       throw error;
     } finally {
       if (this.pendingConnects.get(remotePubkeyHex) === connectPromise) {
@@ -535,6 +534,14 @@ export class WebRtcTransport implements Transport {
 
   handlePeerRestart(remotePubkeyHex: string): Promise<void> {
     return this.close({ transport: this.type, addr: remotePubkeyHex });
+  }
+
+  handleSessionEstablished(remotePubkeyHex: string): void {
+    if (!this.autoConnectPolicy.recoverSession(remotePubkeyHex)) return;
+    clearTimeout(this.autoReconnectTimers.get(remotePubkeyHex));
+    this.autoReconnectTimers.delete(remotePubkeyHex);
+    this.logger.debug("webrtc authenticated signaling recovered", remotePubkeyHex);
+    this.scheduleAutoReconnect(remotePubkeyHex);
   }
 
   private async startInitiatorHandshake(dial: PendingDial, addr: TransportAddress): Promise<void> {
@@ -761,7 +768,7 @@ export class WebRtcTransport implements Transport {
     if (this.autoReconnectTimers.has(remotePubkeyHex)) return;
     const delay = Math.max(
       AUTO_RECONNECT_DELAY_MS,
-      (this.autoConnectCooldowns.get(remotePubkeyHex) ?? 0) - Date.now(),
+      this.autoConnectPolicy.cooldownUntil(remotePubkeyHex) - Date.now(),
     );
     this.logger.debug("webrtc auto-reconnect scheduled", remotePubkeyHex, delay);
     const timer = setTimeout(() => {
@@ -790,13 +797,10 @@ export class WebRtcTransport implements Transport {
     this.logger.debug("webrtc connection retired", remotePubkeyHex);
   }
 
-  private handleAutoConnectFailure(remotePubkeyHex: string): void {
+  private handleAutoConnectFailure(remotePubkeyHex: string, awaitingSessionRecovery = false): void {
     if (!this.cfg.autoConnect || this.stopping) return;
     this.autoConnectPeers.delete(remotePubkeyHex);
-    const cooldownMs = this.autoConnectPolicy.isPreferred(remotePubkeyHex)
-      ? PREFERRED_AUTO_CONNECT_FAILURE_COOLDOWN_MS
-      : AUTO_CONNECT_FAILURE_COOLDOWN_MS;
-    this.autoConnectCooldowns.set(remotePubkeyHex, Date.now() + cooldownMs);
+    this.autoConnectPolicy.recordFailure(remotePubkeyHex, awaitingSessionRecovery);
     this.scheduleAutoReconnect(remotePubkeyHex);
     this.fillAutoConnectSlots();
   }

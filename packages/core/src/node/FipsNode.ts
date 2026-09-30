@@ -122,7 +122,18 @@ export class FipsNode {
         }
         await transport.handleLinkNegotiation(remotePubkeyHex, message);
       },
-      emitSession: (event) => this.emit("session", event),
+      emitSession: (event) => {
+        if (event.state === "established") {
+          for (const transport of this.transports) {
+            try {
+              transport.handleSessionEstablished?.(event.remotePubkey);
+            } catch (err) {
+              this.emit("error", { err: err as Error, where: "transport.handleSessionEstablished" });
+            }
+          }
+        }
+        this.emit("session", event);
+      },
     });
     this.packetProcessor = new FmpTransportPacketProcessor({
       identity: this.identity,
