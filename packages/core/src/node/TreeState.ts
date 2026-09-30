@@ -64,6 +64,11 @@ export class TreeState {
     return removed ? this.evaluateParent() : false;
   }
 
+  reset(): void {
+    this.peers.clear();
+    this.evaluateParent();
+  }
+
   isTreePeer(peerNodeAddr: NodeAddr): boolean {
     if (!bytesEqual(this.parent, this.identity.nodeAddr) && bytesEqual(this.parent, peerNodeAddr)) {
       return true;
