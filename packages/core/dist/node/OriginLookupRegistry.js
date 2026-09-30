@@ -25,6 +25,7 @@ export class OriginLookupRegistry {
         const pending = {
             requestId,
             targetHex: args.targetHex,
+            minMtu: args.minMtu ?? 0,
             targetPubkey: args.targetPubkey
                 ? new Uint8Array(args.targetPubkey)
                 : undefined,

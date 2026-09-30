@@ -2,15 +2,16 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesEqual } from "../codec/hex.js";
 import { signSchnorr, verifySchnorr, } from "../identity/index.js";
 import { deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
-import { decodeSessionDatagramPayload, encodeSessionDatagram, LinkMessageType, } from "../protocol/link.js";
+import { decodeSessionDatagramPayload, encodeSessionDatagram, LinkMessageType, SESSION_DATAGRAM_HEADER_SIZE, } from "../protocol/link.js";
 import { decodeSessionAck, decodeSessionSetup } from "../protocol/session.js";
 import { decodeFspEstablished, FSP_FLAG_CP } from "../fsp/wire.js";
+import { FMP_AEAD_TAG_LEN, FMP_ESTABLISHED_HEADER_LEN } from "../fmp/wire.js";
 import { decodeTreeAnnouncePayload, encodeTreeAnnounce, verifyTreeAnnounce, } from "../protocol/tree.js";
 import { decodeLookupRequest, decodeLookupResponse, encodeLookupRequestPayload, encodeLookupResponsePayload, lookupResponseProofBytes, } from "../protocol/discovery.js";
 import { BloomRouting } from "./BloomRouting.js";
 import { LearnedRouteTable } from "./LearnedRouteTable.js";
 import { OriginLookupRegistry } from "./OriginLookupRegistry.js";
-import { delay, discoveryPublicKey, isKnownUnhandledLinkMessage, lookupReverseKey, peerNodeKey, } from "./routingHelpers.js";
+import { delay, discoveryPublicKey, frameCapacity, isKnownUnhandledLinkMessage, lookupReverseKey, peerNodeKey, selectCarrier, } from "./routingHelpers.js";
 import { TreeState } from "./TreeState.js";
 const ROUTE_RESOLUTION_TIMEOUT_MS = 5_000;
 const MAX_PENDING_ROUTE_RESOLUTIONS = 64;
@@ -24,6 +25,10 @@ const REPLY_LEARNED_ROUTE_TTL_SECONDS = 300;
 const MAX_REPLY_LEARNED_ROUTES_PER_DESTINATION = 4;
 const MAX_REPLY_LEARNED_LOOKUP_PEERS = 16;
 const FSP_DEFAULT_PATH_MTU = 1_200;
+// SessionDatagram already includes the message type; FMP adds its timestamp,
+// established header and authentication tag around the forwarding envelope.
+const ROUTED_FRAME_OVERHEAD = SESSION_DATAGRAM_HEADER_SIZE
+    + FMP_ESTABLISHED_HEADER_LEN + FMP_AEAD_TAG_LEN + 4;
 export class FipsRouting {
     cfg;
     treeState;
@@ -147,7 +152,7 @@ export class FipsRouting {
         const pending = [...this.lookupReversePaths.values()].filter((reverse) => nodeAddrToHex(reverse.request.target) === peerKey
             && peerNodeKey(reverse.peer) !== peerKey
             && !reverse.forwardedNextHops.has(peerKey)
-            && (reverse.request.minMtu === 0 || peer.transport.mtu >= reverse.request.minMtu));
+            && frameCapacity(peer) >= reverse.request.minMtu);
         await Promise.all(pending.map(async (reverse) => {
             reverse.forwardedNextHops.add(peerKey);
             try {
@@ -188,17 +193,20 @@ export class FipsRouting {
             await retrying;
         }
     }
-    async refreshTransitRoute(target, targetHex, previousHop) {
+    async refreshTransitRoute(target, targetHex, previousHop, minMtu = 0) {
         const existing = this.originLookups.get(targetHex);
         if (existing) {
             await existing.promise;
-            return;
+            if (existing.minMtu >= minMtu)
+                return;
+            return this.refreshTransitRoute(target, targetHex, previousHop, minMtu);
         }
-        if (this.originLookupPeers(previousHop).length === 0) {
+        if (this.originLookupPeers(previousHop, minMtu).length === 0) {
             throw new Error(`no route to ${targetHex}`);
         }
         const pending = this.originLookups.create({
             targetHex,
+            minMtu,
             randomBytes: () => this.cfg.randomBytes(8),
             timeoutMs: LOOKUP_ORIGIN_TIMEOUT_MS,
         });
@@ -207,7 +215,7 @@ export class FipsRouting {
             target,
             origin: this.cfg.identity.nodeAddr,
             ttl: LOOKUP_ORIGIN_TTL,
-            minMtu: 0,
+            minMtu,
             originCoords: this.treeState.coords,
         });
         const retrying = this.retryOriginLookup(pending, encoded, previousHop);
@@ -303,13 +311,15 @@ export class FipsRouting {
     }
     async handleLookupRequest(sourcePeer, request) {
         const targetHex = nodeAddrToHex(request.target);
+        if (frameCapacity(sourcePeer) < request.minMtu)
+            return;
         if (bytesEqual(request.target, this.cfg.identity.nodeAddr)) {
             const targetCoords = this.treeState.coords;
             const proof = signSchnorr(this.cfg.identity, sha256(lookupResponseProofBytes(request.requestId, request.target, targetCoords)));
             await this.cfg.sendLinkMessage(sourcePeer, LinkMessageType.LookupResponse, encodeLookupResponsePayload({
                 requestId: request.requestId,
                 target: request.target,
-                pathMtu: Math.min(0xffff, sourcePeer.transport.mtu),
+                pathMtu: frameCapacity(sourcePeer),
                 targetCoords,
                 proof,
             }));
@@ -327,7 +337,7 @@ export class FipsRouting {
             return;
         if (existingReverse)
             existingReverse.peer = sourcePeer;
-        const directOrLearned = this.nextHopFor(targetHex, sourcePeer);
+        const directOrLearned = this.nextHopFor(targetHex, sourcePeer, request.minMtu);
         const fallbackPeers = !directOrLearned
             ? [...this.cfg.getPeers()]
                 .filter((peer) => peer !== sourcePeer
@@ -335,7 +345,7 @@ export class FipsRouting {
                 && (this.treeState.isTreePeer(deriveNodeAddr(peer.pubkey))
                     || this.cfg.routingMode === "reply_learned")
                 && nodeAddrToHex(deriveNodeAddr(peer.pubkey)) !== nodeAddrToHex(request.origin)
-                && (request.minMtu === 0 || peer.transport.mtu >= request.minMtu))
+                && frameCapacity(peer) >= request.minMtu)
                 .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS)
             : [];
         const nextHops = (directOrLearned ? [directOrLearned] : fallbackPeers)
@@ -343,10 +353,6 @@ export class FipsRouting {
         const canResolveDirectly = this.canResolveLookupDirectly(directOrLearned, fallbackPeers.length > 0);
         if (!this.lookupCanProgress(nextHops, canResolveDirectly)) {
             this.cfg.logger.debug("lookup request not forwarded", targetHex, "no-next-hop");
-            return;
-        }
-        if (directOrLearned && request.minMtu !== 0 && directOrLearned.transport.mtu < request.minMtu) {
-            this.cfg.logger.debug("lookup request not forwarded", targetHex, "mtu");
             return;
         }
         const reverse = existingReverse ?? {
@@ -392,9 +398,8 @@ export class FipsRouting {
         }
         if (this.lookupReversePaths.get(reverseKey) !== reverse)
             return;
-        const nextHop = this.nextHopFor(targetHex, sourcePeer);
-        if (!nextHop
-            || (reverse.request.minMtu !== 0 && nextHop.transport.mtu < reverse.request.minMtu))
+        const nextHop = this.nextHopFor(targetHex, sourcePeer, reverse.request.minMtu);
+        if (!nextHop)
             return;
         const nextHopKey = peerNodeKey(nextHop);
         if (reverse.forwardedNextHops.has(nextHopKey))
@@ -426,10 +431,12 @@ export class FipsRouting {
             this.cfg.logger.debug("lookup response not forwarded", nodeAddrToHex(response.target));
             return;
         }
+        if (Math.min(response.pathMtu, frameCapacity(sourcePeer), frameCapacity(reverse.peer)) < reverse.request.minMtu)
+            return;
         this.cacheCoordinates(response.target, response.targetCoords);
         this.learnReverseRoute(nodeAddrToHex(response.target), sourcePeer);
         this.lookupReversePaths.delete(reverseKey);
-        response.pathMtu = Math.min(response.pathMtu, reverse.peer.transport.mtu);
+        response.pathMtu = Math.min(response.pathMtu, frameCapacity(reverse.peer));
         await this.cfg.sendLinkMessage(reverse.peer, LinkMessageType.LookupResponse, encodeLookupResponsePayload(response));
         this.cfg.logger.debug("lookup response forwarded", nodeAddrToHex(response.target), reverse.peer.remoteAddr.transport, reverse.peer.remoteAddr.addr);
     }
@@ -439,6 +446,8 @@ export class FipsRouting {
         if (!pending)
             return false;
         if (nodeAddrToHex(response.target) !== pending.targetHex)
+            return true;
+        if (Math.min(response.pathMtu, frameCapacity(sourcePeer)) < pending.minMtu)
             return true;
         // A locally originated first-contact lookup knows the compressed target
         // key and verifies its proof. A transit refresh only knows the NodeAddr;
@@ -462,13 +471,13 @@ export class FipsRouting {
         this.cfg.logger.debug("lookup response accepted", pending.targetHex);
         return true;
     }
-    originLookupPeers(excludedPeer) {
+    originLookupPeers(excludedPeer, minMtu = 0) {
         const defaultPeer = this.cfg.defaultRoute
             ? this.cfg.getPeerByPubkey(this.cfg.defaultRoute)
             : undefined;
         return [...this.cfg.getPeers()]
             .filter((peer) => {
-            if (peer === excludedPeer || peer.link.state !== "established")
+            if (peer === excludedPeer || peer.link.state !== "established" || frameCapacity(peer) < minMtu)
                 return false;
             if (this.cfg.routingMode === "reply_learned")
                 return true;
@@ -478,7 +487,7 @@ export class FipsRouting {
     }
     async retryOriginLookup(pending, encoded, excludedPeer) {
         while (this.originLookups.get(pending.targetHex) === pending) {
-            const peers = this.originLookupPeers(excludedPeer);
+            const peers = this.originLookupPeers(excludedPeer, pending.minMtu);
             await Promise.allSettled(peers.map((peer) => this.cfg.sendLinkMessage(peer, LinkMessageType.LookupRequest, encoded)));
             if (this.originLookups.get(pending.targetHex) !== pending)
                 return;
@@ -505,36 +514,39 @@ export class FipsRouting {
             ? datagram.payload(nextHop)
             : [datagram.payload];
         for (const payload of frames) {
+            const minMtu = payload.length + ROUTED_FRAME_OVERHEAD;
+            if (frameCapacity(nextHop) < minMtu) {
+                nextHop = this.nextHopFor(destNodeHex, previousHop, minMtu);
+                if (!nextHop) {
+                    await this.refreshTransitRoute(datagram.destAddr, destNodeHex, previousHop, minMtu);
+                    nextHop = this.nextHopFor(destNodeHex, previousHop, minMtu);
+                }
+                if (!nextHop)
+                    throw new Error(`no route to ${destNodeHex} with MTU ${minMtu}`);
+            }
             await this.sendSessionDatagramVia(nextHop, { ...datagram, payload });
         }
     }
-    nextHopFor(destNodeHex, excludedPeer) {
-        const direct = this.cfg.getPeerByNodeAddr(destNodeHex);
-        if (direct?.link.state === "established" && direct !== excludedPeer)
+    nextHopFor(destNodeHex, excludedPeer, minMtu = 0) {
+        const usablePeer = (nodeHex) => selectCarrier(this.cfg.getPeerByNodeAddr(nodeHex), this.cfg.getPeers(), excludedPeer, minMtu);
+        const direct = usablePeer(destNodeHex);
+        if (direct)
             return direct;
         if (this.cfg.routingMode === "reply_learned") {
-            const learnedNodeHex = this.learnedRoutes.selectNextHop(destNodeHex, Date.now(), (nextHop) => {
-                const candidate = this.cfg.getPeerByNodeAddr(nextHop);
-                return candidate?.link.state === "established" && candidate !== excludedPeer;
-            });
+            const learnedNodeHex = this.learnedRoutes.selectNextHop(destNodeHex, Date.now(), (nextHop) => usablePeer(nextHop) !== undefined);
             if (learnedNodeHex)
-                return this.cfg.getPeerByNodeAddr(learnedNodeHex);
+                return usablePeer(learnedNodeHex);
         }
         const destCoords = this.coordCache.get(destNodeHex);
         if (destCoords) {
-            const treeNodeHex = this.treeState.nextHop(destCoords, (nodeHex) => {
-                const candidate = this.cfg.getPeerByNodeAddr(nodeHex);
-                return candidate?.link.state === "established" && candidate !== excludedPeer;
-            });
+            const treeNodeHex = this.treeState.nextHop(destCoords, (nodeHex) => usablePeer(nodeHex) !== undefined);
             if (treeNodeHex)
-                return this.cfg.getPeerByNodeAddr(treeNodeHex);
+                return usablePeer(treeNodeHex);
         }
         const defaultPeer = this.cfg.defaultRoute
             ? this.cfg.getPeerByPubkey(this.cfg.defaultRoute)
             : undefined;
-        return defaultPeer?.link.state === "established" && defaultPeer !== excludedPeer
-            ? defaultPeer
-            : undefined;
+        return defaultPeer ? usablePeer(peerNodeKey(defaultPeer)) : undefined;
     }
     pruneLookupReversePaths(nowMs) {
         for (const [key, reverse] of this.lookupReversePaths) {

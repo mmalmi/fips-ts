@@ -5,6 +5,24 @@ import { LinkMessageType } from "../protocol/link.js";
 export function peerNodeKey(peer) {
     return nodeAddrToHex(deriveNodeAddr(peer.pubkey));
 }
+export function frameCapacity(peer) {
+    return Math.min(0xffff, peer.transport.maxFrameBytes ?? peer.transport.mtu);
+}
+/** Keep a newer narrow link from hiding a usable carrier to the same identity. */
+export function selectCarrier(preferred, peers, excludedPeer, minMtu) {
+    if (!preferred)
+        return undefined;
+    const usable = (peer) => peer.link.state === "established"
+        && peer.pubkeyHex !== excludedPeer?.pubkeyHex && frameCapacity(peer) >= minMtu;
+    if (usable(preferred))
+        return preferred;
+    const nodeHex = peerNodeKey(preferred);
+    for (const peer of peers) {
+        if (usable(peer) && peerNodeKey(peer) === nodeHex)
+            return peer;
+    }
+    return undefined;
+}
 export function delay(milliseconds) {
     return new Promise((resolve) => {
         setTimeout(resolve, milliseconds);

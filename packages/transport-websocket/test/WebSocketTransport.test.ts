@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   FSP_FLAG_DIRECT_TRANSPORT,
+  encodeFmpEstablished,
   encodeFspEstablished,
   identityFromSecretKey,
   toHex,
@@ -135,6 +136,25 @@ describe("WebSocket physical record validation", () => {
 });
 
 describe("WebSocketTransport", () => {
+  it("keeps its existing record capacity above the preferred MTU", async () => {
+    const { transport } = await setup({ randomNonce: () => 15n });
+    try {
+      const socket = FakeWebSocket.instances[0]!;
+      socket.open();
+      socket.receive(encodeLocalKeyHintResponse(15n, new Uint8Array(32).fill(0x44)).buffer);
+      const addr = { transport: "websocket", addr: socket.url };
+      await transport.connect(addr);
+      const record = encodeFmpEstablished({
+        flags: 0, receiverIdx: 1, counter: 0n, payloadLen: 2900,
+        ciphertext: new Uint8Array(2916),
+      });
+      expect(record.length).toBeGreaterThan(transport.mtu);
+      expect(record.length).toBeLessThan(transport.maxFrameBytes);
+      await transport.send(addr, record);
+      expect(bytes(socket.sent.at(-1)!)).toEqual(record);
+    } finally { await transport.stop(); }
+  });
+
   it("discovers a URL-only native seed and exchanges binary FIPS records", async () => {
     const nonce = 0x0102030405060708n;
     const remoteXOnly = new Uint8Array(32).fill(0x33);

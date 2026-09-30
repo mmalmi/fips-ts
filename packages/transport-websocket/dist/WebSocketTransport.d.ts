@@ -45,7 +45,7 @@ export declare class WebSocketTransport implements Transport {
     readonly mtu: number;
     private readonly WS;
     private readonly logger;
-    private readonly maxFrameBytes;
+    readonly maxFrameBytes: number;
     private readonly maxSendQueue;
     private readonly maxBufferedBytes;
     private readonly connectTimeoutMs;

@@ -99,7 +99,7 @@ export class WebSocketTransport implements Transport {
 
   private readonly WS: typeof WebSocket;
   private readonly logger: Logger;
-  private readonly maxFrameBytes: number;
+  readonly maxFrameBytes: number;
   private readonly maxSendQueue: number;
   private readonly maxBufferedBytes: number;
   private readonly connectTimeoutMs: number;

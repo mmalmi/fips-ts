@@ -16,6 +16,28 @@ export function peerNodeKey(peer: AdjacentPeer): string {
   return nodeAddrToHex(deriveNodeAddr(peer.pubkey));
 }
 
+export function frameCapacity(peer: AdjacentPeer): number {
+  return Math.min(0xffff, peer.transport.maxFrameBytes ?? peer.transport.mtu);
+}
+
+/** Keep a newer narrow link from hiding a usable carrier to the same identity. */
+export function selectCarrier(
+  preferred: AdjacentPeer | undefined,
+  peers: Iterable<AdjacentPeer>,
+  excludedPeer: AdjacentPeer | undefined,
+  minMtu: number,
+): AdjacentPeer | undefined {
+  if (!preferred) return undefined;
+  const usable = (peer: AdjacentPeer) => peer.link.state === "established"
+    && peer.pubkeyHex !== excludedPeer?.pubkeyHex && frameCapacity(peer) >= minMtu;
+  if (usable(preferred)) return preferred;
+  const nodeHex = peerNodeKey(preferred);
+  for (const peer of peers) {
+    if (usable(peer) && peerNodeKey(peer) === nodeHex) return peer;
+  }
+  return undefined;
+}
+
 export function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
