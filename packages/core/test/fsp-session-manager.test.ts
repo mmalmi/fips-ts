@@ -174,12 +174,16 @@ describe("FspSessionManager", () => {
       .rejects.toThrow("FSP handshake timeout");
     await vi.advanceTimersByTimeAsync(15_000);
     await Promise.all([firstSend, concurrentSend]);
-    expect(setupAttempts).toBe(1);
+    // One shared attempt, with retries at 1, 3 and 7 seconds; concurrent
+    // callers must not multiply traffic or extend the 15-second deadline.
+    expect(setupAttempts).toBe(4);
     completeSetup = true;
 
     await expect(manager.sendDatagram(datagram)).resolves.toBeUndefined();
-    expect(setupAttempts).toBe(2);
+    expect(setupAttempts).toBe(5);
     expect(responder?.state).toBe("established");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(setupAttempts).toBe(5);
   });
   it("keeps an incoming handshake created while an outgoing route lookup waits", async () => {
     vi.useFakeTimers();
