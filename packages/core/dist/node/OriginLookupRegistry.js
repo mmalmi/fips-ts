@@ -40,9 +40,12 @@ export class OriginLookupRegistry {
         this.byRequest.set(requestId, pending);
         return pending;
     }
-    complete(pending) {
+    complete(pending, nextHop) {
         const state = this.remove(pending);
-        state?.resolve();
+        if (!state)
+            return;
+        state.nextHop = nextHop;
+        state.resolve();
     }
     fail(pending, error) {
         const state = this.remove(pending);

@@ -3,6 +3,7 @@ export interface PendingOriginLookup {
     targetHex: string;
     targetPubkey?: Uint8Array;
     minMtu: number;
+    nextHop?: string;
     promise: Promise<void>;
 }
 export declare class OriginLookupRegistry {
@@ -19,7 +20,7 @@ export declare class OriginLookupRegistry {
         randomBytes: () => Uint8Array;
         timeoutMs: number;
     }): PendingOriginLookup;
-    complete(pending: PendingOriginLookup): void;
+    complete(pending: PendingOriginLookup, nextHop?: string): void;
     fail(pending: PendingOriginLookup, error: Error): void;
     stop(): void;
     private nextRequestId;

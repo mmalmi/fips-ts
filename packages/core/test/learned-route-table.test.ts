@@ -24,6 +24,19 @@ describe("Rust-compatible reply-learned route table", () => {
     expect(selected).toBe("hop-5");
   });
 
+  it("retains each verified bottleneck without extending its lifetime on smaller replies", () => {
+    const table = new LearnedRouteTable();
+    table.learn("dest", "narrow", 1_000, 300, 4, 1280);
+    table.learn("dest", "wide", 1_000, 300, 4, 4096);
+    table.learn("dest", "narrow", 2_000, 300, 4);
+    expect(table.pathMtu("dest", "narrow", 3_000)).toBe(1280);
+    expect(table.pathMtu("dest", "wide", 3_000)).toBe(4096);
+    expect(table.pathMtu("dest", "narrow", 301_001)).toBeUndefined();
+    expect(table.has("dest", 301_001)).toBe(true);
+    table.learn("dest", "narrow", 301_002, 300, 4, 1400);
+    expect(table.pathMtu("dest", "narrow", 301_003)).toBe(1400);
+  });
+
   it("decays failed paths so another live candidate wins", () => {
     const table = new LearnedRouteTable();
     table.learn("dest", "a", 1_000, 300, 4);

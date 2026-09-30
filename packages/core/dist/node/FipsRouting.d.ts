@@ -46,7 +46,7 @@ export declare class FipsRouting {
     sendFspToward(remoteNodeAddr: NodeAddr, fspFrame: OutboundSessionDatagram["payload"]): Promise<void>;
     sendFspReplyToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array, previousHop: AdjacentPeer): Promise<void>;
     private sendSessionDatagramVia;
-    learnReverseRoute(destinationNodeHex: string, nextHop: AdjacentPeer): void;
+    learnReverseRoute(destinationNodeHex: string, nextHop: AdjacentPeer, pathMtu?: number): void;
     private sendTreeAnnounceToAll;
     private handleTreeAnnounce;
     private cacheSessionCoordinates;
@@ -54,12 +54,12 @@ export declare class FipsRouting {
     private handleLookupRequest;
     private resolveAndForwardLookup;
     private canResolveLookupDirectly;
-    private lookupCanProgress;
     private forwardLookupResponse;
     private handleOriginLookupResponse;
     private originLookupPeers;
     private retryOriginLookup;
     private sendSessionDatagram;
+    private pathMtuFor;
     private nextHopFor;
     private pruneLookupReversePaths;
     private reserveLookupReversePath;

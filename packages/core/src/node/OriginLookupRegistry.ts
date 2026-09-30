@@ -3,6 +3,7 @@ export interface PendingOriginLookup {
   targetHex: string;
   targetPubkey?: Uint8Array;
   minMtu: number;
+  nextHop?: string;
   promise: Promise<void>;
 }
 
@@ -62,9 +63,11 @@ export class OriginLookupRegistry {
     return pending;
   }
 
-  complete(pending: PendingOriginLookup): void {
+  complete(pending: PendingOriginLookup, nextHop?: string): void {
     const state = this.remove(pending);
-    state?.resolve();
+    if (!state) return;
+    state.nextHop = nextHop;
+    state.resolve();
   }
 
   fail(pending: PendingOriginLookup, error: Error): void {

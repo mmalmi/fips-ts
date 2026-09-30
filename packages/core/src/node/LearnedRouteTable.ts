@@ -11,6 +11,8 @@ interface LearnedRoute {
   score: number;
   currentWeight: number;
   selected: number;
+  pathMtu?: number;
+  pathMtuExpiresAtMs?: number;
 }
 
 /**
@@ -28,6 +30,7 @@ export class LearnedRouteTable {
     nowMs: number,
     ttlSeconds: number,
     maxRoutesPerDestination: number,
+    pathMtu?: number,
   ): void {
     if (destination === nextHop || maxRoutesPerDestination === 0) return;
     const expiresAtMs = nowMs + ttlSeconds * 1_000;
@@ -38,6 +41,10 @@ export class LearnedRouteTable {
       existing.lastSeenMs = nowMs;
       existing.expiresAtMs = expiresAtMs;
       existing.score = clamp(existing.score + 1, MIN_ROUTE_SCORE, MAX_ROUTE_SCORE);
+      if (pathMtu !== undefined) {
+        existing.pathMtu = pathMtu;
+        existing.pathMtuExpiresAtMs = expiresAtMs;
+      }
     } else {
       routes.push({
         nextHop,
@@ -48,10 +55,17 @@ export class LearnedRouteTable {
         score: 1,
         currentWeight: 0,
         selected: 0,
+        pathMtu,
+        pathMtuExpiresAtMs: pathMtu === undefined ? undefined : expiresAtMs,
       });
     }
     this.sortAndTruncate(routes, maxRoutesPerDestination);
     this.routes.set(destination, routes);
+  }
+
+  pathMtu(destination: string, nextHop: string, nowMs: number): number | undefined {
+    const route = this.routes.get(destination)?.find((candidate) => candidate.nextHop === nextHop);
+    return route && (route.pathMtuExpiresAtMs ?? 0) > nowMs ? route.pathMtu : undefined;
   }
 
   recordFailure(destination: string, nextHop: string): void {

@@ -327,11 +327,11 @@ export class FipsRouting {
     targetHex: string,
     previousHop?: AdjacentPeer,
     minMtu = 0,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const existing = this.originLookups.get(targetHex);
     if (existing) {
       await existing.promise;
-      if (existing.minMtu >= minMtu) return;
+      if (existing.minMtu >= minMtu) return existing.nextHop;
       return this.refreshTransitRoute(target, targetHex, previousHop, minMtu);
     }
     if (this.originLookupPeers(previousHop, minMtu).length === 0) {
@@ -354,6 +354,7 @@ export class FipsRouting {
     const retrying = this.retryOriginLookup(pending, encoded, previousHop);
     try {
       await pending.promise;
+      return pending.nextHop;
     } finally {
       await retrying;
     }
@@ -394,17 +395,17 @@ export class FipsRouting {
     await this.cfg.sendLinkMessage(peer, LinkMessageType.SessionDatagram, encoded.subarray(1));
   }
 
-  learnReverseRoute(destinationNodeHex: string, nextHop: AdjacentPeer): void {
-    if (this.cfg.routingMode !== "reply_learned") return;
-    const localNodeHex = nodeAddrToHex(this.cfg.identity.nodeAddr);
-    const nextHopNodeHex = nodeAddrToHex(deriveNodeAddr(nextHop.pubkey));
-    if (destinationNodeHex === localNodeHex) return;
+  learnReverseRoute(destinationNodeHex: string, nextHop: AdjacentPeer, pathMtu?: number): void {
+    if (this.cfg.routingMode !== "reply_learned" && pathMtu === undefined) return;
+    const nextHopNodeHex = peerNodeKey(nextHop);
+    if (destinationNodeHex === nodeAddrToHex(this.cfg.identity.nodeAddr)) return;
     this.learnedRoutes.learn(
       destinationNodeHex,
       nextHopNodeHex,
       Date.now(),
       REPLY_LEARNED_ROUTE_TTL_SECONDS,
       MAX_REPLY_LEARNED_ROUTES_PER_DESTINATION,
+      pathMtu,
     );
   }
 
@@ -518,11 +519,8 @@ export class FipsRouting {
       : [];
     const nextHops = (directOrLearned ? [directOrLearned] : fallbackPeers)
       .filter((nextHop) => !existingReverse?.forwardedNextHops.has(peerNodeKey(nextHop)));
-    const canResolveDirectly = this.canResolveLookupDirectly(
-      directOrLearned,
-      fallbackPeers.length > 0,
-    );
-    if (!this.lookupCanProgress(nextHops, canResolveDirectly)) {
+    const canResolveDirectly = this.canResolveLookupDirectly(directOrLearned, fallbackPeers.length > 0);
+    if (nextHops.length === 0 && !canResolveDirectly) {
       this.cfg.logger.debug("lookup request not forwarded", targetHex, "no-next-hop");
       return;
     }
@@ -596,16 +594,9 @@ export class FipsRouting {
     }
   }
 
-  private canResolveLookupDirectly(
-    nextHop: AdjacentPeer | undefined,
-    hasFallbackPeer = false,
-  ): boolean {
-    if (nextHop || hasFallbackPeer) return false;
-    return this.cfg.transports.some((transport) => transport.resolve !== undefined);
-  }
-
-  private lookupCanProgress(nextHops: AdjacentPeer[], canResolveDirectly: boolean): boolean {
-    return nextHops.length > 0 || canResolveDirectly;
+  private canResolveLookupDirectly(nextHop: AdjacentPeer | undefined, hasFallbackPeer: boolean): boolean {
+    return !nextHop && !hasFallbackPeer
+      && this.cfg.transports.some((transport) => transport.resolve !== undefined);
   }
 
   private async forwardLookupResponse(
@@ -622,9 +613,9 @@ export class FipsRouting {
     }
     if (Math.min(response.pathMtu, frameCapacity(sourcePeer), frameCapacity(reverse.peer)) < reverse.request.minMtu) return;
     this.cacheCoordinates(response.target, response.targetCoords);
-    this.learnReverseRoute(nodeAddrToHex(response.target), sourcePeer);
+    this.learnReverseRoute(nodeAddrToHex(response.target), sourcePeer, Math.min(response.pathMtu, frameCapacity(sourcePeer)));
     this.lookupReversePaths.delete(reverseKey);
-    response.pathMtu = Math.min(response.pathMtu, frameCapacity(reverse.peer));
+    response.pathMtu = Math.min(response.pathMtu, frameCapacity(sourcePeer), frameCapacity(reverse.peer));
     await this.cfg.sendLinkMessage(
       reverse.peer,
       LinkMessageType.LookupResponse,
@@ -670,8 +661,8 @@ export class FipsRouting {
       return true;
     }
     this.cacheCoordinates(response.target, response.targetCoords);
-    this.learnReverseRoute(pending.targetHex, sourcePeer);
-    this.originLookups.complete(pending);
+    this.learnReverseRoute(pending.targetHex, sourcePeer, Math.min(response.pathMtu, frameCapacity(sourcePeer)));
+    this.originLookups.complete(pending, peerNodeKey(sourcePeer));
     this.cfg.logger.debug("lookup response accepted", pending.targetHex);
     return true;
   }
@@ -730,11 +721,11 @@ export class FipsRouting {
       : [datagram.payload];
     for (const payload of frames) {
       const minMtu = payload.length + ROUTED_FRAME_OVERHEAD;
-      if (frameCapacity(nextHop) < minMtu) {
+      if (this.pathMtuFor(destNodeHex, nextHop) < minMtu) {
         nextHop = this.nextHopFor(destNodeHex, previousHop, minMtu);
         if (!nextHop) {
-          await this.refreshTransitRoute(datagram.destAddr, destNodeHex, previousHop, minMtu);
-          nextHop = this.nextHopFor(destNodeHex, previousHop, minMtu);
+          const resolved = await this.refreshTransitRoute(datagram.destAddr, destNodeHex, previousHop, minMtu);
+          nextHop = selectCarrier(this.cfg.getPeerByNodeAddr(resolved ?? ""), this.cfg.getPeers(), previousHop, minMtu);
         }
         if (!nextHop) throw new Error(`no route to ${destNodeHex} with MTU ${minMtu}`);
       }
@@ -742,14 +733,22 @@ export class FipsRouting {
     }
   }
 
+  private pathMtuFor(destination: string, peer: AdjacentPeer): number {
+    const nextHop = peerNodeKey(peer);
+    const verified = destination === nextHop ? frameCapacity(peer)
+      : this.learnedRoutes.pathMtu(destination, nextHop, Date.now()) ?? FSP_DEFAULT_PATH_MTU;
+    return Math.min(frameCapacity(peer), verified);
+  }
+
   private nextHopFor(
     destNodeHex: string,
     excludedPeer?: AdjacentPeer,
     minMtu = 0,
   ): AdjacentPeer | undefined {
-    const usablePeer = (nodeHex: string) => selectCarrier(
-      this.cfg.getPeerByNodeAddr(nodeHex), this.cfg.getPeers(), excludedPeer, minMtu,
-    );
+    const usablePeer = (nodeHex: string) => {
+      const peer = selectCarrier(this.cfg.getPeerByNodeAddr(nodeHex), this.cfg.getPeers(), excludedPeer, minMtu);
+      return peer && this.pathMtuFor(destNodeHex, peer) >= minMtu ? peer : undefined;
+    };
     const direct = usablePeer(destNodeHex);
     if (direct) return direct;
     if (this.cfg.routingMode === "reply_learned") {
