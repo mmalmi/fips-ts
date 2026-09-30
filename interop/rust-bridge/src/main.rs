@@ -20,6 +20,7 @@ use fips_identity::{Identity, PeerIdentity};
 use secp256k1::{PublicKey, SecretKey};
 
 mod fsp_initiator;
+mod link_reports;
 
 fn read_frame<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
@@ -417,6 +418,7 @@ fn main() {
     }
     let mode = args[1].as_str();
     let res = match mode {
+        "link-reports" => link_reports::run(),
         "ik" => {
             if args.len() != 3 {
                 eprintln!("usage: fips-rust-bridge ik <responder-sk-hex>");

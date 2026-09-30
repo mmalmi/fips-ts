@@ -1,9 +1,6 @@
 import { bytesEqual, toHex } from "../codec/hex.js";
 import { FmpLink, type FmpHandshakeResult } from "../fmp/link.js";
-import {
-  DirectFspTransportReassembler,
-  isDirectFspTransportFragment,
-} from "../fsp/directTransport.js";
+import { DirectFspTransportReassembler, isDirectFspTransportFragment } from "../fsp/directTransport.js";
 import { isDirectFspEstablished } from "../fsp/wire.js";
 import type { FipsIdentity } from "../identity/index.js";
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
@@ -28,6 +25,7 @@ import type { FipsRouting } from "./FipsRouting.js";
 import type { FspSessionManager } from "./FspSessionManager.js";
 import { pruneDrainingResponderLinks, sameCompressedIdentity, type AdjacentPeer } from "./PeerState.js";
 import { PendingFmpResponders } from "./PendingFmpResponders.js";
+import { receiveFmpLinkPacket } from "./FmpLinkReports.js";
 import type { PeerEvent } from "./types.js";
 
 const FMP_REPLACED_LINK_DRAIN_MS = 10_000;
@@ -600,7 +598,7 @@ export class FmpTransportPacketProcessor {
       return;
     }
     const { peer, link, promotePending } = match;
-    const { msgType, payload } = link.decryptIncoming(packet);
+    const { msgType, payload } = receiveFmpLinkPacket(peer, link, packet, this.cfg.emitError);
     if (peer.link === link) peer.outgoingHandshake?.confirmCarrier?.();
     if (promotePending) {
       const previous = peer.link;
