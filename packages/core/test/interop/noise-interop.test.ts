@@ -32,7 +32,7 @@ const TS_INITIATOR_SK = new Uint8Array(32).fill(0xb2);
 const EPOCH_PAYLOAD = new Uint8Array(8);
 
 describe("Noise interop: TS initiator ↔ Rust responder (live handshake)", () => {
-  itIfBridge("IK pattern + transport message round-trip", async () => {
+  itIfBridge("IK recovers from a corrupted reply and exchanges transport messages", async () => {
     const initiator = await identityFromSecretKey(TS_INITIATOR_SK);
     const bridge = spawnBridge("ik", RUST_RESPONDER_SK_HEX);
     try {
@@ -54,6 +54,9 @@ describe("Noise interop: TS initiator ↔ Rust responder (live handshake)", () =
       // 3. Receive IK msg2 from Rust.
       const msg2 = await bridge.readFrame();
       expect(msg2.length).toBe(57);
+      const corrupted = new Uint8Array(msg2);
+      corrupted[corrupted.length - 1] ^= 1;
+      expect(() => hs.readMessage(corrupted)).toThrow();
       const inboundPayload = hs.readMessage(msg2);
       expect(inboundPayload.length).toBe(8);
 
@@ -72,7 +75,7 @@ describe("Noise interop: TS initiator ↔ Rust responder (live handshake)", () =
     }
   });
 
-  itIfBridge("XK pattern + transport message round-trip", async () => {
+  itIfBridge("XK recovers from a corrupted reply and exchanges transport messages", async () => {
     const initiator = await identityFromSecretKey(TS_INITIATOR_SK);
     const bridge = spawnBridge("xk", RUST_RESPONDER_SK_HEX);
     try {
@@ -102,6 +105,9 @@ describe("Noise interop: TS initiator ↔ Rust responder (live handshake)", () =
       // XK msg2: 57 bytes; we expect an 8-byte epoch payload (Rust default).
       const msg2 = await bridge.readFrame();
       expect(msg2.length).toBe(57);
+      const corrupted = new Uint8Array(msg2);
+      corrupted[corrupted.length - 1] ^= 1;
+      expect(() => hs.readMessage(corrupted)).toThrow();
       const m2Payload = hs.readMessage(msg2);
       expect(m2Payload.length).toBe(8);
 

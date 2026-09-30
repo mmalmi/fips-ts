@@ -26,7 +26,11 @@ describe("FSP routed-session interop: Rust initiator -> TS responder", () => {
       await bridge.writeFrame(
         session.handleSessionSetup(setup, () => new Uint8Array(0), identity.nodeAddr),
       );
-      session.handleSessionMsg3(await bridge.readFrame());
+      const msg3 = await bridge.readFrame();
+      const corrupted = new Uint8Array(msg3);
+      corrupted[corrupted.length - 1] ^= 1;
+      expect(() => session.handleSessionMsg3(corrupted)).toThrow();
+      session.handleSessionMsg3(msg3);
       expect(session.state).toBe("established");
 
       const incoming = session.decryptIncoming(await bridge.readFrame());

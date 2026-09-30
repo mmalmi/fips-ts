@@ -23,6 +23,13 @@ export class CipherState {
     return this.key !== null;
   }
 
+  clone(): CipherState {
+    const copy = new CipherState();
+    copy.key = this.key?.slice() ?? null;
+    copy.n = this.n;
+    return copy;
+  }
+
   /** Encrypt with AEAD; advance nonce. */
   encryptWithAd(ad: Uint8Array, plaintext: Uint8Array): Uint8Array {
     if (!this.key) return plaintext;

@@ -78,7 +78,7 @@ function genKeyPair(override?: Uint8Array): KeyPair {
 export class NoiseHandshake {
   readonly pattern: NoisePattern;
   readonly role: NoiseRole;
-  private readonly ss: SymmetricState;
+  private ss: SymmetricState;
   private readonly s: KeyPair; // local static
   private e?: KeyPair;          // local ephemeral
   private rs?: Uint8Array;      // remote static (33)
@@ -169,6 +169,21 @@ export class NoiseHandshake {
 
   /** Consume an inbound handshake message; returns the plaintext payload. */
   readMessage(message: Uint8Array): Uint8Array {
+    // Reading mixes DH keys before authenticating the whole message. Failed
+    // authentication must not poison a pending handshake retained for retry.
+    const previous = { ss: this.ss.clone(), rs: this.rs, re: this.re, step: this.step };
+    try {
+      return this.readMessageInPlace(message);
+    } catch (error) {
+      this.ss = previous.ss;
+      this.rs = previous.rs;
+      this.re = previous.re;
+      this.step = previous.step;
+      throw error;
+    }
+  }
+
+  private readMessageInPlace(message: Uint8Array): Uint8Array {
     const tokens = this.tokensForStep(this.step);
     if (this.isSenderForStep(this.step)) {
       throw new Error(`not our turn to read at step ${this.step}`);
