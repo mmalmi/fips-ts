@@ -30,7 +30,7 @@ it("warms a changed transit before its first payload and stops after the bounded
     pubkey: identity.publicKey, pubkeyHex: toHex(identity.publicKey),
     remoteAddr: { transport: "sink", addr: toHex(identity.publicKey) },
     link: { state: "established", encryptOutgoing: (payload: Uint8Array) => payload },
-    transport: { send: async (_addr: unknown, payload: Uint8Array) => { packets.push(payload); } },
+    transport: { mtu: 1200, send: async (_addr: unknown, payload: Uint8Array) => { packets.push(payload); } },
   });
   const peer1 = makePeer(first);
   const peer2 = makePeer(second);
