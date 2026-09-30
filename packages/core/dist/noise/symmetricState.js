@@ -26,6 +26,13 @@ export class SymmetricState {
         this.ck = this.h.slice();
         this.cipher = new CipherState();
     }
+    clone() {
+        const copy = new SymmetricState("");
+        copy.h = this.h.slice();
+        copy.ck = this.ck.slice();
+        copy.cipher = this.cipher.clone();
+        return copy;
+    }
     /** h = HASH(h || data). */
     mixHash(data) {
         this.h = sha256(concatBytes(this.h, data));

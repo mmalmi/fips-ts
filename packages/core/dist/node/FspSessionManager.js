@@ -391,7 +391,14 @@ export class FspSessionManager {
             return;
         this.cfg.logger.debug("draining early FSP Established records", srcNodeHex, records.length);
         for (const { peer, frame } of records) {
-            await this.handleEstablished(peer, srcNodeHex, session, frame);
+            try {
+                await this.handleEstablished(peer, srcNodeHex, session, frame);
+            }
+            catch (error) {
+                // Each record is independent, just as after the handshake. A bad tag,
+                // duplicate, or failed handler must not discard later queued records.
+                this.cfg.logger.warn("queued FSP Established record failed", error);
+            }
         }
     }
     replaceRestartedSession(session, replacement, srcNodeHex) {

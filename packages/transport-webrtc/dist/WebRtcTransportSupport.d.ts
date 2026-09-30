@@ -1,5 +1,10 @@
 import { type DiscoveredPeer } from "@fips/core";
 import type { NostrEvent } from "./NostrRelayClient.js";
+export interface PendingInboundConnection {
+    timer: ReturnType<typeof setTimeout>;
+    remotePubkeyHex: string;
+    pc: RTCPeerConnection;
+}
 export declare function randomId(): string;
 export declare function incomingOfferReplacesPendingDial(localPubkeyHex: string, remotePubkeyHex: string): boolean;
 export declare function hasPendingInboundForPeer(pending: Iterable<{

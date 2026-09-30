@@ -18,10 +18,18 @@ export class CipherState {
     hasKey() {
         return this.key !== null;
     }
+    clone() {
+        const copy = new CipherState();
+        copy.key = this.key?.slice() ?? null;
+        copy.n = this.n;
+        return copy;
+    }
     /** Encrypt with AEAD; advance nonce. */
     encryptWithAd(ad, plaintext) {
         if (!this.key)
             return plaintext;
+        if (this.n >= 0xffffffffffffffffn)
+            throw new Error("Noise nonce exhausted");
         const ct = chacha20poly1305(this.key, noiseNonce(this.n), ad).encrypt(plaintext);
         this.n += 1n;
         return ct;
@@ -29,6 +37,8 @@ export class CipherState {
     decryptWithAd(ad, ciphertext) {
         if (!this.key)
             return ciphertext;
+        if (this.n >= 0xffffffffffffffffn)
+            throw new Error("Noise nonce exhausted");
         const pt = chacha20poly1305(this.key, noiseNonce(this.n), ad).decrypt(ciphertext);
         this.n += 1n;
         return pt;
@@ -37,7 +47,7 @@ export class CipherState {
         if (!this.key)
             return;
         // Noise rekey: encrypt 32 zero bytes with max nonce, take first 32 bytes.
-        const maxNonce = new Uint8Array(12).fill(0xff);
+        const maxNonce = noiseNonce(0xffffffffffffffffn);
         const cipher = chacha20poly1305(this.key, maxNonce, new Uint8Array());
         const out = cipher.encrypt(new Uint8Array(32));
         this.key = out.subarray(0, 32);

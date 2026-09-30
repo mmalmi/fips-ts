@@ -10,6 +10,7 @@ export declare class SymmetricState {
     private ck;
     private cipher;
     constructor(protocolName: string);
+    clone(): SymmetricState;
     /** h = HASH(h || data). */
     mixHash(data: Uint8Array): void;
     /** (ck, temp_k) = HKDF(ck, ikm, 2); k = temp_k; n = 0. */

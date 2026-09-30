@@ -42,7 +42,7 @@ export interface NoiseHandshakeInit {
 export declare class NoiseHandshake {
     readonly pattern: NoisePattern;
     readonly role: NoiseRole;
-    private readonly ss;
+    private ss;
     private readonly s;
     private e?;
     private rs?;
@@ -56,6 +56,7 @@ export declare class NoiseHandshake {
     writeMessage(payload: Uint8Array): Uint8Array;
     /** Consume an inbound handshake message; returns the plaintext payload. */
     readMessage(message: Uint8Array): Uint8Array;
+    private readMessageInPlace;
     /** Returns `(tx, rx)` where `tx` is for sending from our role. */
     splitTxRx(): {
         tx: CipherState;

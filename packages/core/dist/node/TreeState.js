@@ -41,6 +41,10 @@ export class TreeState {
         const removed = this.peers.delete(nodeAddrToHex(peerNodeAddr));
         return removed ? this.evaluateParent() : false;
     }
+    reset() {
+        this.peers.clear();
+        this.evaluateParent();
+    }
     isTreePeer(peerNodeAddr) {
         if (!bytesEqual(this.parent, this.identity.nodeAddr) && bytesEqual(this.parent, peerNodeAddr)) {
             return true;

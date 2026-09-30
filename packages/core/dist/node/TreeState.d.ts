@@ -15,6 +15,7 @@ export declare class TreeState {
     announce(): TreeAnnounce;
     updatePeer(peerNodeAddr: NodeAddr, announce: TreeAnnounce): boolean;
     removePeer(peerNodeAddr: NodeAddr): boolean;
+    reset(): void;
     isTreePeer(peerNodeAddr: NodeAddr): boolean;
     nextHop(destCoords: NodeAddr[], eligible: (nodeHex: string) => boolean): string | undefined;
     private evaluateParent;

@@ -7,6 +7,7 @@ export declare class CipherState {
     private n;
     static withKey(key: Uint8Array): CipherState;
     hasKey(): boolean;
+    clone(): CipherState;
     /** Encrypt with AEAD; advance nonce. */
     encryptWithAd(ad: Uint8Array, plaintext: Uint8Array): Uint8Array;
     decryptWithAd(ad: Uint8Array, ciphertext: Uint8Array): Uint8Array;

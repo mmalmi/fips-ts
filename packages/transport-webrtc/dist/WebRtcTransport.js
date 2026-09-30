@@ -162,12 +162,12 @@ export class WebRtcTransport {
         this.ownsRelayClients = false;
         for (const dial of this.pendingDials.values()) {
             clearTimeout(dial.timer);
+            this.pendingDials.delete(dial.sessionId);
+            dial.pc.close();
             dial.reject(new Error("transport stopped"));
         }
-        this.pendingDials.clear();
-        for (const pending of this.pendingInbound.values())
-            clearTimeout(pending.timer);
-        this.pendingInbound.clear();
+        for (const sessionId of this.pendingInbound.keys())
+            this.clearPendingInbound(sessionId, true);
         this.pendingConnects.clear();
         this.knownSessionIds.clear();
         this.seenSessionIds.clear();
@@ -421,6 +421,11 @@ export class WebRtcTransport {
             dial.pc.close();
             dial.reject(new Error("WebRTC path closed"));
         }
+        for (const [sessionId, pending] of this.pendingInbound) {
+            if (pending.remotePubkeyHex !== addr.addr)
+                continue;
+            this.clearPendingInbound(sessionId, true);
+        }
         const provenPeer = this.peersWithTraffic.delete(addr.addr);
         this.retireExistingConnection(addr.addr);
         if (provenPeer || this.autoReconnectTimers.has(addr.addr)) {
@@ -503,6 +508,7 @@ export class WebRtcTransport {
                         clearTimeout(dial.timer);
                         dial.reject(new Error(`webrtc state ${state}`));
                     }
+                    conn?.close();
                 }
             },
             logger: this.logger,
@@ -538,6 +544,7 @@ export class WebRtcTransport {
             if (dial) {
                 clearTimeout(dial.timer);
                 this.pendingDials.delete(valid.negotiationId);
+                dial.pc.close();
                 dial.reject(new Error("peer rejected"));
             }
             return;
@@ -590,7 +597,7 @@ export class WebRtcTransport {
             this.pendingInbound.delete(offer.negotiationId);
             pc.close();
         }, this.cfg.connectTimeoutMs);
-        const pending = { timer, remotePubkeyHex };
+        const pending = { timer, remotePubkeyHex, pc };
         this.pendingInbound.set(offer.negotiationId, pending);
         const ownsInbound = () => this.pendingInbound.get(offer.negotiationId) === pending;
         const dcPromise = new Promise((resolve) => {
@@ -598,9 +605,17 @@ export class WebRtcTransport {
         });
         try {
             await pc.setRemoteDescription({ type: "offer", sdp: offer.payload.sdp });
+            if (!ownsInbound())
+                return;
             const answer = await pc.createAnswer();
+            if (!ownsInbound())
+                return;
             await pc.setLocalDescription(answer);
+            if (!ownsInbound())
+                return;
             await waitForIceGatheringComplete(pc, this.cfg.iceGatherTimeoutMs);
+            if (!ownsInbound())
+                return;
             this.knownSessionIds.add(offer.negotiationId);
             const signal = createWebRtcSignal(offer.negotiationId, "answer", { sdp: pc.localDescription.sdp });
             await sendAnswerWithRouteRetry(() => this.sendWebRtcSignal(remotePubkeyHex, signal), ownsInbound);
@@ -614,14 +629,21 @@ export class WebRtcTransport {
             throw err;
         }
         dcPromise.then((dataChannel) => {
-            this.clearPendingInbound(offer.negotiationId);
+            if (!ownsInbound()) {
+                dataChannel.close();
+                return;
+            }
             let conn = null;
+            const ownsConnection = () => ownsInbound()
+                || (conn !== null && this.conns.get(remotePubkeyHex) === conn);
             conn = new WebRtcConnection({
                 remotePubkeyHex,
                 remoteAddr,
                 pc,
                 dataChannel,
                 onPacket: (data) => {
+                    if (!ownsConnection())
+                        return;
                     this.peersWithTraffic.add(remotePubkeyHex);
                     this.ctx?.onPacket({
                         transportType: "webrtc",
@@ -631,13 +653,17 @@ export class WebRtcTransport {
                     });
                 },
                 onState: (state) => {
-                    if (conn && this.supersededConnections.has(conn))
+                    if (!ownsConnection() || (conn && this.supersededConnections.has(conn)))
                         return;
                     this.ctx?.onConnectionState?.({ remoteAddr, state });
-                    if (state === "connected" && conn)
+                    if (state === "connected" && conn) {
                         this.conns.set(remotePubkeyHex, conn);
+                        this.clearPendingInbound(offer.negotiationId);
+                    }
                     if (state === "failed" || state === "disconnected") {
                         this.conns.delete(remotePubkeyHex);
+                        this.clearPendingInbound(offer.negotiationId);
+                        pc.close();
                         this.scheduleAutoReconnect(remotePubkeyHex);
                     }
                 },
@@ -691,11 +717,14 @@ export class WebRtcTransport {
         this.scheduleAutoReconnect(remotePubkeyHex);
         this.fillAutoConnectSlots();
     }
-    clearPendingInbound(sessionId) {
+    clearPendingInbound(sessionId, close = false) {
         const pending = this.pendingInbound.get(sessionId);
-        if (pending)
-            clearTimeout(pending.timer);
+        if (!pending)
+            return;
+        clearTimeout(pending.timer);
         this.pendingInbound.delete(sessionId);
+        if (close)
+            pending.pc.close();
     }
     async rejectIncomingOffer(offer, remotePubkeyHex) {
         await this.sendWebRtcSignal(remotePubkeyHex, createWebRtcSignal(offer.negotiationId, "reject"));

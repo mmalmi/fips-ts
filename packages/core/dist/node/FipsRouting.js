@@ -63,6 +63,8 @@ export class FipsRouting {
         this.pendingRouteResolutions.clear();
         this.lookupReversePaths.clear();
         this.learnedRoutes.clear();
+        this.coordCache.clear();
+        this.treeState.reset();
     }
     removePeer(peerNodeAddr) {
         const wasTreePeer = this.treeState.isTreePeer(peerNodeAddr);

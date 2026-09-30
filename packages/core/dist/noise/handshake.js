@@ -135,6 +135,21 @@ export class NoiseHandshake {
     }
     /** Consume an inbound handshake message; returns the plaintext payload. */
     readMessage(message) {
+        // Reading mixes DH keys before authenticating the whole message. Failed
+        // authentication must not poison a pending handshake retained for retry.
+        const previous = { ss: this.ss.clone(), rs: this.rs, re: this.re, step: this.step };
+        try {
+            return this.readMessageInPlace(message);
+        }
+        catch (error) {
+            this.ss = previous.ss;
+            this.rs = previous.rs;
+            this.re = previous.re;
+            this.step = previous.step;
+            throw error;
+        }
+    }
+    readMessageInPlace(message) {
         const tokens = this.tokensForStep(this.step);
         if (this.isSenderForStep(this.step)) {
             throw new Error(`not our turn to read at step ${this.step}`);
