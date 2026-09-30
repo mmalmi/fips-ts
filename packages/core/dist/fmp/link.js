@@ -15,6 +15,7 @@ import { aeadOpen, aeadSeal } from "../crypto/aead.js";
 import { ReplayWindow } from "../crypto/replay.js";
 import { bytesEqual } from "../codec/hex.js";
 import { NoiseHandshake } from "../noise/index.js";
+import { FmpReceiverReports } from "./receiverReports.js";
 import { decodeFmpEstablished, decodeFmpInner, decodeFmpMsg1, decodeFmpMsg2, encodeFmpEstablished, encodeFmpEstablishedHeader, encodeFmpInner, encodeFmpMsg1, encodeFmpMsg2, FMP_INNER_DATA, FMP_INNER_KEEPALIVE, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, NOISE_IK_MSG1_LEN, NOISE_IK_MSG2_LEN, } from "./wire.js";
 /** 8-byte epoch payload carried inside each FMP handshake step. */
 const EPOCH_PAYLOAD_LEN = 8;
@@ -34,6 +35,7 @@ export class FmpLink {
     txCounter = 0n;
     sessionStartMs = 0;
     rxReplay = new ReplayWindow();
+    receiverReports = new FmpReceiverReports();
     state = "init";
     constructor(init) {
         this.identity = init.identity;
@@ -193,7 +195,17 @@ export class FmpLink {
         const plaintext = aeadOpen(this.rx.getKey(), est.counter, est.ciphertext, aad);
         this.rxReplay.accept(est.counter);
         const inner = decodeFmpInner(plaintext);
+        this.receiverReports.record({
+            counter: est.counter, timestamp: inner.timestamp, bytes: packet.length,
+            ceFlag: (est.flags & 0x02) !== 0,
+        }, performance.now());
         return { msgType: inner.msgType, payload: inner.payload };
+    }
+    /** Report on this authenticated key/counter epoch; no timer or RR replies. */
+    receiverReportFor(senderReport) {
+        if (this.state !== "established")
+            return undefined;
+        return this.receiverReports.forSenderReport(senderReport, performance.now());
     }
     close() {
         this.state = "closed";

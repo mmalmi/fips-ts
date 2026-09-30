@@ -48,6 +48,7 @@ export declare class FmpLink {
     private txCounter;
     private sessionStartMs;
     private rxReplay;
+    private receiverReports;
     state: "init" | "handshaking" | "established" | "closed";
     constructor(init: FmpLinkInit);
     buildMsg1(_rand: (n: number) => Uint8Array): FmpHandshakeOutbound;
@@ -60,6 +61,8 @@ export declare class FmpLink {
         msgType: number;
         payload: Uint8Array;
     };
+    /** Report on this authenticated key/counter epoch; no timer or RR replies. */
+    receiverReportFor(senderReport: Uint8Array): Uint8Array | undefined;
     close(): void;
 }
 export { FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2 };
