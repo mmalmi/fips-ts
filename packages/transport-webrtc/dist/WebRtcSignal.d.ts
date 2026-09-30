@@ -18,5 +18,8 @@ export interface WebRtcSignalValidationContext {
 }
 export declare class SignalValidationError extends Error {
 }
+export declare function createWebRtcSignal(negotiationId: string, kind: WebRtcSignal["kind"], payload?: WebRtcSignalPayload): WebRtcSignal;
+/** Retry only answers rejected by routing, never successfully sent signals. */
+export declare function sendAnswerWithRouteRetry(send: () => Promise<void>, isPending: () => boolean): Promise<void>;
 export declare function validateWebRtcSignal(message: LinkNegotiationMessage, ctx: WebRtcSignalValidationContext): WebRtcSignal;
 //# sourceMappingURL=WebRtcSignal.d.ts.map

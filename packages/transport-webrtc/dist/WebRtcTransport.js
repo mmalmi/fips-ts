@@ -5,7 +5,7 @@ import { DEFAULT_FIPS_ADVERT_TTL_MS, FIPS_ADVERT_D_TAG, NostrPeerDiscovery, } fr
 import { WebRtcConnection } from "./WebRtcConnection.js";
 import { WebRtcAdvertCache } from "./WebRtcAdvertCache.js";
 import { AsyncEventStream, cloneDiscoveredPeer, emptyAsyncIterable, hasPendingInboundForPeer, incomingOfferReplacesPendingDial, randomId, waitForIceGatheringComplete, } from "./WebRtcTransportSupport.js";
-import { validateWebRtcSignal, } from "./WebRtcSignal.js";
+import { createWebRtcSignal, sendAnswerWithRouteRetry, validateWebRtcSignal, } from "./WebRtcSignal.js";
 import { DEFAULT_STUN_SERVERS, DEFAULT_ICE_GATHER_TIMEOUT_MS, } from "./WebRtcTransportConfig.js";
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
 const AUTO_RECONNECT_DELAY_MS = 500;
@@ -455,15 +455,7 @@ export class WebRtcTransport {
         // Never send the canceled offer or attach callbacks to its closed PC.
         if (!ownsDial())
             return;
-        const signal = {
-            version: 1,
-            negotiationId: dial.sessionId,
-            linkType: "webrtc",
-            kind: "offer",
-            createdAtMs: Date.now(),
-            expiresAtMs: Date.now() + 60_000,
-            payload: { sdp: dial.pc.localDescription.sdp },
-        };
+        const signal = createWebRtcSignal(dial.sessionId, "offer", { sdp: dial.pc.localDescription.sdp });
         dial.phase = "sending-offer";
         await this.sendWebRtcSignal(dial.remotePubkeyHex, signal);
         if (!ownsDial())
@@ -598,7 +590,9 @@ export class WebRtcTransport {
             this.pendingInbound.delete(offer.negotiationId);
             pc.close();
         }, this.cfg.connectTimeoutMs);
-        this.pendingInbound.set(offer.negotiationId, { timer, remotePubkeyHex });
+        const pending = { timer, remotePubkeyHex };
+        this.pendingInbound.set(offer.negotiationId, pending);
+        const ownsInbound = () => this.pendingInbound.get(offer.negotiationId) === pending;
         const dcPromise = new Promise((resolve) => {
             pc.ondatachannel = (evt) => resolve(evt.channel);
         });
@@ -608,15 +602,10 @@ export class WebRtcTransport {
             await pc.setLocalDescription(answer);
             await waitForIceGatheringComplete(pc, this.cfg.iceGatherTimeoutMs);
             this.knownSessionIds.add(offer.negotiationId);
-            await this.sendWebRtcSignal(remotePubkeyHex, {
-                version: 1,
-                negotiationId: offer.negotiationId,
-                linkType: "webrtc",
-                kind: "answer",
-                createdAtMs: Date.now(),
-                expiresAtMs: Date.now() + 60_000,
-                payload: { sdp: pc.localDescription.sdp },
-            });
+            const signal = createWebRtcSignal(offer.negotiationId, "answer", { sdp: pc.localDescription.sdp });
+            await sendAnswerWithRouteRetry(() => this.sendWebRtcSignal(remotePubkeyHex, signal), ownsInbound);
+            if (!ownsInbound())
+                return;
             this.logger.debug("webrtc answer sent", remotePubkeyHex, offer.negotiationId);
         }
         catch (err) {
@@ -709,15 +698,7 @@ export class WebRtcTransport {
         this.pendingInbound.delete(sessionId);
     }
     async rejectIncomingOffer(offer, remotePubkeyHex) {
-        await this.sendWebRtcSignal(remotePubkeyHex, {
-            version: 1,
-            negotiationId: offer.negotiationId,
-            linkType: "webrtc",
-            kind: "reject",
-            createdAtMs: Date.now(),
-            expiresAtMs: Date.now() + 60_000,
-            payload: {},
-        });
+        await this.sendWebRtcSignal(remotePubkeyHex, createWebRtcSignal(offer.negotiationId, "reject"));
     }
     async handleLinkNegotiation(remotePubkeyHex, message) {
         await this.handleIncomingSignal(message, remotePubkeyHex);

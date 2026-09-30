@@ -3,6 +3,27 @@ export class SignalValidationError extends Error {
 const MAX_SDP_LENGTH = 48 * 1_024;
 const MAX_CANDIDATES = 32;
 const MAX_CANDIDATE_LENGTH = 2_048;
+export function createWebRtcSignal(negotiationId, kind, payload = {}) {
+    const createdAtMs = Date.now();
+    return {
+        version: 1, negotiationId, linkType: "webrtc", kind,
+        createdAtMs, expiresAtMs: createdAtMs + 60_000, payload,
+    };
+}
+/** Retry only answers rejected by routing, never successfully sent signals. */
+export async function sendAnswerWithRouteRetry(send, isPending) {
+    for (let attempt = 0; isPending(); attempt++) {
+        try {
+            await send();
+            return;
+        }
+        catch (error) {
+            if (!(error instanceof Error) || !error.message.startsWith("no route to ") || attempt === 3)
+                throw error;
+            await new Promise((resolve) => { setTimeout(resolve, 1_000 * 2 ** attempt); });
+        }
+    }
+}
 export function validateWebRtcSignal(message, ctx) {
     if (message.linkType !== "webrtc") {
         throw new SignalValidationError(`bad link type ${message.linkType}`);

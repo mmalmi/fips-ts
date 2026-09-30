@@ -444,8 +444,26 @@ export class FspSessionManager {
         this.cfg.emitSession({ remotePubkey: remotePubkeyHex, state: "establishing" });
         const setupDone = this.waitForSessionSetup(session, remoteNodeHex);
         const msg1 = fsp.buildSessionSetup((n) => this.cfg.random.bytes(n), this.cfg.routing.coords, this.cfg.routing.coordinatesFor(remoteNodeHex) ?? [remoteNodeAddr]);
+        let retryTimer;
+        const stillInitiating = () => this.sessions.get(remoteNodeHex) === session
+            && session?.fsp === fsp && fsp.state === "handshaking";
+        const scheduleRetry = (delayMs) => {
+            if (!stillInitiating())
+                return;
+            retryTimer = setTimeout(() => {
+                retryTimer = undefined;
+                if (!stillInitiating())
+                    return;
+                // Reuse the Noise handshake bytes, but let routing select a current
+                // carrier. The shared setup deadline bounds these exponential retries.
+                void this.cfg.routing.sendFspToward(remoteNodeAddr, msg1)
+                    .catch(error => this.cfg.logger.debug("FSP setup resend failed", error))
+                    .finally(() => scheduleRetry(delayMs * 2));
+            }, delayMs);
+        };
         try {
             await this.cfg.routing.sendFspToward(remoteNodeAddr, msg1);
+            scheduleRetry(1_000);
             await setupDone;
         }
         catch (error) {
@@ -454,6 +472,10 @@ export class FspSessionManager {
             }
             await setupDone.catch(() => undefined);
             throw error;
+        }
+        finally {
+            if (retryTimer)
+                clearTimeout(retryTimer);
         }
         return session;
     }
