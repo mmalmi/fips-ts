@@ -37,7 +37,7 @@ describe("FspSessionManager", () => {
     expect(ensureFirstContactRoute).not.toHaveBeenCalled();
   });
 
-  it("delivers a direct record that arrives before the routed final handshake", async () => {
+  it.each(["valid", "corrupted", "duplicate"])("handles %s early records", async (precedingRecord) => {
     const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
     const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x72));
     const sentReplies: Uint8Array[] = [];
@@ -96,13 +96,26 @@ describe("FspSessionManager", () => {
       payload,
     }, FSP_FLAG_DIRECT_TRANSPORT);
 
+    if (precedingRecord === "corrupted") {
+      const corrupted = new Uint8Array(earlyRecord);
+      corrupted[corrupted.length - 1] ^= 1;
+      await manager.handleFromPeer(peer, initiatorIdentity.nodeAddr, corrupted);
+    }
+
     await expect(
       manager.handleFromPeer(peer, initiatorIdentity.nodeAddr, earlyRecord),
     ).resolves.toBeUndefined();
+    if (precedingRecord === "duplicate") {
+      await manager.handleFromPeer(peer, initiatorIdentity.nodeAddr, earlyRecord);
+    }
+    const secondPayload = new TextEncoder().encode("second pubsub record");
+    await manager.handleFromPeer(peer, initiatorIdentity.nodeAddr, initiator.encryptDatagram({
+      srcPort: 5_000, dstPort: 4_242, payload: secondPayload,
+    }, FSP_FLAG_DIRECT_TRANSPORT));
     expect(delivered).toEqual([]);
 
     await manager.handleFromPeer(peer, initiatorIdentity.nodeAddr, msg3);
-    expect(delivered).toEqual([payload]);
+    expect(delivered).toEqual([payload, secondPayload]);
   });
 
   it("shares a setup timeout and replaces it before the next send attempt", async () => {
