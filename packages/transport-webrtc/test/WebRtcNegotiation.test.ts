@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WebRtcTransport } from '../src/WebRtcTransport.js'
 import { identityFromSecretKey, toHex } from '@fips/core'
 import type { WebRtcTransportConfig } from '../src/WebRtcTransportConfig.js'
+import { validateWebRtcSignal, type WebRtcSignal } from '../src/WebRtcSignal.js'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -93,6 +94,7 @@ async function fixture(
   localScalar = 2,
   remoteScalar = 1,
   config: Partial<WebRtcTransportConfig> = {},
+  send?: (signal: WebRtcSignal) => Promise<void>,
 ) {
   const secret = (scalar: number) => {
     const bytes = new Uint8Array(32)
@@ -101,7 +103,7 @@ async function fixture(
   }
   const identities = await Promise.all([remoteScalar, localScalar].map(value => identityFromSecretKey(secret(value))))
   remote.addr = `02${toHex(identities[0]!.xOnlyPubkey)}`
-  const sent: Array<{ kind: string; negotiationId: string }> = []
+  const sent: WebRtcSignal[] = []
   const states: string[] = []
   const transport = new WebRtcTransport({
     rtcPeerConnection: FakePeerConnection as unknown as typeof RTCPeerConnection,
@@ -114,7 +116,8 @@ async function fixture(
     onPacket: vi.fn(),
     onConnectionState: event => states.push(event.state),
     sendLinkNegotiation: async (_peer, signal) => {
-      sent.push({ kind: signal.kind, negotiationId: signal.negotiationId })
+      sent.push(signal as WebRtcSignal)
+      await send?.(signal as WebRtcSignal)
       if (signal.kind === 'offer') await sendGate?.promise
     },
   })
@@ -146,6 +149,81 @@ beforeEach(() => {
   FakePeerConnection.instances = []
   FakePeerConnection.offerGate = undefined
   FakePeerConnection.localGate = undefined
+})
+
+describe('WebRTC failed answer route recovery', () => {
+  const noRoute = () => new Error('no route to 0123456789abcdef0123456789abcdef')
+
+  it('recovers failed answer writes without replaying a successfully delivered signal', async () => {
+    const delivered = new Set<string>()
+    let attempts = 0
+    const { transport, sent, states } = await fixture(undefined, 2, 1, {}, async signal => {
+      if (++attempts <= 2) throw noRoute()
+      // Existing peers reject repeated negotiation IDs: only the successful
+      // write may reach this unchanged receiver-side replay check.
+      validateWebRtcSignal(signal, {
+        knownNegotiationIds: new Set(['winning-incoming-offer']),
+        seenNegotiationIds: delivered,
+        nowMs: Date.now(),
+      })
+      delivered.add(`${signal.negotiationId}:${signal.kind}`)
+    })
+    const result = incomingWins(transport).then(() => 'connected', error => error.message)
+    await flush()
+    const incoming = FakePeerConnection.instances.at(-1)!
+    expect(incoming.connectionState).toBe('new')
+    await vi.advanceTimersByTimeAsync(999)
+    expect(sent).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(2_001)
+    expect(await result).toBe('connected')
+    expect(states).toEqual(['connected'])
+    expect(delivered.size).toBe(1)
+    expect(sent).toHaveLength(3)
+    expect(sent.every(signal => JSON.stringify(signal) === JSON.stringify(sent[0]))).toBe(true)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(sent).toHaveLength(3)
+    expect(states).toEqual(['connected'])
+  })
+
+  it('bounds unreachable answer retries and keeps the original failure', async () => {
+    const { transport, sent } = await fixture(undefined, 2, 1, {}, async () => { throw noRoute() })
+    const result = incomingWins(transport).then(() => 'connected', error => error.message)
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(await result).toBe(noRoute().message)
+    expect(sent).toHaveLength(4)
+    expect(FakePeerConnection.instances.at(-1)!.connectionState).toBe('closed')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(sent).toHaveLength(4)
+  })
+
+  it.each(['deadline', 'stop'])('does not retry after the inbound negotiation loses ownership through %s', async reason => {
+    const { transport, sent, states } = await fixture(undefined, 2, 1, { connectTimeoutMs: 500 }, async () => { throw noRoute() })
+    const result = incomingWins(transport).then(() => 'settled', error => error.message)
+    await flush()
+    if (reason === 'stop') await transport.stop()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await result
+    expect(sent).toHaveLength(1)
+    expect(states).not.toContain('connected')
+  })
+
+  it('does not retry unrelated answer errors', async () => {
+    const { transport, sent } = await fixture(undefined, 2, 1, {}, async () => { throw new Error('invalid session') })
+    const result = incomingWins(transport).then(() => 'connected', error => error.message)
+    await flush()
+    expect(await result).toBe('invalid session')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('does not resend a failed offer to older native admission code', async () => {
+    const { sent, result } = await fixture(undefined, 2, 1, {}, async () => { throw noRoute() })
+    FakePeerConnection.instances[0].finishGathering()
+    await flush()
+    expect(await result).toBe(noRoute().message)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(sent.map(signal => signal.kind)).toEqual(['offer'])
+  })
 })
 
 afterEach(async () => {

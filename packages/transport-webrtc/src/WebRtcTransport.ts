@@ -33,6 +33,8 @@ import {
   waitForIceGatheringComplete,
 } from "./WebRtcTransportSupport.js";
 import {
+  createWebRtcSignal,
+  sendAnswerWithRouteRetry,
   validateWebRtcSignal,
   type WebRtcSignal,
 } from "./WebRtcSignal.js";
@@ -556,15 +558,7 @@ export class WebRtcTransport implements Transport {
     // An incoming offer can win while any of these operations is pending.
     // Never send the canceled offer or attach callbacks to its closed PC.
     if (!ownsDial()) return;
-    const signal: WebRtcSignal = {
-      version: 1,
-      negotiationId: dial.sessionId,
-      linkType: "webrtc",
-      kind: "offer",
-      createdAtMs: Date.now(),
-      expiresAtMs: Date.now() + 60_000,
-      payload: { sdp: dial.pc.localDescription!.sdp },
-    };
+    const signal = createWebRtcSignal(dial.sessionId, "offer", { sdp: dial.pc.localDescription!.sdp });
     dial.phase = "sending-offer";
     await this.sendWebRtcSignal(dial.remotePubkeyHex, signal);
     if (!ownsDial()) return;
@@ -700,7 +694,9 @@ export class WebRtcTransport implements Transport {
       this.pendingInbound.delete(offer.negotiationId);
       pc.close();
     }, this.cfg.connectTimeoutMs);
-    this.pendingInbound.set(offer.negotiationId, { timer, remotePubkeyHex });
+    const pending = { timer, remotePubkeyHex };
+    this.pendingInbound.set(offer.negotiationId, pending);
+    const ownsInbound = () => this.pendingInbound.get(offer.negotiationId) === pending;
     const dcPromise = new Promise<RTCDataChannel>((resolve) => {
       pc.ondatachannel = (evt) => resolve(evt.channel);
     });
@@ -710,15 +706,9 @@ export class WebRtcTransport implements Transport {
       await pc.setLocalDescription(answer);
       await waitForIceGatheringComplete(pc, this.cfg.iceGatherTimeoutMs);
       this.knownSessionIds.add(offer.negotiationId);
-      await this.sendWebRtcSignal(remotePubkeyHex, {
-        version: 1,
-        negotiationId: offer.negotiationId,
-        linkType: "webrtc",
-        kind: "answer",
-        createdAtMs: Date.now(),
-        expiresAtMs: Date.now() + 60_000,
-        payload: { sdp: pc.localDescription!.sdp },
-      });
+      const signal = createWebRtcSignal(offer.negotiationId, "answer", { sdp: pc.localDescription!.sdp });
+      await sendAnswerWithRouteRetry(() => this.sendWebRtcSignal(remotePubkeyHex, signal), ownsInbound);
+      if (!ownsInbound()) return;
       this.logger.debug("webrtc answer sent", remotePubkeyHex, offer.negotiationId);
     } catch (err) {
       this.clearPendingInbound(offer.negotiationId);
@@ -812,15 +802,7 @@ export class WebRtcTransport implements Transport {
   }
 
   private async rejectIncomingOffer(offer: WebRtcSignal, remotePubkeyHex: string): Promise<void> {
-    await this.sendWebRtcSignal(remotePubkeyHex, {
-      version: 1,
-      negotiationId: offer.negotiationId,
-      linkType: "webrtc",
-      kind: "reject",
-      createdAtMs: Date.now(),
-      expiresAtMs: Date.now() + 60_000,
-      payload: {},
-    });
+    await this.sendWebRtcSignal(remotePubkeyHex, createWebRtcSignal(offer.negotiationId, "reject"));
   }
 
   async handleLinkNegotiation(remotePubkeyHex: string, message: LinkNegotiationMessage): Promise<void> {
