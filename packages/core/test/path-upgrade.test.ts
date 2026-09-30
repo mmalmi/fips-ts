@@ -184,7 +184,7 @@ describe("physical path upgrade", () => {
     } finally {
       await pair.stop();
     }
-  });
+  }, 15_000); // 66 real Noise handshakes; protocol deadlines above still use the fake clock.
 
   it("prefers an established alternate over an earlier pending carrier", async () => {
     const pair = await startPair(["bootstrap", "pending", "direct"]);
