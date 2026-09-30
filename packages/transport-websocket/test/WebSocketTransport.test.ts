@@ -136,6 +136,56 @@ describe("WebSocket physical record validation", () => {
 });
 
 describe("WebSocketTransport", () => {
+  it("rejects connection attempts after shutdown instead of leaving them pending", async () => {
+    const { transport } = await setup();
+    await transport.stop();
+    let outcome = "still pending";
+    void transport.connect({ transport: "websocket", addr: "wss://seed.example/fips" })
+      .then(() => { outcome = "connected"; }, error => { outcome = error.message; });
+    await Promise.resolve();
+    expect(outcome).toBe("WebSocket transport is not started");
+  });
+
+  it("does not accept a stale asynchronous key hint after restart", async () => {
+    const { transport, context, states } = await setup({ randomNonce: () => 11n });
+    let finishBlob!: (value: ArrayBuffer) => void;
+    const blob = new Blob();
+    blob.arrayBuffer = () => new Promise<ArrayBuffer>(resolve => { finishBlob = resolve; });
+    const old = FakeWebSocket.instances[0]!;
+    old.open();
+    old.receive(blob);
+    await Promise.resolve();
+    await transport.stop();
+    await transport.start(context);
+    const current = FakeWebSocket.instances[1]!;
+    current.open();
+    finishBlob(encodeLocalKeyHintResponse(11n, new Uint8Array(32).fill(0x44)).buffer);
+    await new Promise(resolve => { setTimeout(resolve, 0); });
+    expect(states.map(event => event.state)).toEqual(["connecting", "connecting"]);
+    current.receive(encodeLocalKeyHintResponse(11n, new Uint8Array(32).fill(0x55)).buffer);
+    await transport.connect({ transport: "websocket", addr: current.url });
+    expect(states.at(-1)?.state).toBe("connected");
+    await transport.stop();
+  });
+
+  it("rejects a record that can never fit its outbound buffer budget", async () => {
+    const { transport } = await setup({ randomNonce: () => 11n, maxBufferedBytes: 32 });
+    try {
+      const socket = FakeWebSocket.instances[0]!;
+      socket.open();
+      socket.receive(encodeLocalKeyHintResponse(11n, new Uint8Array(32).fill(0x44)).buffer);
+      const addr = { transport: "websocket", addr: socket.url };
+      await transport.connect(addr);
+      const record = new Uint8Array(69);
+      record[0] = 0x02;
+      record[2] = 65;
+      let outcome = "still pending";
+      void transport.send(addr, record).then(() => { outcome = "sent"; }, error => { outcome = error.message; });
+      await Promise.resolve();
+      expect(outcome).toContain("buffer budget");
+    } finally { await transport.stop(); }
+  });
+
   it("keeps its existing record capacity above the preferred MTU", async () => {
     const { transport } = await setup({ randomNonce: () => 15n });
     try {

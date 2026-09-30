@@ -48,6 +48,7 @@ type SubCallbacks = {
 type ActiveSubscription = SubCallbacks & { request: string };
 
 type PendingPublish = {
+  promise: Promise<void>;
   resolve: () => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -85,7 +86,7 @@ export class NostrRelayClient {
     }
     if (this.readyPromise) return this.readyPromise;
     this.closed = false;
-    this.readyPromise = new Promise<void>((resolve, reject) => {
+    const ready = new Promise<void>((resolve, reject) => {
       let settled = false;
       let ws: WebSocket | null = null;
       const finish = (fn: () => void): void => {
@@ -151,24 +152,32 @@ export class NostrRelayClient {
         fail("relay connect error");
       }
     });
-    return this.readyPromise;
+    this.readyPromise = ready;
+    void ready.catch(() => {
+      if (this.readyPromise === ready) this.readyPromise = undefined;
+    });
+    return ready;
   }
 
   async publish(event: NostrEvent): Promise<void> {
     await this.connect();
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingPublishes.delete(event.id);
-        reject(new Error("relay publish OK timeout"));
-      }, this.publishAckTimeoutMs);
-      this.pendingPublishes.set(event.id, { resolve, reject, timer });
-      try {
-        this.ws!.send(JSON.stringify(["EVENT", event]));
-      } catch (error) {
-        this.clearPendingPublish(event.id);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    });
+    const existing = this.pendingPublishes.get(event.id);
+    if (existing) return existing.promise;
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+    const timer = setTimeout(() => {
+      this.pendingPublishes.delete(event.id);
+      reject(new Error("relay publish OK timeout"));
+    }, this.publishAckTimeoutMs);
+    this.pendingPublishes.set(event.id, { promise, resolve, reject, timer });
+    try {
+      this.ws!.send(JSON.stringify(["EVENT", event]));
+    } catch (error) {
+      this.clearPendingPublish(event.id);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+    return promise;
   }
 
   async subscribe(

@@ -229,17 +229,19 @@ export class WebSocketTransport implements Transport {
   }
 
   async connect(addr: TransportAddress): Promise<void> {
+    if (this.stopping) throw new Error("WebSocket transport is not started");
     const state = this.stateFor(addr);
     if (this.isReady(state)) return;
-    if (!state.socket && !state.reconnectTimer) this.dial(state);
     await new Promise<void>((resolve, reject) => {
       state.readyWaiters.add({ resolve, reject });
+      if (!state.socket && !state.reconnectTimer) this.dial(state);
     });
   }
 
   async send(addr: TransportAddress, packet: Uint8Array): Promise<void> {
     const state = this.stateFor(addr);
     validateFipsRecord(packet, this.maxFrameBytes);
+    if (packet.length > this.maxBufferedBytes) throw new Error("WebSocket record exceeds send buffer budget");
     if (!this.isReady(state)) throw new Error("WebSocket seed is not connected");
     if (state.queue.length >= this.maxSendQueue) {
       this.counters.sendQueueFull++;
@@ -330,6 +332,7 @@ export class WebSocketTransport implements Transport {
   ): Promise<void> {
     if (!this.isCurrent(state, socket, generation)) return;
     const wire = await binaryMessage(data);
+    if (!this.isCurrent(state, socket, generation)) return;
     const hint = decodeLocalKeyHint(wire);
     if (hint?.kind === "request") {
       if (!this.ctx) throw new Error("WebSocket transport is not started");

@@ -83,7 +83,13 @@ export class WebRtcConnection {
     // Initial check in case listeners are wired after states have already
     // transitioned (e.g. responder's pc is already connected by the time we
     // construct this object).
-    queueMicrotask(() => this.evaluateState());
+    queueMicrotask(() => {
+      if (this.dataChannel.readyState === "open") {
+        this.sendLocalReady();
+        this.startReadyFallback();
+      }
+      this.evaluateState();
+    });
   }
 
   private evaluateState(): void {

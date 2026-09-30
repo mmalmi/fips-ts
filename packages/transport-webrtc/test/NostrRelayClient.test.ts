@@ -12,6 +12,7 @@ class FakeWebSocket {
   static accepted = true;
   static message = "";
   static failNextConnect = false;
+  static throwNextConnect = false;
   static instances: FakeWebSocket[] = [];
 
   readyState = FakeWebSocket.CONNECTING;
@@ -20,6 +21,10 @@ class FakeWebSocket {
   private readonly listeners = new Map<string, Listener[]>();
 
   constructor(readonly url: string) {
+    if (FakeWebSocket.throwNextConnect) {
+      FakeWebSocket.throwNextConnect = false;
+      throw new Error("constructor failed");
+    }
     FakeWebSocket.instances.push(this);
     queueMicrotask(() => {
       if (FakeWebSocket.failNextConnect) {
@@ -76,6 +81,7 @@ beforeEach(() => {
   FakeWebSocket.accepted = true;
   FakeWebSocket.message = "";
   FakeWebSocket.failNextConnect = false;
+  FakeWebSocket.throwNextConnect = false;
   FakeWebSocket.instances = [];
 });
 
@@ -92,6 +98,27 @@ function event(id: string): NostrEvent {
 }
 
 describe("NostrRelayClient publish acknowledgements", () => {
+  it("settles concurrent publishes of the same event after relay acceptance", async () => {
+    const relay = new NostrRelayClient({
+      url: "ws://relay.test",
+      webSocket: FakeWebSocket as unknown as typeof WebSocket,
+      publishAckTimeoutMs: 25,
+    });
+    await expect(Promise.all([relay.publish(event("same")), relay.publish(event("same"))]))
+      .resolves.toEqual([undefined, undefined]);
+  });
+
+  it("can retry after a WebSocket constructor throws synchronously", async () => {
+    const relay = new NostrRelayClient({
+      url: "ws://relay.test",
+      webSocket: FakeWebSocket as unknown as typeof WebSocket,
+    });
+    FakeWebSocket.throwNextConnect = true;
+    await expect(relay.connect()).rejects.toThrow("relay connect error");
+    await expect(relay.connect()).resolves.toBeUndefined();
+    relay.close();
+  });
+
   it("resolves after relay OK true", async () => {
     const relay = new NostrRelayClient({
       url: "ws://relay.test",

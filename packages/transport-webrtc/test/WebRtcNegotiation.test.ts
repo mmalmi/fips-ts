@@ -383,5 +383,60 @@ describe('WebRTC simultaneous negotiation ownership', () => {
     await flush()
     expect(await result).toBe('webrtc state failed')
     expect(states).toContain('failed')
+    expect(current.connectionState).toBe('closed')
+  })
+})
+
+
+describe('WebRTC negotiation resource cleanup', () => {
+  it.each(['stop', 'reject'])('closes an unfinished outgoing connection on %s', async reason => {
+    const { transport, sent, result } = await fixture()
+    const pc = FakePeerConnection.instances[0]
+    pc.finishGathering()
+    await flush()
+    if (reason === 'stop') {
+      await transport.stop()
+    } else {
+      await transport.handleLinkNegotiation(remote.addr, {
+        ...sent[0], kind: 'reject', payload: {},
+      })
+    }
+    expect(await result).toBe(reason === 'stop' ? 'transport stopped' : 'peer rejected')
+    expect(pc.connectionState).toBe('closed')
+    expect(pc.channel.readyState).toBe('closed')
+  })
+
+  it.each(['stop', 'deadline', 'close'])('closes an incoming channel that never opens on %s', async reason => {
+    const { transport, states } = await fixture(undefined, 2, 1, { connectTimeoutMs: 500 })
+    await transport.handleLinkNegotiation(remote.addr, {
+      version: 1, negotiationId: 'stalled-inbound', linkType: 'webrtc', kind: 'offer',
+      createdAtMs: Date.now(), expiresAtMs: Date.now() + 60_000,
+      payload: { sdp: 'incoming-sdp' },
+    })
+    const pc = FakePeerConnection.instances.at(-1)!
+    pc.ondatachannel?.({ channel: pc.channel })
+    await flush()
+    if (reason === 'stop') await transport.stop()
+    else if (reason === 'close') await transport.close(remote)
+    else await vi.advanceTimersByTimeAsync(500)
+    expect(pc.connectionState).toBe('closed')
+    expect(pc.channel.readyState).toBe('closed')
+    expect(states).not.toContain('connected')
+  })
+
+  it('ignores a late incoming data channel after stop', async () => {
+    const { transport, states } = await fixture()
+    await transport.handleLinkNegotiation(remote.addr, {
+      version: 1, negotiationId: 'late-inbound', linkType: 'webrtc', kind: 'offer',
+      createdAtMs: Date.now(), expiresAtMs: Date.now() + 60_000,
+      payload: { sdp: 'incoming-sdp' },
+    })
+    const pc = FakePeerConnection.instances.at(-1)!
+    await transport.stop()
+    pc.ondatachannel?.({ channel: pc.channel })
+    await flush()
+    expect(pc.connectionState).toBe('closed')
+    expect(pc.channel.readyState).toBe('closed')
+    expect(states).not.toContain('connected')
   })
 })

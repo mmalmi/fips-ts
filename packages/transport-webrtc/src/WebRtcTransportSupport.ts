@@ -2,6 +2,12 @@ import { toHex, type DiscoveredPeer } from "@fips/core";
 
 import type { NostrEvent } from "./NostrRelayClient.js";
 
+export interface PendingInboundConnection {
+  timer: ReturnType<typeof setTimeout>;
+  remotePubkeyHex: string;
+  pc: RTCPeerConnection;
+}
+
 export function randomId(): string {
   const bytes = new Uint8Array(16);
   if (typeof crypto !== "undefined" && crypto.getRandomValues) {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { WebRtcConnection } from "../src/WebRtcConnection.js";
 
@@ -55,6 +55,28 @@ class FakeDataChannel extends EventTarget {
 }
 
 describe("WebRtcConnection", () => {
+  it("starts the ready handshake when attached to an already-open channel", async () => {
+    vi.useFakeTimers();
+    const pc = new FakePeerConnection();
+    pc.connectionState = "connected";
+    const dataChannel = new FakeDataChannel();
+    dataChannel.readyState = "open";
+    const states: string[] = [];
+    const conn = new WebRtcConnection({
+      remotePubkeyHex: "02" + "11".repeat(32),
+      remoteAddr: { transport: "webrtc", addr: "02" + "11".repeat(32) },
+      pc: pc as unknown as RTCPeerConnection,
+      dataChannel: dataChannel as unknown as RTCDataChannel,
+      onPacket: () => undefined,
+      onState: (state) => states.push(state),
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(250);
+      expect(dataChannel.sent).toEqual([READY_FRAME]);
+      expect(states).toEqual(["connected"]);
+    } finally { conn.close(); vi.useRealTimers(); }
+  });
+
   it("reports connected when ICE is connected and the data channel is ready", () => {
     const pc = new FakePeerConnection();
     const dataChannel = new FakeDataChannel();
