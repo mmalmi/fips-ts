@@ -1,5 +1,11 @@
 # Changelog
 
+## Runtime packages 0.0.46 - 2026-09-30
+
+- Match native FIPS’s 20% routing-filter admission cap so valid seed aggregates above the former 5% limit are accepted. Overfilled and stale filters remain rejected.
+- Back off unanswered route lookups after the first 250 ms retry, with a one-second maximum interval and the existing five-second deadline. This bounds each unanswered lookup to seven attempts per neighbour instead of twenty.
+- Release `@fips/core` 0.0.46. Application protocols and wire formats are unchanged.
+
 ## Runtime packages 0.0.42 - 2026-09-06
 
 - Warm routing coordinates before the first five payloads on a new transit path,

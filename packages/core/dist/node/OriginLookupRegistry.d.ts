@@ -13,6 +13,7 @@ export declare class OriginLookupRegistry {
     constructor(maximum: number);
     get(targetHex: string): PendingOriginLookup | undefined;
     findRequest(requestId: bigint): PendingOriginLookup | undefined;
+    retry(pending: PendingOriginLookup, send: () => Promise<void>): Promise<void>;
     create(args: {
         targetHex: string;
         targetPubkey?: Uint8Array;

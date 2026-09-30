@@ -11,14 +11,13 @@ import { decodeLookupRequest, decodeLookupResponse, encodeLookupRequestPayload, 
 import { BloomRouting } from "./BloomRouting.js";
 import { LearnedRouteTable } from "./LearnedRouteTable.js";
 import { OriginLookupRegistry } from "./OriginLookupRegistry.js";
-import { delay, discoveryPublicKey, frameCapacity, isKnownUnhandledLinkMessage, lookupReverseKey, peerNodeKey, selectCarrier, } from "./routingHelpers.js";
+import { discoveryPublicKey, frameCapacity, isKnownUnhandledLinkMessage, lookupReverseKey, peerNodeKey, selectCarrier, } from "./routingHelpers.js";
 import { TreeState } from "./TreeState.js";
 const ROUTE_RESOLUTION_TIMEOUT_MS = 5_000;
 const MAX_PENDING_ROUTE_RESOLUTIONS = 64;
 const LOOKUP_REVERSE_PATH_TTL_MS = 30_000;
 const MAX_LOOKUP_REVERSE_PATHS = 256;
 const LOOKUP_ORIGIN_TIMEOUT_MS = 5_000;
-const LOOKUP_ORIGIN_RETRY_INTERVAL_MS = 250;
 const LOOKUP_ORIGIN_TTL = 8;
 const MAX_PENDING_ORIGIN_LOOKUPS = 64;
 const REPLY_LEARNED_ROUTE_TTL_SECONDS = 300;
@@ -482,16 +481,10 @@ export class FipsRouting {
             .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS);
     }
     async retryOriginLookup(pending, encoded, excludedPeer) {
-        while (this.originLookups.get(pending.targetHex) === pending) {
+        await this.originLookups.retry(pending, async () => {
             const peers = this.originLookupPeers(excludedPeer, pending.minMtu);
             await Promise.allSettled(peers.map((peer) => this.cfg.sendLinkMessage(peer, LinkMessageType.LookupRequest, encoded)));
-            if (this.originLookups.get(pending.targetHex) !== pending)
-                return;
-            await Promise.race([
-                pending.promise.catch(() => undefined),
-                delay(LOOKUP_ORIGIN_RETRY_INTERVAL_MS),
-            ]);
-        }
+        });
     }
     async sendSessionDatagram(datagram, previousHop) {
         const destNodeHex = nodeAddrToHex(datagram.destAddr);

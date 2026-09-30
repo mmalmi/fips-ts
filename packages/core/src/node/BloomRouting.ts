@@ -25,7 +25,9 @@ interface BloomRoutingConfig {
   emitError: (error: Error, where: string) => void;
 }
 
-const MAX_INBOUND_FILTER_FPR = 0.05;
+// Match native FIPS's default antipoison cap. Legitimate aggregated seed filters
+// can exceed the former 5% limit well before reaching the fixed filter's ceiling.
+const MAX_INBOUND_FILTER_FPR = 0.20;
 
 export class BloomRouting {
   private sequence = 0n;

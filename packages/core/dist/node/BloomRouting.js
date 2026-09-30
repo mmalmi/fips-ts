@@ -3,7 +3,9 @@ import { bytesEqual } from "../codec/hex.js";
 import { deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
 import { buildFilterAnnounce, decodeFilterAnnounce, encodeFilterAnnounce, } from "../protocol/filter.js";
 import { LinkMessageType } from "../protocol/link.js";
-const MAX_INBOUND_FILTER_FPR = 0.05;
+// Match native FIPS's default antipoison cap. Legitimate aggregated seed filters
+// can exceed the former 5% limit well before reaching the fixed filter's ceiling.
+const MAX_INBOUND_FILTER_FPR = 0.20;
 export class BloomRouting {
     cfg;
     sequence = 0n;

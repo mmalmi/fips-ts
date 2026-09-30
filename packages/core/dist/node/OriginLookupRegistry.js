@@ -11,6 +11,28 @@ export class OriginLookupRegistry {
     findRequest(requestId) {
         return this.byRequest.get(requestId);
     }
+    async retry(pending, send) {
+        let intervalMs = 250;
+        while (this.get(pending.targetHex) === pending) {
+            await send();
+            if (this.get(pending.targetHex) !== pending)
+                return;
+            let timer;
+            try {
+                await Promise.race([
+                    pending.promise.catch(() => undefined),
+                    new Promise((resolve) => { timer = setTimeout(resolve, intervalMs); }),
+                ]);
+            }
+            finally {
+                if (timer)
+                    clearTimeout(timer);
+            }
+            // Recover a lost first packet quickly, then bound background discovery
+            // traffic without changing the lookup's existing deadline.
+            intervalMs = Math.min(intervalMs * 2, 1_000);
+        }
+    }
     create(args) {
         if (this.byTarget.size >= this.maximum) {
             throw new Error(`lookup capacity exceeded for ${args.targetHex}`);
