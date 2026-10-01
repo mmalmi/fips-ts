@@ -123,11 +123,11 @@ async function fixture(
   })
   const result = transport.connect(remote).then(() => 'connected', error => error.message as string)
   await flush()
-  return { transport, sent, states, result }
+  return { transport, sent, states, result, authenticatedRemote: toHex(identities[0]!.publicKey) }
 }
 
-async function incomingWins(transport: WebRtcTransport, negotiationId = 'winning-incoming-offer') {
-  await transport.handleLinkNegotiation(remote.addr, {
+function incomingOffer(negotiationId: string): WebRtcSignal {
+  return {
     version: 1,
     negotiationId,
     linkType: 'webrtc',
@@ -135,7 +135,15 @@ async function incomingWins(transport: WebRtcTransport, negotiationId = 'winning
     createdAtMs: Date.now(),
     expiresAtMs: Date.now() + 60_000,
     payload: { sdp: 'incoming-sdp' },
-  })
+  }
+}
+
+async function incomingWins(
+  transport: WebRtcTransport,
+  negotiationId = 'winning-incoming-offer',
+  signalingPeer = remote.addr,
+) {
+  await transport.handleLinkNegotiation(signalingPeer, incomingOffer(negotiationId))
   const replacement = FakePeerConnection.instances.at(-1)!
   replacement.ondatachannel?.({ channel: replacement.channel })
   await flush()
@@ -267,6 +275,122 @@ describe('WebRTC connection configuration', () => {
 })
 
 describe('WebRTC simultaneous negotiation ownership', () => {
+  it('reuses an incumbent for exact and opposite-parity connect requests', async () => {
+    const { transport, states, result } = await fixture()
+    const incumbent = FakePeerConnection.instances[0]
+    incumbent.finishGathering()
+    await flush()
+    incumbent.connectChannel()
+    await flush()
+    expect(await result).toBe('connected')
+    const opposite = { transport: 'webrtc', addr: `03${remote.addr.slice(2)}` }
+    const connections = [...Reflect.get(transport, 'conns').values()]
+
+    await transport.connect(remote)
+    await transport.connect(opposite)
+    expect(FakePeerConnection.instances).toEqual([incumbent])
+    expect(Reflect.get(transport, 'pendingDials').size).toBe(0)
+    expect(Reflect.get(transport, 'pendingConnects').size).toBe(0)
+    expect(connections).toHaveLength(1)
+    expect([...Reflect.get(transport, 'conns').values()]).toEqual(connections)
+    expect(states).toEqual(['connected'])
+    await transport.send(opposite, new Uint8Array([50]))
+    expect(incumbent.channel.sent.at(-1)).toEqual(new Uint8Array([50]))
+  })
+
+  it('arbitrates an authenticated odd-key offer against the same even-key pending dial', async () => {
+    const { transport, result, states, authenticatedRemote } = await fixture(undefined, 1, 22)
+    expect(authenticatedRemote).toBe(`03${remote.addr.slice(2)}`)
+    const outgoing = FakePeerConnection.instances[0]
+    const replacement = await incomingWins(transport, 'odd-key-winning-offer', authenticatedRemote)
+    expect(outgoing.connectionState).toBe('closed')
+    expect(await result).toBe('incoming WebRTC offer won simultaneous dial')
+    expect(states).toEqual(['connected'])
+    await transport.send(remote, new Uint8Array([49]))
+    expect(replacement.channel.sent.at(-1)).toEqual(new Uint8Array([49]))
+  })
+
+  it.each(['deadline', 'failed'])(
+    'preserves the connected winner when a late crossed offer reaches %s',
+    async reason => {
+      const { transport, states, result } = await fixture(undefined, 2, 1, {
+        maxConnections: 1,
+        connectTimeoutMs: 500,
+      })
+      const lateOffer = incomingOffer('late-crossed-offer')
+      const winner = FakePeerConnection.instances[0]
+      winner.finishGathering()
+      await flush()
+      winner.connectChannel()
+      await flush()
+      expect(await result).toBe('connected')
+
+      await transport.handleLinkNegotiation(remote.addr, lateOffer)
+      const candidate = FakePeerConnection.instances.at(-1)!
+      expect(candidate).not.toBe(winner)
+      expect(winner.connectionState).toBe('connected')
+      expect(states).toEqual(['connected'])
+      await transport.send(remote, new Uint8Array([46]))
+      expect(winner.channel.sent.at(-1)).toEqual(new Uint8Array([46]))
+
+      candidate.ondatachannel?.({ channel: candidate.channel })
+      await flush()
+      if (reason === 'deadline') {
+        await vi.advanceTimersByTimeAsync(500)
+      } else {
+        candidate.connectionState = 'failed'
+        candidate.iceConnectionState = 'failed'
+        candidate.dispatchEvent(new Event('connectionstatechange'))
+        await flush()
+      }
+      expect(candidate.connectionState).toBe('closed')
+      expect(winner.connectionState).toBe('connected')
+      expect(states).toEqual(['connected'])
+      await transport.send(remote, new Uint8Array([47]))
+      expect(winner.channel.sent.at(-1)).toEqual(new Uint8Array([47]))
+    },
+  )
+
+  it.each(['outgoing', 'incoming'])(
+    'replaces an established %s path only after its candidate connects',
+    async direction => {
+      const { transport, sent, states, result } = await fixture(undefined, 2, 1, { maxConnections: 1 })
+      let original = FakePeerConnection.instances[0]
+      if (direction === 'outgoing') {
+        original.finishGathering()
+        await flush()
+        original.connectChannel()
+        await flush()
+        expect(await result).toBe('connected')
+      } else {
+        original = await incomingWins(transport)
+      }
+      original.deferCloseEvents = true
+      original.channel.deferCloseEvents = true
+
+      await transport.handleLinkNegotiation(remote.addr, incomingOffer('valid-replacement'))
+      const replacement = FakePeerConnection.instances.at(-1)!
+      expect(replacement).not.toBe(original)
+      expect(original.connectionState).toBe('connected')
+      expect(states).toEqual(['connected'])
+      const allocated = FakePeerConnection.instances.length
+      await transport.handleLinkNegotiation(remote.addr, incomingOffer('extra-replacement'))
+      expect(FakePeerConnection.instances).toHaveLength(allocated)
+      expect(sent.at(-1)?.kind).toBe('reject')
+
+      replacement.ondatachannel?.({ channel: replacement.channel })
+      await flush()
+      replacement.connectChannel()
+      await flush()
+      expect(original.connectionState).toBe('closed')
+      expect(states).toEqual(['connected', 'connected'])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(states).toEqual(['connected', 'connected'])
+      await transport.send(remote, new Uint8Array([48]))
+      expect(replacement.channel.sent.at(-1)).toEqual(new Uint8Array([48]))
+    },
+  )
+
   it.each(['outgoing', 'incoming'])(
     'reports an explicit %s close immediately and preserves its replacement after delayed close events',
     async direction => {

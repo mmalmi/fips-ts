@@ -1,5 +1,8 @@
 import { type DiscoveredPeer } from "@fips/core";
 import type { NostrEvent } from "./NostrRelayClient.js";
+import { type WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
+export type ResolvedWebRtcTransportConfig = Required<Pick<WebRtcTransportConfig, "relays" | "stunServers" | "advertiseOnNostr" | "acceptConnections" | "autoConnect" | "mtu" | "maxConnections" | "maxAutoConnections" | "connectTimeoutMs" | "relayConnectTimeoutMs" | "iceGatherTimeoutMs" | "dataChannelLabel" | "ordered">> & WebRtcTransportConfig;
+export declare function resolveWebRtcTransportConfig(config: WebRtcTransportConfig): ResolvedWebRtcTransportConfig;
 export interface PendingInboundConnection {
     timer: ReturnType<typeof setTimeout>;
     remotePubkeyHex: string;

@@ -1,6 +1,53 @@
 import { toHex, type DiscoveredPeer } from "@fips/core";
 
 import type { NostrEvent } from "./NostrRelayClient.js";
+import {
+  DEFAULT_STUN_SERVERS,
+  DEFAULT_ICE_GATHER_TIMEOUT_MS,
+  type WebRtcTransportConfig,
+} from "./WebRtcTransportConfig.js";
+
+export type ResolvedWebRtcTransportConfig = Required<
+  Pick<
+    WebRtcTransportConfig,
+    | "relays"
+    | "stunServers"
+    | "advertiseOnNostr"
+    | "acceptConnections"
+    | "autoConnect"
+    | "mtu"
+    | "maxConnections"
+    | "maxAutoConnections"
+    | "connectTimeoutMs"
+    | "relayConnectTimeoutMs"
+    | "iceGatherTimeoutMs"
+    | "dataChannelLabel"
+    | "ordered"
+  >
+> & WebRtcTransportConfig;
+
+export function resolveWebRtcTransportConfig(config: WebRtcTransportConfig): ResolvedWebRtcTransportConfig {
+  const maxConnections = config.maxConnections ?? 32;
+  return {
+    relays: [],
+    advertiseOnNostr: false,
+    acceptConnections: config.acceptConnections ?? config.advertiseOnNostr ?? false,
+    autoConnect: false,
+    mtu: 1200,
+    maxConnections,
+    maxAutoConnections: Math.min(
+      maxConnections,
+      Math.max(0, config.maxAutoConnections ?? maxConnections),
+    ),
+    connectTimeoutMs: 30_000,
+    relayConnectTimeoutMs: 5_000,
+    dataChannelLabel: "fips",
+    ordered: true,
+    ...config,
+    stunServers: [...(config.stunServers ?? DEFAULT_STUN_SERVERS)],
+    iceGatherTimeoutMs: config.iceGatherTimeoutMs ?? DEFAULT_ICE_GATHER_TIMEOUT_MS,
+  };
+}
 
 export interface PendingInboundConnection {
   timer: ReturnType<typeof setTimeout>;

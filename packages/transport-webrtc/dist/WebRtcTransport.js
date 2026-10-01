@@ -4,9 +4,8 @@ import { WebRtcAutoConnectPolicy } from "./WebRtcAutoConnectPolicy.js";
 import { DEFAULT_FIPS_ADVERT_TTL_MS, FIPS_ADVERT_D_TAG, NostrPeerDiscovery, } from "./NostrPeerDiscovery.js";
 import { WebRtcConnection } from "./WebRtcConnection.js";
 import { WebRtcAdvertCache } from "./WebRtcAdvertCache.js";
-import { AsyncEventStream, cloneDiscoveredPeer, emptyAsyncIterable, hasPendingInboundForPeer, incomingOfferReplacesPendingDial, randomId, waitForIceGatheringComplete, } from "./WebRtcTransportSupport.js";
+import { AsyncEventStream, cloneDiscoveredPeer, emptyAsyncIterable, hasPendingInboundForPeer, incomingOfferReplacesPendingDial, randomId, resolveWebRtcTransportConfig, waitForIceGatheringComplete, } from "./WebRtcTransportSupport.js";
 import { createWebRtcSignal, sendAnswerWithRouteRetry, validateWebRtcSignal, } from "./WebRtcSignal.js";
-import { DEFAULT_STUN_SERVERS, DEFAULT_ICE_GATHER_TIMEOUT_MS, } from "./WebRtcTransportConfig.js";
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
 const AUTO_RECONNECT_DELAY_MS = 500;
 const AUTO_CONNECT_SETTLE_MS = 750;
@@ -42,23 +41,7 @@ export class WebRtcTransport {
     advertRefreshTimer;
     stopping = true;
     constructor(config) {
-        const maxConnections = config.maxConnections ?? 32;
-        this.cfg = {
-            relays: [],
-            advertiseOnNostr: false,
-            acceptConnections: config.acceptConnections ?? config.advertiseOnNostr ?? false,
-            autoConnect: false,
-            mtu: 1200,
-            maxConnections,
-            maxAutoConnections: Math.min(maxConnections, Math.max(0, config.maxAutoConnections ?? maxConnections)),
-            connectTimeoutMs: 30_000,
-            relayConnectTimeoutMs: 5_000,
-            dataChannelLabel: "fips",
-            ordered: true,
-            ...config,
-            stunServers: [...(config.stunServers ?? DEFAULT_STUN_SERVERS)],
-            iceGatherTimeoutMs: config.iceGatherTimeoutMs ?? DEFAULT_ICE_GATHER_TIMEOUT_MS,
-        };
+        this.cfg = resolveWebRtcTransportConfig(config);
         this.autoConnectPolicy = new WebRtcAutoConnectPolicy(config.preferredAutoConnectPeers ?? []);
         this.advertCache = new WebRtcAdvertCache(this.cfg.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS, (remoteAddr) => this.autoConnectAttempts.delete(remoteAddr));
         this.mtu = this.cfg.mtu;
@@ -230,7 +213,8 @@ export class WebRtcTransport {
                 continue;
             if (this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects())
                 return;
-            if (this.conns.has(remote) || this.pendingConnects.has(remote) || this.autoConnectPeers.has(remote))
+            const ownedRemote = this.ownedPeerAddress(remote);
+            if (this.conns.has(ownedRemote) || this.pendingConnects.has(ownedRemote) || this.autoConnectPeers.has(remote))
                 continue;
             if (this.autoConnectPolicy.cooldownUntil(remote) > now)
                 continue;
@@ -318,10 +302,10 @@ export class WebRtcTransport {
         if (addr.addr.length !== 66) {
             throw new Error("WebRTC addr must be 33-byte compressed pubkey hex");
         }
-        const remotePubkeyHex = addr.addr;
+        const remotePubkeyHex = this.ownedPeerAddress(addr.addr);
         // Discovery reservations only cover the queued handoff to FipsNode.
         // Once connect() starts, the concrete pending/connected maps own capacity.
-        const isAutoConnect = this.autoConnectPeers.delete(remotePubkeyHex);
+        const isAutoConnect = this.autoConnectPeers.delete(addr.addr);
         if (this.conns.has(remotePubkeyHex))
             return;
         const pendingConnect = this.pendingConnects.get(remotePubkeyHex);
@@ -403,7 +387,7 @@ export class WebRtcTransport {
         }
     }
     async send(addr, packet) {
-        const conn = this.conns.get(addr.addr);
+        const conn = this.conns.get(this.ownedPeerAddress(addr.addr));
         if (!conn)
             throw new Error(`no webrtc connection to ${addr.addr}`);
         if (packet.length > this.mtu) {
@@ -412,8 +396,9 @@ export class WebRtcTransport {
         conn.send(packet);
     }
     async close(addr) {
+        const remotePubkeyHex = this.ownedPeerAddress(addr.addr);
         for (const [sessionId, dial] of this.pendingDials) {
-            if (dial.remotePubkeyHex !== addr.addr)
+            if (dial.remotePubkeyHex !== remotePubkeyHex)
                 continue;
             clearTimeout(dial.timer);
             this.pendingDials.delete(sessionId);
@@ -422,22 +407,23 @@ export class WebRtcTransport {
             dial.reject(new Error("WebRTC path closed"));
         }
         for (const [sessionId, pending] of this.pendingInbound) {
-            if (pending.remotePubkeyHex !== addr.addr)
+            if (pending.remotePubkeyHex !== remotePubkeyHex)
                 continue;
             this.clearPendingInbound(sessionId, true);
         }
-        const provenPeer = this.peersWithTraffic.delete(addr.addr);
-        this.retireExistingConnection(addr.addr);
-        if (provenPeer || this.autoReconnectTimers.has(addr.addr)) {
-            this.scheduleAutoReconnect(addr.addr);
+        const provenPeer = this.peersWithTraffic.delete(remotePubkeyHex);
+        this.retireExistingConnection(remotePubkeyHex);
+        if (provenPeer || this.autoReconnectTimers.has(remotePubkeyHex)) {
+            this.scheduleAutoReconnect(remotePubkeyHex);
             return;
         }
-        this.handleAutoConnectFailure(addr.addr);
+        this.handleAutoConnectFailure(remotePubkeyHex);
     }
     handlePeerRestart(remotePubkeyHex) {
         return this.close({ transport: this.type, addr: remotePubkeyHex });
     }
     handleSessionEstablished(remotePubkeyHex) {
+        remotePubkeyHex = this.ownedPeerAddress(remotePubkeyHex);
         if (!this.autoConnectPolicy.recoverSession(remotePubkeyHex))
             return;
         clearTimeout(this.autoReconnectTimers.get(remotePubkeyHex));
@@ -517,6 +503,7 @@ export class WebRtcTransport {
     async handleIncomingSignal(signal, remotePubkeyHex) {
         if (!this.ctx)
             return;
+        remotePubkeyHex = this.ownedPeerAddress(remotePubkeyHex);
         this.logger.debug("webrtc signal received", signal.kind, signal.negotiationId, remotePubkeyHex);
         const localPubkeyHex = toHex(this.ctx.localIdentity.publicKey);
         const valid = validateWebRtcSignal(signal, {
@@ -580,10 +567,8 @@ export class WebRtcTransport {
             competingDial.pc.close();
             competingDial.reject(new Error("incoming WebRTC offer won simultaneous dial"));
         }
-        else {
-            this.retireExistingConnection(remotePubkeyHex);
-        }
         if (this.conns.size + this.pendingDials.size + this.pendingInbound.size
+            - Number(this.conns.has(remotePubkeyHex))
             >= this.cfg.maxConnections) {
             this.logger.warn("inbound WebRTC offer rejected at connection limit", remotePubkeyHex);
             await this.rejectIncomingOffer(offer, remotePubkeyHex);
@@ -653,19 +638,9 @@ export class WebRtcTransport {
                     });
                 },
                 onState: (state) => {
-                    if (!ownsConnection() || (conn && this.supersededConnections.has(conn)))
+                    if (!ownsConnection() || !conn || this.supersededConnections.has(conn))
                         return;
-                    this.ctx?.onConnectionState?.({ remoteAddr, state });
-                    if (state === "connected" && conn) {
-                        this.conns.set(remotePubkeyHex, conn);
-                        this.clearPendingInbound(offer.negotiationId);
-                    }
-                    if (state === "failed" || state === "disconnected") {
-                        this.conns.delete(remotePubkeyHex);
-                        this.clearPendingInbound(offer.negotiationId);
-                        pc.close();
-                        this.scheduleAutoReconnect(remotePubkeyHex);
-                    }
+                    this.handleInboundConnectionState(offer.negotiationId, conn, state);
                 },
                 logger: this.logger,
             });
@@ -673,6 +648,36 @@ export class WebRtcTransport {
             this.clearPendingInbound(offer.negotiationId);
             this.logger.warn("dcPromise", err);
         });
+    }
+    handleInboundConnectionState(negotiationId, conn, state) {
+        const { remotePubkeyHex, remoteAddr } = conn;
+        const existing = this.conns.get(remotePubkeyHex);
+        if (state === "connected") {
+            this.conns.set(remotePubkeyHex, conn);
+            this.clearPendingInbound(negotiationId);
+            // Switch carriers only when ready. Retiring the old PC is not a
+            // peer disconnect: its authenticated FMP/FSP state remains valid.
+            if (existing && existing !== conn) {
+                this.supersededConnections.add(existing);
+                existing.close();
+            }
+            this.ctx?.onConnectionState?.({ remoteAddr, state });
+            return;
+        }
+        if (existing && existing !== conn) {
+            if (state === "failed" || state === "disconnected") {
+                this.clearPendingInbound(negotiationId);
+                conn.close();
+            }
+            return;
+        }
+        this.ctx?.onConnectionState?.({ remoteAddr, state });
+        if (state === "failed" || state === "disconnected") {
+            this.conns.delete(remotePubkeyHex);
+            this.clearPendingInbound(negotiationId);
+            conn.pc.close();
+            this.scheduleAutoReconnect(remotePubkeyHex);
+        }
     }
     scheduleAutoReconnect(remotePubkeyHex) {
         this.autoConnectPeers.delete(remotePubkeyHex);
@@ -694,6 +699,22 @@ export class WebRtcTransport {
             this.fillAutoConnectSlots();
         }, delay);
         this.autoReconnectTimers.set(remotePubkeyHex, timer);
+    }
+    ownedPeerAddress(remotePubkeyHex) {
+        const normalized = remotePubkeyHex.toLowerCase();
+        if (!/^(02|03)[0-9a-f]{64}$/.test(normalized))
+            return normalized;
+        const opposite = `${normalized.startsWith("02") ? "03" : "02"}${normalized.slice(2)}`;
+        // Signaling authenticates an x-only identity, which can use the other
+        // compressed parity from discovery. Keep the existing path's address.
+        for (const candidate of [normalized, opposite]) {
+            if (this.conns.has(candidate)
+                || this.pendingConnects.has(candidate)
+                || [...this.pendingDials.values()].some((dial) => dial.remotePubkeyHex === candidate)
+                || hasPendingInboundForPeer(this.pendingInbound.values(), candidate))
+                return candidate;
+        }
+        return normalized;
     }
     retireExistingConnection(remotePubkeyHex) {
         const existing = this.conns.get(remotePubkeyHex);

@@ -1,4 +1,24 @@
 import { toHex } from "@fips/core";
+import { DEFAULT_STUN_SERVERS, DEFAULT_ICE_GATHER_TIMEOUT_MS, } from "./WebRtcTransportConfig.js";
+export function resolveWebRtcTransportConfig(config) {
+    const maxConnections = config.maxConnections ?? 32;
+    return {
+        relays: [],
+        advertiseOnNostr: false,
+        acceptConnections: config.acceptConnections ?? config.advertiseOnNostr ?? false,
+        autoConnect: false,
+        mtu: 1200,
+        maxConnections,
+        maxAutoConnections: Math.min(maxConnections, Math.max(0, config.maxAutoConnections ?? maxConnections)),
+        connectTimeoutMs: 30_000,
+        relayConnectTimeoutMs: 5_000,
+        dataChannelLabel: "fips",
+        ordered: true,
+        ...config,
+        stunServers: [...(config.stunServers ?? DEFAULT_STUN_SERVERS)],
+        iceGatherTimeoutMs: config.iceGatherTimeoutMs ?? DEFAULT_ICE_GATHER_TIMEOUT_MS,
+    };
+}
 export function randomId() {
     const bytes = new Uint8Array(16);
     if (typeof crypto !== "undefined" && crypto.getRandomValues) {
