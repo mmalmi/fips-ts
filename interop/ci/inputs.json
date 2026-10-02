@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "typescriptBase": "f88d8b53878381340c6c848016abc0e41f3c4286",
+  "publishedCoreReference": "d9f0a01bb2c91a983a0bd8ed95e9ac7d2edbbf72",
+  "typescriptCoreVersion": "0.0.48",
+  "rustSource": "67f1347000f5808e47efbb5f65d8dd366a32b27c",
+  "rustTree": "e1a8bee4e37b38b94bbbb7a6d2f618ffb745e2a7",
+  "rustSourceLockSha256": "46b2e3dad8334f8984863d90a49c338e1db52ada184361d4559584d601111cc5",
+  "typescriptFiles": {
+    ".npmrc": "1322bc57bb934be9d1ca3b5b0d4c2c6187e4acd7ad334ae519ee1ea6d998deac",
+    "interop/rust-bridge/Cargo.toml": "d71c38728aa5dd2f9e05206f43e52e4cbcac9023e52d1ff804020ddd65757882",
+    "interop/rust-bridge/src/fsp_initiator.rs": "b0f2fedf3a718abbfca1edf9d7457ae7eb3374b7b8cfb80817c778e335aa8b52",
+    "interop/rust-bridge/src/link_reports.rs": "6ac2be641e3d1c427940fb31dffe0ee034380c6cd6e23136562ed5eabab5213a",
+    "interop/rust-bridge/src/main.rs": "331022e040d4863b0ac1f16b6919c4b46320ae73c44d2090d91d4690fde395ba",
+    "package.json": "a3e1f7b6e16e237665e536d8e951646d0cb1ed6e694b0e9617f08ab57b614330",
+    "packages/core/package.json": "17fecc6ba431220a673819f6bc8e8cf27a53a19c8b0c7490804350c3da5fa7b8",
+    "packages/core/src/bloom/index.ts": "6daa2d696a0ff0d077b2a0df94919dd3addd0c84d3bbbb180654699ca54de1f1",
+    "packages/core/src/codec/binary.ts": "0ce911680a6887b5e68b2e468434b1a9244ce3c4eae463862f1cade3a71443e7",
+    "packages/core/src/codec/hex.ts": "63a2bfda138838f275117373830ec6943a5f52f3044164e3289fe02b6b0a34d7",
+    "packages/core/src/codec/index.ts": "4609e771ad17db41ff853dc7418c6f4910f99af4e14dd789fcffd103290e73df",
+    "packages/core/src/crypto/aead.ts": "c0ca1f7cca56e5098074c553a7836f0107fef4255c16f7f1ae14a66bea3bb019",
+    "packages/core/src/crypto/index.ts": "b5b60164c0e8cecf9c49c9db466d2acbc747d7cda939c10b0e2d1f4c8764cfbb",
+    "packages/core/src/crypto/kdf.ts": "ed0299db0ef4c8bfd7f843d0b44a77a039826135b29f2d2b55497982c3d51d15",
+    "packages/core/src/crypto/replay.ts": "0ffc5a265097206b9f275b4a9d501aa32195a1ce85d3cafac6b36a3b5710adfa",
+    "packages/core/src/fmp/link.ts": "51ff09c8067a86a9467d0c5a692321fde98ff8a0cec493ab811ba9e29b9c0d66",
+    "packages/core/src/fmp/receiverReports.ts": "1e57e9ec2ef12bd6fdf534d69d7d34ab31bcfc24bb9b53463d3809b201ee3f0e",
+    "packages/core/src/fmp/wire.ts": "5aba9a3048544b1dce41b5ff29fc6e5cd20b1ab2d229ae5b0a213bcd95038d58",
+    "packages/core/src/fsp/directTransport.ts": "707c42b92651d47e54bda3f2f2b3b50333e30a4dbfccc6a2dd8d8337e5710809",
+    "packages/core/src/fsp/receiverReports.ts": "bd1b89074f6cbc9a345edb3511c707e86fb2de1973a229ad7d6420cd8889d1e3",
+    "packages/core/src/fsp/session.ts": "d06a6264a8eff0f2bdf3b9e8c74c5b8e06ee913b8f0a7f79c13c49bc689591fe",
+    "packages/core/src/fsp/wire.ts": "1cbc7e95e981844fad9b31fbab09e95f4f445e43c2206b7d1901e6d205c1879a",
+    "packages/core/src/identity/auth.ts": "627ad5e6cd636a47449f231d9d212ac5b724626ea65434c88140889375e7b41f",
+    "packages/core/src/identity/index.ts": "a7243e1d71862072d01a7cc13fd05757c3245ef54ea578637f114f36a1b6d991",
+    "packages/core/src/identity/nip19.ts": "ea30fbda2aabc10096568207d9fa3e736289227d544ffe0bb3adc8ef6a3659f2",
+    "packages/core/src/identity/peer.ts": "ee6992c404172da1ada5a48cbe1dffc59e22f753aeedad22a03c87e8ac228bfa",
+    "packages/core/src/index.ts": "79fd0008e079465c693eabf42637595926a15f6bc7243642148deae765761eee",
+    "packages/core/src/linkNegotiation.ts": "2ce8d5a0a5dfd8b7eb4e4e05a9824b639afecfc70ca8d1e91408e836aa0873d9",
+    "packages/core/src/mmp/receiverReports.ts": "80cb5fb1664511e4c3e6e097b40c2790a146902aa57f13cc25e39011222e18a3",
+    "packages/core/src/node/BloomRouting.ts": "64f340cea31b1e139041bc4cf3b953ac47edd772a4a46a3f1419c59c8df0089c",
+    "packages/core/src/node/FipsNode.ts": "c5f9bd9ff8df58fc4108a679dd6ca23eb4f76c8746ef5ad2308efa6910bd1574",
+    "packages/core/src/node/FipsRouting.ts": "70638fdb74d72086a14abc5b545bd3f1cf8530f27db64f3cb9adaec96fdac7e1",
+    "packages/core/src/node/FmpLinkReports.ts": "2c824cec0f51255917976cc656f5d37a2f3686d1cfd1fd72faaa5be92d62f313",
+    "packages/core/src/node/FmpTransportPacketProcessor.ts": "1b865b14f9a2227e959c43e3fe31ee361d8ff04ca18c9a9889162eb433526a04",
+    "packages/core/src/node/FspSessionManager.ts": "ff258291906fe0d4b7f1bd573bef9a265cd1029dc64e3421a55e3b02d5a9e03c",
+    "packages/core/src/node/LearnedRouteTable.ts": "9c54f61652d5bdc7c1f020f95ed21afc6ea7be2cb85be537cc9064298632aab6",
+    "packages/core/src/node/OriginLookupRegistry.ts": "bcb0c70f0b1e8304cdfd1a0d64956292a7d8cde3e8ccc5ba5064cd9f8398a521",
+    "packages/core/src/node/PeerState.ts": "5472b10dd4c347f8a75ef4d7dc40a45013316f0f3736857a81bd516b7a611bdd",
+    "packages/core/src/node/PendingFmpResponders.ts": "e9cae6da163ef63ede8795b3f9802200ff60f0311831230c9f4b0ba33a274751",
+    "packages/core/src/node/TreeState.ts": "93e37ea3df6b8b3bdf806c60342d8251c47c7443a40755357b9206bdeb2bd28f",
+    "packages/core/src/node/forward.ts": "3a63d2ffeffbcec970dd34eebc1eeca452bfb744c606a36ec09227dca0528c4d",
+    "packages/core/src/node/routingHelpers.ts": "eab244c8f2063ff681abc2fd309b534699a378a23d6bd9c779058fd716c36cda",
+    "packages/core/src/node/types.ts": "37a775c8a2cd08169512ac205453dd5322f257ee7ebcba7e6579342d746b14d3",
+    "packages/core/src/nodeaddr/index.ts": "c2c55d828c35ebacb7e5dad54bbdc0c56a4dba85c75f5b3b424689bed6d7cb88",
+    "packages/core/src/noise/cipherState.ts": "f4b6ceb9dde7d9369c91440bf01de5f53c82de91c03a1d194dfecb8f982d05b1",
+    "packages/core/src/noise/handshake.ts": "c024b086fc5a49e1dbc1381a5ca18ba3be5ce54af991d3a643c6e77275dab286",
+    "packages/core/src/noise/hkdf.ts": "24c0eebfaf5ffa5f110e421b1e69e8f060ea612bb04e28a0d9b1a2f79ae43664",
+    "packages/core/src/noise/index.ts": "c3ec1d694445f521c8f4f1fe6e3852a58d3bda036a3bbd8e99611d4473b7d6e9",
+    "packages/core/src/noise/symmetricState.ts": "19476991ae6abfc518d22007ce43a7d59397368cf71f43d3fe1e7dc81d6865e4",
+    "packages/core/src/protocol/discovery.ts": "b5c4fd344bbc0898e025d3edee0d60b2ac290019833b511f51f9b744cc1a7e9c",
+    "packages/core/src/protocol/filter.ts": "cfd86e5ca97d829f3e67e4bd60ab72628c7902e53008454fd14d7b492d4a5b24",
+    "packages/core/src/protocol/index.ts": "80ac0a6d7c991cf88b6cc8649f5ad1a75594ac0b217a6e16323ba0abd7866748",
+    "packages/core/src/protocol/link.ts": "2fc3a9a0435d3c96755d9337575e53eee1749afeb16a7725f4f7365a44a05d92",
+    "packages/core/src/protocol/session.ts": "81450f731e41a44d26882ab2721d16f8a03d59466fb1973fcf096085d2e1a30f",
+    "packages/core/src/protocol/tree.ts": "d5d181c1742fa866693190f24a7b00c375509ade9662f9335d982cf14876a2d8",
+    "packages/core/src/recentPeers.ts": "89709b938bf95ed6436ea7cc287b8a84b17717b31da6efcccca0998750662baa",
+    "packages/core/src/transport/types.ts": "dc10b5b3b47b2cd87b687f319e381494d3246941e912b0fcd17efbd0a504cb7e",
+    "packages/core/test/interop/bloom-interop.test.ts": "480a4bcd8f25b16eb968b91f678b2e79d8601516ae3ee0ca77274399303e26f8",
+    "packages/core/test/interop/bridge.ts": "77f1ecd135044f458620f2bf24e57f31df91c52c55f7a88d64e19793b8d611a8",
+    "packages/core/test/interop/filter-announce-interop.test.ts": "139fe22a6c34631e12075b0082f676b0f0b8657ff719bf3ee43f4c121788123e",
+    "packages/core/test/interop/fmp-interop.test.ts": "7cd595fd7e382cf3cb5d1d8233bca91376efec1dbb8d6c9ae85c9f6f59ee2b86",
+    "packages/core/test/interop/fsp-reverse-interop.test.ts": "f7acafce85f9915bbf67ec6910728d16024367e3916f5106f9fda4431aec66c3",
+    "packages/core/test/interop/fsp-session-reverse-interop.test.ts": "50e106df64ac6c105f840444d81f34c3b35d533866ec6df63314d57c4d219029",
+    "packages/core/test/interop/link-reports-interop.test.ts": "dfabb6584b0243690501cf4663f642d12abea297836e846da7fc26f558a776a2",
+    "packages/core/test/interop/lookup-response-interop.test.ts": "4f7de2a837c38058dfd4e8a8a53f61e0d25fd57dd556b64ec27fba5e64e690d9",
+    "packages/core/test/interop/noise-interop.test.ts": "85577f04a0a82801f2770d8cd85fde74502e45b532efdd627b3b67ba90b53888",
+    "packages/core/vitest.config.ts": "d48f83720e2ca423171489fd31f5a66f68639d95444e61e8c41e30ce7b44ba57",
+    "pnpm-lock.yaml": "660b2274439d411bbd629efca80a2532758464d34d11bed506be5d9551f1d7e4",
+    "pnpm-workspace.yaml": "316f2a0038d464f103abd64d7338dacefc35d0d09e57c8296defa0d5ddb898fe"
+  },
+  "bridgeLockSha256": "a79c84e0cbf11554a817c427573806b4bb0c8d24efc558033236332d95155d9c",
+  "bridgeLockPreparation": "Retained locked bridge dependency graph; only nvpn-fips-core version moved from0.4.89 to0.4.90. This file is a build input, not an executed interoperability proof.",
+  "tests": {
+    "bloom-interop.test.ts": [
+      "empty filter at 256/4 matches byte-for-byte",
+      "two inserts at 256/4 match Rust bit positions",
+      "100 inserts at 1024/5 match byte-for-byte; both queries hit",
+      "default-sized filter (8192 bits, 5 hashes) matches at 50 inserts"
+    ],
+    "filter-announce-interop.test.ts": [
+      "empty filter (sequence=42) matches byte-for-byte",
+      "two-key insert at sequence=7",
+      "100-key insert at sequence=0x0102030405060708"
+    ],
+    "fmp-interop.test.ts": [
+      "handshakes and exchanges established link frames"
+    ],
+    "fsp-reverse-interop.test.ts": [
+      "exchanges direct service records and returns a DFP1-segmented maximum record"
+    ],
+    "fsp-session-reverse-interop.test.ts": [
+      "exchanges SessionSetup/Ack/Msg3 and direct service data"
+    ],
+    "link-reports-interop.test.ts": [
+      "native FMP metrics accepts TS receiver measurements and leaves cold-start cadence"
+    ],
+    "lookup-response-interop.test.ts": [
+      "verifies the TypeScript self-lookup response in Rust"
+    ],
+    "noise-interop.test.ts": [
+      "IK recovers from a corrupted reply and exchanges transport messages",
+      "XK recovers from a corrupted reply and exchanges transport messages"
+    ]
+  },
+  "expectedTests": 14,
+  "expectedFiles": 8,
+  "retries": 0,
+  "skips": 0,
+  "rustToolchain": "1.96.0",
+  "pnpm": "9.15.4"
+}

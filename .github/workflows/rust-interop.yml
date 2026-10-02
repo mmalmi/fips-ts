@@ -1,0 +1,61 @@
+name: Rust and TypeScript interoperability
+
+on:
+  push:
+    branches: [codex/hosted-rust-interop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-interop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  interop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_TERM_COLOR: never
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PUPPETEER_SKIP_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fips-ts
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact public Rust source
+        uses: actions/checkout@v4
+        with:
+          repository: mmalmi/fips
+          ref: 67f1347000f5808e47efbb5f65d8dd366a32b27c
+          path: fips
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+      - name: Install canonical Linux core prerequisite
+        timeout-minutes: 3
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
+      - name: Build exact bridge and run fourteen protocol cases
+        run: python3 fips-ts/interop/ci/run.py
+      - name: Preserve source, binary and actual test proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fips-interop-proof
+          if-no-files-found: error
+          retention-days: 90
