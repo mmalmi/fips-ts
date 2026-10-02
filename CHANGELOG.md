@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## Runtime packages 0.0.50 - 2026-10-02
 
 - Give each bounded lookup retry a fresh request ID so native duplicate suppression does not block recovery from a lost reply. Earlier signed replies remain valid until the original five-second deadline. The 64-lookup capacity and seven-attempt schedule are unchanged; success, timeout and close remove every issued ID.
+- Release `@fips/core` 0.0.49. Other runtime packages and wire formats are unchanged.
 
 ## Runtime packages 0.0.46 - 2026-09-30
 
