@@ -4,13 +4,13 @@ version = "0.0.1"
 edition = "2024"
 publish = false
 
-# Path dependencies on the local Nostr VPN FIPS implementation. Cargo aliases
-# preserve the existing `fips_core` and `fips_identity` Rust import names; this
-# bridge is not a published crate.
+# Path dependencies use the published package names. Their explicit library
+# names preserve the existing `fips_core` and `fips_identity` Rust imports;
+# this bridge is not a published crate.
 
 [dependencies]
-fips-core = { package = "nvpn-fips-core", path = "../../../fips/crates/fips-core" }
-fips-identity = { package = "nvpn-fips-identity", path = "../../../fips/crates/fips-identity" }
+nvpn-fips-core = { path = "../../../fips/crates/fips-core" }
+nvpn-fips-identity = { path = "../../../fips/crates/fips-identity" }
 secp256k1 = { version = "0.30", features = ["global-context"] }
 hex = "0.4"
 
