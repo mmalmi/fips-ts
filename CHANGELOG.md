@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Give each bounded lookup retry a fresh request ID so native duplicate suppression does not block recovery from a lost reply. Earlier signed replies remain valid until the original five-second deadline. The 64-lookup capacity and seven-attempt schedule are unchanged; success, timeout and close remove every issued ID.
+
 ## Runtime packages 0.0.46 - 2026-09-30
 
 - Match native FIPS’s 20% routing-filter admission cap so valid seed aggregates above the former 5% limit are accepted. Overfilled and stale filters remain rejected.

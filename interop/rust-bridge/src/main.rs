@@ -406,6 +406,39 @@ fn run_lookup_self(origin_sk_hex: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Decode and sign real native lookup replies for the TypeScript origin tests.
+/// Admission/dedup is tested separately; this mode only proves wire/signature
+/// compatibility and accepts at most the normal seven attempts.
+fn run_lookup_target(target_sk_hex: &str) -> io::Result<()> {
+    let sk_bytes = hex::decode(target_sk_hex).map_err(io::Error::other)?;
+    let sk = SecretKey::from_slice(&sk_bytes).map_err(io::Error::other)?;
+    let target = Identity::from_secret_key(sk);
+    let mut stdin = io::stdin().lock();
+    let mut stdout = io::stdout().lock();
+    write_frame(&mut stdout, &target.pubkey_full().serialize())?;
+    for _ in 0..7 {
+        let payload = match read_frame(&mut stdin) {
+            Ok(payload) => payload,
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let request = LookupRequest::decode(&payload).map_err(io::Error::other)?;
+        if request.target != *target.node_addr() {
+            return Err(io::Error::other("lookup request has wrong target"));
+        }
+        let coords = TreeCoordinate::root(*target.node_addr());
+        let proof = target.sign(&LookupResponse::proof_bytes(
+            request.request_id,
+            &request.target,
+            &coords,
+        ));
+        let mut response = LookupResponse::new(request.request_id, request.target, coords, proof);
+        response.path_mtu = 1200;
+        write_frame(&mut stdout, &response.encode()[1..])?;
+    }
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -413,6 +446,7 @@ fn main() {
         eprintln!("       fips-rust-bridge fsp-initiator <initiator-sk-hex>");
         eprintln!("       fips-rust-bridge fsp-session-initiator <initiator-sk-hex>");
         eprintln!("       fips-rust-bridge lookup-self <origin-sk-hex>");
+        eprintln!("       fips-rust-bridge lookup-target <target-sk-hex>");
         eprintln!("       fips-rust-bridge bloom <numBits> <hashCount> [key-hex ...]");
         process::exit(2);
     }
@@ -460,6 +494,13 @@ fn main() {
                 process::exit(2);
             }
             run_lookup_self(&args[2])
+        }
+        "lookup-target" => {
+            if args.len() != 3 {
+                eprintln!("usage: fips-rust-bridge lookup-target <target-sk-hex>");
+                process::exit(2);
+            }
+            run_lookup_target(&args[2])
         }
         "bloom" => run_bloom(&args[2..]),
         "filter-announce" => run_filter_announce(&args[2..]),
