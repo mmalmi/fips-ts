@@ -28,6 +28,11 @@ def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def save():
     temporary=OUT/'proof.tmp';temporary.write_text(json.dumps(STATE,indent=2)+'\n');temporary.replace(OUT/'proof.json')
 def git(root,*args):return subprocess.check_output(['git','-C',str(root),*args],text=True,timeout=15).strip()
+def parse_metadata(text):
+    records=[line for line in text.splitlines() if line.startswith('{"packages":')]
+    assert len(records)==1, 'Expected one Cargo metadata record'
+    return json.loads(records[0])
+
 def source_guard():
     assert git(ROOT,'rev-parse','HEAD')==os.environ['GITHUB_SHA']
     assert git(RUST,'rev-parse','HEAD')==INPUTS['rustSource']
@@ -128,7 +133,7 @@ try:
     assert len(artifacts)==1 and Path(artifacts[0]['target']['src_path']).resolve()==bridge/'src/main.rs'
     binary=Path(artifacts[0]['executable']).resolve();assert binary.is_relative_to(TARGET) and binary.is_file() and os.access(binary,os.X_OK)
     STATE['bridge']={'artifact':artifacts[0],'sha256':sha(binary),'bytes':binary.stat().st_size,'lockSha256':sha(bridge/'Cargo.lock')};ENV['FIPS_RUST_BRIDGE_BIN']=str(binary)
-    metadata=json.loads(command('cargo-metadata',['cargo','+1.96.0','metadata','--locked','--format-version=1','--manifest-path',str(bridge/'Cargo.toml')],ROOT,30).read_text())
+    metadata=parse_metadata(command('cargo-metadata',['cargo','+1.96.0','metadata','--locked','--format-version=1','--manifest-path',str(bridge/'Cargo.toml')],ROOT,30).read_text())
     for name,version,manifest in [('nvpn-fips-core','0.4.90','crates/fips-core/Cargo.toml'),('nvpn-fips-identity','0.3.3','crates/fips-identity/Cargo.toml')]:
         packages=[p for p in metadata['packages'] if p['name']==name];assert len(packages)==1
         p=packages[0];assert p['version']==version and p['source'] is None and Path(p['manifest_path']).resolve()==RUST/manifest
