@@ -13,8 +13,25 @@ export class OriginLookupRegistry {
     }
     async retry(pending, send) {
         let intervalMs = 250;
+        let first = true;
         while (this.get(pending.targetHex) === pending) {
-            await send();
+            const state = this.byTarget.get(pending.targetHex);
+            try {
+                if (!first) {
+                    // Native relays deduplicate admitted IDs before forwarding/replying.
+                    // Retain earlier IDs too: their signed replies remain valid until the
+                    // original logical deadline, whose schedule permits seven attempts.
+                    state.requestId = this.nextRequestId(state.randomBytes);
+                    state.requestIds.add(state.requestId);
+                    this.byRequest.set(state.requestId, state);
+                }
+                first = false;
+                await send();
+            }
+            catch (error) {
+                this.fail(pending, error instanceof Error ? error : new Error(String(error)));
+                return;
+            }
             if (this.get(pending.targetHex) !== pending)
                 return;
             let timer;
@@ -46,6 +63,8 @@ export class OriginLookupRegistry {
         });
         const pending = {
             requestId,
+            requestIds: new Set([requestId]),
+            randomBytes: args.randomBytes,
             targetHex: args.targetHex,
             minMtu: args.minMtu ?? 0,
             targetPubkey: args.targetPubkey
@@ -96,7 +115,9 @@ export class OriginLookupRegistry {
         if (state.timer)
             clearTimeout(state.timer);
         this.byTarget.delete(state.targetHex);
-        this.byRequest.delete(state.requestId);
+        for (const requestId of state.requestIds)
+            this.byRequest.delete(requestId);
+        state.requestIds.clear();
         return state;
     }
 }

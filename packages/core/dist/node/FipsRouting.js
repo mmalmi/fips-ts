@@ -178,15 +178,14 @@ export class FipsRouting {
             randomBytes: () => this.cfg.randomBytes(8),
             timeoutMs: LOOKUP_ORIGIN_TIMEOUT_MS,
         });
-        const encoded = encodeLookupRequestPayload({
-            requestId: pending.requestId,
+        const request = {
             target,
             origin: this.cfg.identity.nodeAddr,
             ttl: LOOKUP_ORIGIN_TTL,
             minMtu: 0,
             originCoords: this.treeState.coords,
-        });
-        const retrying = this.retryOriginLookup(pending, encoded);
+        };
+        const retrying = this.retryOriginLookup(pending, request);
         try {
             await pending.promise;
         }
@@ -211,15 +210,14 @@ export class FipsRouting {
             randomBytes: () => this.cfg.randomBytes(8),
             timeoutMs: LOOKUP_ORIGIN_TIMEOUT_MS,
         });
-        const encoded = encodeLookupRequestPayload({
-            requestId: pending.requestId,
+        const request = {
             target,
             origin: this.cfg.identity.nodeAddr,
             ttl: LOOKUP_ORIGIN_TTL,
             minMtu,
             originCoords: this.treeState.coords,
-        });
-        const retrying = this.retryOriginLookup(pending, encoded, previousHop);
+        };
+        const retrying = this.retryOriginLookup(pending, request, previousHop);
         try {
             await pending.promise;
             return pending.nextHop;
@@ -482,8 +480,9 @@ export class FipsRouting {
         })
             .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS);
     }
-    async retryOriginLookup(pending, encoded, excludedPeer) {
+    async retryOriginLookup(pending, request, excludedPeer) {
         await this.originLookups.retry(pending, async () => {
+            const encoded = encodeLookupRequestPayload({ ...request, requestId: pending.requestId });
             const peers = this.originLookupPeers(excludedPeer, pending.minMtu);
             await Promise.allSettled(peers.map((peer) => this.cfg.sendLinkMessage(peer, LinkMessageType.LookupRequest, encoded)));
         });
