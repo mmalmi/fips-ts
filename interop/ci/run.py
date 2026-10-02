@@ -128,7 +128,7 @@ try:
     assert len(artifacts)==1 and Path(artifacts[0]['target']['src_path']).resolve()==bridge/'src/main.rs'
     binary=Path(artifacts[0]['executable']).resolve();assert binary.is_relative_to(TARGET) and binary.is_file() and os.access(binary,os.X_OK)
     STATE['bridge']={'artifact':artifacts[0],'sha256':sha(binary),'bytes':binary.stat().st_size,'lockSha256':sha(bridge/'Cargo.lock')};ENV['FIPS_RUST_BRIDGE_BIN']=str(binary)
-    metadata=json.loads(command('cargo-metadata',['cargo','+1.96.0','metadata','--locked','--offline','--format-version=1','--manifest-path',str(bridge/'Cargo.toml')],ROOT,30).read_text())
+    metadata=json.loads(command('cargo-metadata',['cargo','+1.96.0','metadata','--locked','--format-version=1','--manifest-path',str(bridge/'Cargo.toml')],ROOT,30).read_text())
     for name,version,manifest in [('nvpn-fips-core','0.4.90','crates/fips-core/Cargo.toml'),('nvpn-fips-identity','0.3.3','crates/fips-identity/Cargo.toml')]:
         packages=[p for p in metadata['packages'] if p['name']==name];assert len(packages)==1
         p=packages[0];assert p['version']==version and p['source'] is None and Path(p['manifest_path']).resolve()==RUST/manifest
