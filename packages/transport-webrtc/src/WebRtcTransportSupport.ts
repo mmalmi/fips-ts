@@ -172,3 +172,10 @@ export function advertExpiryMs(
   if (!Number.isSafeInteger(advertisedExpiryMs)) return undefined;
   return Math.min(localExpiryMs, advertisedExpiryMs);
 }
+
+export interface AdvertWaiter {
+  resolve: (peer: DiscoveredPeer | undefined) => void;
+  timer: ReturnType<typeof setTimeout>;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}

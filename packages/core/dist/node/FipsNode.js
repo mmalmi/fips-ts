@@ -94,7 +94,10 @@ export class FipsNode {
                 if (event.state === "established") {
                     for (const transport of this.transports) {
                         try {
-                            transport.handleSessionEstablished?.(event.remotePubkey);
+                            if (event.restarted)
+                                transport.handleSessionEstablished?.(event.remotePubkey, true);
+                            else
+                                transport.handleSessionEstablished?.(event.remotePubkey);
                         }
                         catch (err) {
                             this.emit("error", { err: err, where: "transport.handleSessionEstablished" });

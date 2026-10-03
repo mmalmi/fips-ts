@@ -1,4 +1,4 @@
-import { fromHex } from "../codec/hex.js";
+import { bytesEqual, fromHex } from "../codec/hex.js";
 import { compressedPubkeyFromXOnly, } from "../identity/index.js";
 import { deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
 import { LinkMessageType } from "../protocol/link.js";
@@ -53,5 +53,51 @@ export function isKnownUnhandledLinkMessage(msgType) {
         || msgType === LinkMessageType.ReceiverReport
         || msgType === LinkMessageType.TreeAnnounce
         || msgType === LinkMessageType.FilterAnnounce);
+}
+/** Resolve signed transport discovery without opening its physical carrier. */
+export async function resolveTransportIdentity(transports, destNodeAddr, abort, isStarted) {
+    const destNodeHex = nodeAddrToHex(destNodeAddr);
+    if (abort.signal.aborted || !isStarted())
+        throw new Error("FIPS node stopped");
+    const resolvers = transports.filter((transport) => transport.resolve !== undefined);
+    if (resolvers.length === 0)
+        throw new Error(`no route to ${destNodeHex}`);
+    const resolutionTasks = resolvers.map(async (transport) => {
+        const discovered = await transport.resolve(destNodeAddr, abort.signal);
+        if (!discovered)
+            throw new Error("transport did not resolve destination");
+        if (discovered.remoteAddr.transport !== transport.type) {
+            throw new Error("resolved address transport mismatch");
+        }
+        const remotePubkey = discoveryPublicKey(discovered);
+        if (!bytesEqual(deriveNodeAddr(remotePubkey), destNodeAddr)) {
+            throw new Error("resolved identity does not match destination NodeAddr");
+        }
+        return { transport, remoteAddr: discovered.remoteAddr, remotePubkey };
+    });
+    const noRoute = () => new Error(`no route to ${destNodeHex}`);
+    const candidate = Promise.any(resolutionTasks).catch(() => {
+        throw noRoute();
+    });
+    let timeout;
+    let onAbort;
+    const boundary = new Promise((_resolve, reject) => {
+        onAbort = () => reject(isStarted() ? noRoute() : new Error("FIPS node stopped"));
+        abort.signal.addEventListener("abort", onAbort, { once: true });
+        timeout = setTimeout(() => abort.abort(), 5_000);
+    });
+    let resolved;
+    try {
+        resolved = await Promise.race([candidate, boundary]);
+    }
+    finally {
+        if (timeout)
+            clearTimeout(timeout);
+        if (onAbort)
+            abort.signal.removeEventListener("abort", onAbort);
+        if (!abort.signal.aborted)
+            abort.abort();
+    }
+    return resolved;
 }
 //# sourceMappingURL=routingHelpers.js.map

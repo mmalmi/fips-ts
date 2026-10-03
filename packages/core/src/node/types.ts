@@ -65,6 +65,8 @@ export interface EndpointDataEvent {
 export interface SessionEvent {
   remotePubkey: string;
   state: "establishing" | "established" | "closed";
+  /** A fresh authenticated process epoch replaced the previous endpoint keys. */
+  restarted?: boolean;
 }
 
 export interface ErrorEvent {

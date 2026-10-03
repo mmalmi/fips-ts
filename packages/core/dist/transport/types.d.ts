@@ -59,7 +59,7 @@ export interface Transport {
     /** Retire state keyed by an authenticated FIPS identity after its process restarts. */
     handlePeerRestart?(remotePubkeyHex: string): Promise<void>;
     /** A fresh authenticated FSP session can carry link negotiation to this identity. */
-    handleSessionEstablished?(remotePubkeyHex: string): void;
+    handleSessionEstablished?(remotePubkeyHex: string, restarted?: boolean): void;
     /** Receive authenticated link negotiation addressed to this adapter type. */
     handleLinkNegotiation?(remotePubkeyHex: string, message: LinkNegotiationMessage): Promise<void> | void;
 }

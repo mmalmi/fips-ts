@@ -202,3 +202,33 @@ it('keeps the end-to-end session and bidirectional traffic after a delayed cross
     vi.useRealTimers()
   }
 })
+
+
+it('can retry again after a recovered offer write fails', async () => {
+  vi.useFakeTimers()
+  PairedPeerConnection.instances = []
+  const identity = await identityFromSecretKey(new Uint8Array(32).fill(0x31))
+  const remote = toHex((await identityFromSecretKey(new Uint8Array(32).fill(0x32))).publicKey)
+  const send = vi.fn(async () => {})
+  const transport = new WebRtcTransport({
+    rtcPeerConnection: PairedPeerConnection as unknown as typeof RTCPeerConnection,
+    acceptConnections: true, stunServers: [],
+  })
+  await transport.start({ localIdentity: identity, onPacket: () => {}, sendLinkNegotiation: send })
+  const connect = transport.connect({ transport: 'webrtc', addr: remote }).catch(error => error)
+  try {
+    await flush()
+    expect(send).toHaveBeenCalledTimes(1)
+    send.mockRejectedValueOnce(new Error('route temporarily unavailable'))
+    transport.handleSessionEstablished(remote, true)
+    await flush()
+    expect(send).toHaveBeenCalledTimes(2)
+    transport.handleSessionEstablished(remote, true)
+    await flush()
+    expect(send).toHaveBeenCalledTimes(3)
+  } finally {
+    await transport.stop()
+    await connect
+    vi.useRealTimers()
+  }
+})

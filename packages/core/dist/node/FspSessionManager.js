@@ -7,6 +7,8 @@ import { decodeFspEstablished, encodeDataPacket, FSP_FLAG_DIRECT_TRANSPORT, FSP_
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
 import { sameCompressedIdentity } from "./PeerState.js";
 const FSP_REKEY_DRAIN_MS = 45_000;
+const MAX_MISSING_SESSION_RECOVERIES = 64;
+const MISSING_SESSION_RETRY_MS = 15_000;
 const FSP_DEFAULT_PATH_MTU = 1_200;
 const MAX_EARLY_ESTABLISHED_RECORDS = 16;
 const MAX_EARLY_ESTABLISHED_BYTES = 64 * 1024;
@@ -17,6 +19,8 @@ export class FspSessionManager {
     localEpoch;
     reportTimer;
     reportsSending = false;
+    missingSessionRecoveries = new Map();
+    recoveryGeneration = 0;
     constructor(cfg) {
         this.cfg = cfg;
         if (cfg.localEpoch.length !== 8)
@@ -39,6 +43,10 @@ export class FspSessionManager {
         this.reportTimer = setInterval(() => { void this.sendReceiverReports(); }, 1_000);
     }
     stop() {
+        this.recoveryGeneration++;
+        for (const recovery of this.missingSessionRecoveries.values())
+            recovery.abort.abort();
+        this.missingSessionRecoveries.clear();
         if (this.reportTimer)
             clearInterval(this.reportTimer);
         this.reportTimer = undefined;
@@ -141,6 +149,14 @@ export class FspSessionManager {
         const srcNodeHex = nodeAddrToHex(srcNodeAddr);
         const session = this.sessions.get(srcNodeHex);
         if (phase === FSP_PHASE_ESTABLISHED) {
+            if (!session) {
+                // A routed peer may still have keys from before our process restarted.
+                // Validate the envelope, then authenticate a new handshake; never clear
+                // healthy sessions merely because a carrier or an offer disappeared.
+                decodeFspEstablished(fspFrame);
+                await this.recoverMissingSession(srcNodeAddr, srcNodeHex);
+                return;
+            }
             await this.handleEstablished(peer, srcNodeHex, session, fspFrame);
             return;
         }
@@ -168,6 +184,36 @@ export class FspSessionManager {
             return;
         }
         throw new Error(`unknown FSP phase ${phase}`);
+    }
+    async recoverMissingSession(nodeAddr, nodeHex) {
+        const now = Date.now();
+        for (const [key, recovery] of this.missingSessionRecoveries) {
+            if (recovery.expiresAtMs <= now) {
+                recovery.abort.abort();
+                this.missingSessionRecoveries.delete(key);
+            }
+        }
+        const existing = this.missingSessionRecoveries.get(nodeHex);
+        if (existing)
+            return existing.promise;
+        if (this.missingSessionRecoveries.size >= MAX_MISSING_SESSION_RECOVERIES)
+            return;
+        const abort = new AbortController();
+        const generation = this.recoveryGeneration;
+        const promise = this.cfg.routing.resolveIdentity(nodeAddr, abort)
+            .then(async (identity) => {
+            if (generation !== this.recoveryGeneration)
+                return;
+            await this.ensureSession(toHex(identity));
+            this.missingSessionRecoveries.delete(nodeHex);
+        }).catch(error => {
+            this.cfg.logger.debug("missing FSP session recovery failed", nodeHex, error);
+            const recovery = this.missingSessionRecoveries.get(nodeHex);
+            if (recovery?.abort === abort)
+                recovery.expiresAtMs = Date.now() + MISSING_SESSION_RETRY_MS;
+        });
+        this.missingSessionRecoveries.set(nodeHex, { abort, expiresAtMs: Infinity, promise });
+        await promise;
     }
     async handleEstablished(peer, srcNodeHex, session, fspFrame) {
         if (!session) {
@@ -363,6 +409,7 @@ export class FspSessionManager {
         this.cfg.emitSession({
             remotePubkey: session.remotePubkeyHex ?? srcNodeHex,
             state: "established",
+            ...(remoteRestarted ? { restarted: true } : {}),
         });
         this.resolveSessionSetup(session);
         await this.drainEarlyEstablishedRecords(session, srcNodeHex);

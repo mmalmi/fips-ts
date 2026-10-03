@@ -45,7 +45,7 @@ import { LearnedRouteTable } from "./LearnedRouteTable.js";
 import { OriginLookupRegistry, type PendingOriginLookup } from "./OriginLookupRegistry.js";
 import type { AdjacentPeer } from "./PeerState.js";
 import {
-  discoveryPublicKey,
+  resolveTransportIdentity,
   frameCapacity,
   isKnownUnhandledLinkMessage,
   lookupReverseKey,
@@ -62,12 +62,6 @@ interface PendingRouteResolution {
 type OutboundSessionDatagram = Omit<SessionDatagram, "payload"> & {
   payload: Uint8Array | ((nextHop: AdjacentPeer) => Uint8Array[]);
 };
-
-interface ResolvedRoute {
-  transport: Transport;
-  remoteAddr: TransportAddress;
-  remotePubkey: Uint8Array;
-}
 
 interface LookupReversePath {
   peer: AdjacentPeer;
@@ -106,7 +100,6 @@ interface FipsRoutingConfig {
   isStarted: () => boolean;
 }
 
-const ROUTE_RESOLUTION_TIMEOUT_MS = 5_000;
 const MAX_PENDING_ROUTE_RESOLUTIONS = 64;
 const LOOKUP_REVERSE_PATH_TTL_MS = 30_000;
 const MAX_LOOKUP_REVERSE_PATHS = 256;
@@ -792,7 +785,7 @@ export class FipsRouting {
     }
 
     const abort = new AbortController();
-    const promise = this.resolveAndConnectRoute(destNodeAddr, destNodeHex, abort);
+    const promise = this.resolveAndConnectRoute(destNodeAddr, abort);
     this.pendingRouteResolutions.set(destNodeHex, { promise, abort });
     try {
       await promise;
@@ -805,51 +798,22 @@ export class FipsRouting {
 
   private async resolveAndConnectRoute(
     destNodeAddr: NodeAddr,
-    destNodeHex: string,
     abort: AbortController,
   ): Promise<void> {
-    const resolvers = this.cfg.transports.filter(
-      (transport): transport is Transport & Required<Pick<Transport, "resolve">> =>
-        transport.resolve !== undefined,
-    );
-    if (resolvers.length === 0) throw new Error(`no route to ${destNodeHex}`);
-
-    const resolutionTasks = resolvers.map(async (transport): Promise<ResolvedRoute> => {
-      const discovered = await transport.resolve(destNodeAddr, abort.signal);
-      if (!discovered) throw new Error("transport did not resolve destination");
-      if (discovered.remoteAddr.transport !== transport.type) {
-        throw new Error("resolved address transport mismatch");
-      }
-      const remotePubkey = discoveryPublicKey(discovered);
-      if (!bytesEqual(deriveNodeAddr(remotePubkey), destNodeAddr)) {
-        throw new Error("resolved identity does not match destination NodeAddr");
-      }
-      return { transport, remoteAddr: discovered.remoteAddr, remotePubkey };
-    });
-    const noRoute = (): Error => new Error(`no route to ${destNodeHex}`);
-    const candidate = Promise.any(resolutionTasks).catch(() => {
-      throw noRoute();
-    });
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    let onAbort: (() => void) | undefined;
-    const boundary = new Promise<never>((_resolve, reject) => {
-      onAbort = () => reject(this.cfg.isStarted() ? noRoute() : new Error("FIPS node stopped"));
-      abort.signal.addEventListener("abort", onAbort, { once: true });
-      timeout = setTimeout(() => abort.abort(), ROUTE_RESOLUTION_TIMEOUT_MS);
-    });
-
-    let resolved: ResolvedRoute;
-    try {
-      resolved = await Promise.race([candidate, boundary]);
-    } finally {
-      if (timeout) clearTimeout(timeout);
-      if (onAbort) abort.signal.removeEventListener("abort", onAbort);
-      if (!abort.signal.aborted) abort.abort();
-    }
+    const resolved = await resolveTransportIdentity(this.cfg.transports, destNodeAddr, abort, this.cfg.isStarted);
     await this.cfg.connectKnownPeer(
       resolved.transport,
       resolved.remoteAddr,
       resolved.remotePubkey,
     );
   }
+
+  /** Resolve only the identity: FSP signaling can be needed before its carrier exists. */
+  async resolveIdentity(nodeAddr: NodeAddr, abort: AbortController): Promise<Uint8Array> {
+    const nodeHex = nodeAddrToHex(nodeAddr);
+    const adjacent = this.cfg.getPeerByNodeAddr(nodeHex);
+    if (adjacent?.link.state === "established" && adjacent.pubkey) return adjacent.pubkey;
+    return (await resolveTransportIdentity(this.cfg.transports, nodeAddr, abort, this.cfg.isStarted)).remotePubkey;
+  }
+
 }

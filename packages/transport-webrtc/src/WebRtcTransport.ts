@@ -19,6 +19,7 @@ import {
   DEFAULT_FIPS_ADVERT_TTL_MS,
   FIPS_ADVERT_D_TAG,
   NostrPeerDiscovery,
+  type FipsAdvertContent,
 } from "./NostrPeerDiscovery.js";
 import type { NostrEvent } from "./NostrRelayClient.js";
 import { WebRtcConnection } from "./WebRtcConnection.js";
@@ -33,6 +34,7 @@ import {
   resolveWebRtcTransportConfig,
   waitForIceGatheringComplete,
   type PendingInboundConnection,
+  type AdvertWaiter,
   type ResolvedWebRtcTransportConfig,
 } from "./WebRtcTransportSupport.js";
 import {
@@ -42,34 +44,13 @@ import {
   type WebRtcSignal,
 } from "./WebRtcSignal.js";
 import type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
-
-interface PendingDial {
-  sessionId: string;
-  remotePubkeyHex: string;
-  phase: string;
-  rejectedOfferId?: string;
-  pc: RTCPeerConnection;
-  dataChannel: RTCDataChannel;
-  resolve: () => void;
-  reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
+import { isRetryOfRejectedOffer, retryOffersAfterRestart, sendPendingOffer,
+  type PendingDial } from "./WebRtcDial.js";
 
 class IncomingOfferHandoff extends Error {
   constructor() {
     super("incoming WebRTC offer won simultaneous dial");
   }
-}
-
-interface WebRtcAdvert {
-  endpoints: Array<{ transport: string; addr: string }>;
-}
-
-interface AdvertWaiter {
-  resolve: (peer: DiscoveredPeer | undefined) => void;
-  timer: ReturnType<typeof setTimeout>;
-  signal?: AbortSignal;
-  onAbort?: () => void;
 }
 
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
@@ -246,7 +227,7 @@ export class WebRtcTransport implements Transport {
 
   private async handleAdvert(
     event: NostrEvent,
-    advert: WebRtcAdvert,
+    advert: FipsAdvertContent,
     sourceRelayUrl: string,
   ): Promise<void> {
     const localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : "";
@@ -515,8 +496,12 @@ export class WebRtcTransport implements Transport {
     return this.close({ transport: this.type, addr: remotePubkeyHex });
   }
 
-  handleSessionEstablished(remotePubkeyHex: string): void {
+  handleSessionEstablished(remotePubkeyHex: string, restarted = false): void {
     remotePubkeyHex = this.ownedPeerAddress(remotePubkeyHex);
+    if (restarted) {
+      retryOffersAfterRestart(remotePubkeyHex, this.pendingDials,
+        (remote, signal) => this.sendWebRtcSignal(remote, signal), this.logger);
+    }
     if (!this.autoConnectPolicy.recoverSession(remotePubkeyHex)) return;
     clearTimeout(this.autoReconnectTimers.get(remotePubkeyHex));
     this.autoReconnectTimers.delete(remotePubkeyHex);
@@ -536,13 +521,9 @@ export class WebRtcTransport implements Transport {
     // An incoming offer can win while any of these operations is pending.
     // Never send the canceled offer or attach callbacks to its closed PC.
     if (!ownsDial()) return;
-    const signal = createWebRtcSignal(dial.sessionId, "offer", { sdp: dial.pc.localDescription!.sdp });
-    dial.phase = "sending-offer";
-    await this.sendWebRtcSignal(dial.remotePubkeyHex, signal);
+    await sendPendingOffer(dial, this.pendingDials,
+      (remote, signal) => this.sendWebRtcSignal(remote, signal), this.logger);
     if (!ownsDial()) return;
-    // A fast answer can arrive before the signaling write has settled.
-    if (dial.phase === "sending-offer") dial.phase = "awaiting-answer";
-    this.logger.debug("webrtc offer sent", dial.remotePubkeyHex, dial.sessionId);
     // Wire connection state to dialer promise once data channel opens.
     let conn: WebRtcConnection | null = null;
     const ownsConnection = () => ownsDial()
@@ -653,9 +634,7 @@ export class WebRtcTransport implements Transport {
       // authenticated retry after rejection means the peer abandoned that
       // negotiation. Yield only while our winning offer is still unanswered,
       // so a lost offer cannot block recovery until the full dial deadline.
-      const retryOfRejectedOffer = competingDial.rejectedOfferId !== undefined
-        && competingDial.rejectedOfferId !== offer.negotiationId
-        && competingDial.phase === "awaiting-answer";
+      const retryOfRejectedOffer = isRetryOfRejectedOffer(competingDial, offer.negotiationId);
       if (!incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex)
         && !retryOfRejectedOffer) {
         competingDial.rejectedOfferId ??= offer.negotiationId;

@@ -67,6 +67,8 @@ export declare class FipsRouting {
     private reserveLookupReversePath;
     private resolveRoute;
     private resolveAndConnectRoute;
+    /** Resolve only the identity: FSP signaling can be needed before its carrier exists. */
+    resolveIdentity(nodeAddr: NodeAddr, abort: AbortController): Promise<Uint8Array>;
 }
 export {};
 //# sourceMappingURL=FipsRouting.d.ts.map

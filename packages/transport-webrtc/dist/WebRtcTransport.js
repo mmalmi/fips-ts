@@ -6,6 +6,7 @@ import { WebRtcConnection } from "./WebRtcConnection.js";
 import { WebRtcAdvertCache } from "./WebRtcAdvertCache.js";
 import { AsyncEventStream, cloneDiscoveredPeer, emptyAsyncIterable, hasPendingInboundForPeer, incomingOfferReplacesPendingDial, randomId, resolveWebRtcTransportConfig, waitForIceGatheringComplete, } from "./WebRtcTransportSupport.js";
 import { createWebRtcSignal, sendAnswerWithRouteRetry, validateWebRtcSignal, } from "./WebRtcSignal.js";
+import { isRetryOfRejectedOffer, retryOffersAfterRestart, sendPendingOffer } from "./WebRtcDial.js";
 class IncomingOfferHandoff extends Error {
     constructor() {
         super("incoming WebRTC offer won simultaneous dial");
@@ -432,8 +433,11 @@ export class WebRtcTransport {
     handlePeerRestart(remotePubkeyHex) {
         return this.close({ transport: this.type, addr: remotePubkeyHex });
     }
-    handleSessionEstablished(remotePubkeyHex) {
+    handleSessionEstablished(remotePubkeyHex, restarted = false) {
         remotePubkeyHex = this.ownedPeerAddress(remotePubkeyHex);
+        if (restarted) {
+            retryOffersAfterRestart(remotePubkeyHex, this.pendingDials, (remote, signal) => this.sendWebRtcSignal(remote, signal), this.logger);
+        }
         if (!this.autoConnectPolicy.recoverSession(remotePubkeyHex))
             return;
         clearTimeout(this.autoReconnectTimers.get(remotePubkeyHex));
@@ -456,15 +460,9 @@ export class WebRtcTransport {
         // Never send the canceled offer or attach callbacks to its closed PC.
         if (!ownsDial())
             return;
-        const signal = createWebRtcSignal(dial.sessionId, "offer", { sdp: dial.pc.localDescription.sdp });
-        dial.phase = "sending-offer";
-        await this.sendWebRtcSignal(dial.remotePubkeyHex, signal);
+        await sendPendingOffer(dial, this.pendingDials, (remote, signal) => this.sendWebRtcSignal(remote, signal), this.logger);
         if (!ownsDial())
             return;
-        // A fast answer can arrive before the signaling write has settled.
-        if (dial.phase === "sending-offer")
-            dial.phase = "awaiting-answer";
-        this.logger.debug("webrtc offer sent", dial.remotePubkeyHex, dial.sessionId);
         // Wire connection state to dialer promise once data channel opens.
         let conn = null;
         const ownsConnection = () => ownsDial()
@@ -574,9 +572,7 @@ export class WebRtcTransport {
             // authenticated retry after rejection means the peer abandoned that
             // negotiation. Yield only while our winning offer is still unanswered,
             // so a lost offer cannot block recovery until the full dial deadline.
-            const retryOfRejectedOffer = competingDial.rejectedOfferId !== undefined
-                && competingDial.rejectedOfferId !== offer.negotiationId
-                && competingDial.phase === "awaiting-answer";
+            const retryOfRejectedOffer = isRetryOfRejectedOffer(competingDial, offer.negotiationId);
             if (!incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex)
                 && !retryOfRejectedOffer) {
                 competingDial.rejectedOfferId ??= offer.negotiationId;

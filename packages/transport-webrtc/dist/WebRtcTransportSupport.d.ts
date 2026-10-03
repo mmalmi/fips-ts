@@ -25,4 +25,10 @@ export declare class AsyncEventStream<T> implements AsyncIterable<T> {
 export declare function emptyAsyncIterable<T>(): AsyncIterable<T>;
 export declare function cloneDiscoveredPeer(peer: DiscoveredPeer): DiscoveredPeer;
 export declare function advertExpiryMs(event: NostrEvent, ttlMs: number, nowMs: number): number | undefined;
+export interface AdvertWaiter {
+    resolve: (peer: DiscoveredPeer | undefined) => void;
+    timer: ReturnType<typeof setTimeout>;
+    signal?: AbortSignal;
+    onAbort?: () => void;
+}
 //# sourceMappingURL=WebRtcTransportSupport.d.ts.map

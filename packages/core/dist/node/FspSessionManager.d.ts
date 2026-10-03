@@ -24,6 +24,8 @@ export declare class FspSessionManager {
     private readonly localEpoch;
     private reportTimer?;
     private reportsSending;
+    private readonly missingSessionRecoveries;
+    private recoveryGeneration;
     constructor(cfg: FspSessionManagerConfig);
     registerService(port: number, handler: FipsServiceHandler): () => void;
     start(): void;
@@ -43,6 +45,7 @@ export declare class FspSessionManager {
     sendReceiverReports(): Promise<void>;
     sendLinkNegotiation(remotePubkeyHex: string, message: LinkNegotiationMessage): Promise<void>;
     handleFromPeer(peer: AdjacentPeer, srcNodeAddr: NodeAddr, fspFrame: Uint8Array): Promise<void>;
+    private recoverMissingSession;
     private handleEstablished;
     private promotePendingSession;
     private deliverDatagram;
