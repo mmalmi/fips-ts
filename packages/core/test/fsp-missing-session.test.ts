@@ -20,7 +20,7 @@ async function fixture() {
   const manager = new FspSessionManager({
     identity, localEpoch: new Uint8Array(8), random: { bytes: length => new Uint8Array(length) },
     logger: noopLogger,
-    routing: { resolveIdentity, sendFspToward, coordinatesFor: () => [remote.nodeAddr] } as never,
+    routing: { resolveIdentity, sendFspToward, hasUsableRoute: () => true, coordinatesFor: () => [remote.nodeAddr] } as never,
     getPeerByNodeAddr: () => undefined, emitDatagram: delivered, emitEndpointData: delivered,
     handleLinkNegotiation: delivered, emitSession: vi.fn(),
   });

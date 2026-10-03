@@ -37,7 +37,7 @@ async function pair(drop: (from: number, phase: number, count: number) => boolea
       localEpoch: new Uint8Array(8).fill(0x52 + from),
       logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
       routing: {
-        coords: [identity.nodeAddr], coordinatesFor: () => [identities[to]!.nodeAddr],
+        coords: [identity.nodeAddr], hasUsableRoute: () => true, coordinatesFor: () => [identities[to]!.nodeAddr],
         learnReverseRoute: () => {}, sendFspToward: send, sendFspReplyToward: send,
       } as unknown as FipsRouting,
       getPeerByNodeAddr: () => undefined,

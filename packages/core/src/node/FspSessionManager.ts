@@ -619,9 +619,9 @@ export class FspSessionManager {
       await this.waitForSessionSetup(session, remoteNodeHex);
       return session;
     }
-    const directPeer = this.cfg.getPeerByNodeAddr(remoteNodeHex);
-    if (directPeer?.link.state !== "established"
-      && !this.cfg.routing.coordinatesFor(remoteNodeHex)) {
+    // Cached coordinates can outlive their carrier. Establish a routed path
+    // before signaling a transport that itself needs this FSP session.
+    if (!this.cfg.routing.hasUsableRoute(remoteNodeHex)) {
       await this.cfg.routing.ensureFirstContactRoute(
         remoteNodeAddr,
         remoteNodeHex,

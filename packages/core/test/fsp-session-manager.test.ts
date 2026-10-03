@@ -24,7 +24,7 @@ describe("FspSessionManager", () => {
       random: { bytes: (length) => new Uint8Array(length) },
       localEpoch: new Uint8Array(8),
       logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-      routing: { coordinatesFor: () => undefined, ensureFirstContactRoute } as never,
+      routing: { hasUsableRoute: () => false, coordinatesFor: () => undefined, ensureFirstContactRoute } as never,
       getPeerByNodeAddr: () => undefined,
       emitDatagram: () => {},
       emitEndpointData: () => {},
@@ -35,6 +35,28 @@ describe("FspSessionManager", () => {
     await expect(manager.sendDatagram({ ...args, dstPort: 4_242 })).rejects.toThrow(/hex/i);
     await expect(manager.sendEndpointData(args)).rejects.toThrow(/hex/i);
     expect(ensureFirstContactRoute).not.toHaveBeenCalled();
+  });
+
+  it("discovers a usable route when cached coordinates have no surviving next hop", async () => {
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x21));
+    const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x22));
+    const ensureFirstContactRoute = vi.fn(async () => { throw new Error("route unavailable"); });
+    const sendFspToward = vi.fn(async () => { throw new Error("circular carrier dial"); });
+    const manager = new FspSessionManager({
+      identity: local, random: { bytes: length => new Uint8Array(length) },
+      localEpoch: new Uint8Array(8),
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      routing: { coords: [local.nodeAddr], coordinatesFor: () => [remote.nodeAddr],
+        hasUsableRoute: () => false, ensureFirstContactRoute, sendFspToward } as never,
+      getPeerByNodeAddr: () => undefined, emitDatagram: () => {}, emitEndpointData: () => {},
+      handleLinkNegotiation: async () => {}, emitSession: () => {},
+    });
+    try {
+      await expect(manager.sendDatagram({ dst: toHex(remote.publicKey), dstPort: 4242,
+        payload: new Uint8Array([1]) })).rejects.toThrow("route unavailable");
+      expect(ensureFirstContactRoute).toHaveBeenCalledTimes(1);
+      expect(sendFspToward).not.toHaveBeenCalled();
+    } finally { manager.stop(); }
   });
 
   it.each(["valid", "corrupted", "duplicate"])("handles %s early records", async (precedingRecord) => {
@@ -132,7 +154,7 @@ describe("FspSessionManager", () => {
     } as never;
     const routing = {
       coords: [initiatorIdentity.nodeAddr],
-      coordinatesFor: () => [responderIdentity.nodeAddr],
+      hasUsableRoute: () => true, coordinatesFor: () => [responderIdentity.nodeAddr],
       learnReverseRoute: () => {},
       sendFspToward: async (_remoteNodeAddr: Uint8Array, frame: Parameters<FipsRouting["sendFspToward"]>[1]) => {
         if (typeof frame === "function") {
@@ -213,7 +235,7 @@ describe("FspSessionManager", () => {
       localEpoch: new Uint8Array(8).fill(0x53),
       logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
       routing: {
-        coords: [local.nodeAddr], coordinatesFor: () => undefined,
+        coords: [local.nodeAddr], hasUsableRoute: () => false, coordinatesFor: () => undefined,
         ensureFirstContactRoute: () => routeReady, learnReverseRoute: () => {},
         sendFspReplyToward: async (_: unknown, frame: Uint8Array) => { sent.push(frame); },
         sendFspToward: async (_: unknown, frame: Uint8Array | ((nextHop: typeof peer) => Uint8Array[])) => {
@@ -260,7 +282,7 @@ describe("FspSessionManager", () => {
       identity: local, random: { bytes: length => new Uint8Array(length).fill(0x37) },
       localEpoch: new Uint8Array(8).fill(0x54),
       logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-      routing: { coords: [local.nodeAddr], coordinatesFor: () => [remote.nodeAddr],
+      routing: { coords: [local.nodeAddr], hasUsableRoute: () => true, coordinatesFor: () => [remote.nodeAddr],
         sendFspToward: () => sendReady } as never,
       getPeerByNodeAddr: () => undefined, emitDatagram: () => {}, emitEndpointData: () => {},
       handleLinkNegotiation: async () => {}, emitSession: () => {},

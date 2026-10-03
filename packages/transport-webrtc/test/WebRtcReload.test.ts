@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import {
-  FipsNode, identityFromSecretKey, nodeAddrToHex, toHex,
+  FipsNode, FSP_MSG_KEEPALIVE, identityFromSecretKey, nodeAddrToHex, toHex,
   type FipsIdentity, type FspSession, type Transport, type TransportAddress, type TransportContext,
 } from '@fips/core'
 import { WebRtcTransport, type NostrEvent, type NostrFilter, type NostrRelayClient } from '../src/index.js'
@@ -64,16 +64,22 @@ const hasRtc = (node: FipsNode) => [...Reflect.get(node, 'peers').values()]
   .some(peer => peer.remoteAddr.transport === 'webrtc' && peer.link.state === 'established')
 
 it.each([
-  { restarted: 0, resolutionDelay: 0 }, { restarted: 1, resolutionDelay: 0 },
-  { restarted: 0, resolutionDelay: 5 }, { restarted: 1, resolutionDelay: 5 },
-])('reconnects sorted identity $restarted after reload (identity lookup delay $resolutionDelay ms)', async ({ restarted, resolutionDelay }) => {
+  { restarted: 0, resolutionDelay: 0, departingOrigin: false },
+  { restarted: 1, resolutionDelay: 0, departingOrigin: false },
+  { restarted: 0, resolutionDelay: 5, departingOrigin: false },
+  { restarted: 1, resolutionDelay: 5, departingOrigin: false },
+  { restarted: 0, resolutionDelay: 0, departingOrigin: true },
+  { restarted: 1, resolutionDelay: 0, departingOrigin: true },
+])('reconnects sorted identity $restarted after reload (identity lookup delay $resolutionDelay ms, departing origin $departingOrigin)', async ({ restarted, resolutionDelay, departingOrigin }) => {
   vi.useFakeTimers()
   PairedPeerConnection.instances = []
   const identities = await Promise.all([1, 2, 3].map(async scalar => {
     const secret = new Uint8Array(32); secret[31] = scalar
     return identityFromSecretKey(secret)
   }))
-  const seedIdentity = identities.pop()!
+  const seedIdentity = departingOrigin
+    ? await identityFromSecretKey(new Uint8Array(32).fill(4)) : identities.pop()!
+  const originIdentity = departingOrigin ? identities.shift() : undefined
   identities.sort((a, b) => toHex(a.xOnlyPubkey).localeCompare(toHex(b.xOnlyPubkey)))
   const network = new Map<string, SeedCarrier>()
   const relay = new AdvertRelay()
@@ -87,7 +93,7 @@ it.each([
       autoConnect: true, advertiseOnNostr: true, acceptConnections: true, stunServers: [],
     })
     const node = new FipsNode({ identity, transports: [new SeedCarrier(network), transport],
-      forwarding: true, routingMode: 'reply_learned' })
+      forwarding: !departingOrigin, routingMode: 'reply_learned' })
     node.on('error', event => errors.push(event))
     const onSession = transport.handleSessionEstablished.bind(transport)
     vi.spyOn(transport, 'handleSessionEstablished').mockImplementation((key, restarted) => {
@@ -104,6 +110,7 @@ it.each([
   const seed = new FipsNode({ identity: seedIdentity, transports: [new SeedCarrier(network)],
     forwarding: true, routingMode: 'reply_learned' })
   active.push(seed)
+  const origin = originIdentity ? makePeer(originIdentity) : undefined
   const peers = identities.map(makePeer)
   const connectSeed = (node: FipsNode) => node.connect({ transport: 'websocket', addr: toHex(seedIdentity.publicKey) })
   const send = async (from: number, value: number) => {
@@ -113,7 +120,9 @@ it.each([
   }
   try {
     await seed.start()
-    for (const peer of peers) { await peer.node.start(); await connectSeed(peer.node) }
+    for (const peer of [...(origin ? [origin] : []), ...peers]) {
+      await peer.node.start(); await connectSeed(peer.node)
+    }
     await vi.advanceTimersByTimeAsync(1_000)
     openNegotiatedPairs()
     await flush()
@@ -124,6 +133,7 @@ it.each([
     const survivor = 1 - restarted
     const old = session(peers[survivor]!.node, identities[restarted]!)!
     const oldKeys = old.fsp
+    if (origin) await origin.node.stop()
     await peers[restarted]!.node.stop()
     // Losing the direct carrier alone is not evidence of a process restart.
     expect(oldKeys.state).toBe('established')
@@ -139,6 +149,16 @@ it.each([
     }
     await peers[restarted]!.node.start()
     await connectSeed(peers[restarted]!.node)
+    if (origin) {
+      // A surviving process may send an old warmup before the reloaded peer
+      // starts its offer. Its cached coordinates are not a usable reply route.
+      const staleWarmup = oldKeys.encryptMessage(FSP_MSG_KEEPALIVE, new Uint8Array(), 0, {
+        srcCoords: [identities[survivor]!.nodeAddr], destCoords: [identities[restarted]!.nodeAddr],
+      })
+      await Reflect.get(peers[survivor]!.node, 'routing')
+        .sendFspToward(identities[restarted]!.nodeAddr, staleWarmup)
+      await flush()
+    }
     const start = Date.now()
     for (let elapsed = 0; elapsed < 10_000 && !peers.every(peer => hasRtc(peer.node)); elapsed += 250) {
       await vi.advanceTimersByTimeAsync(250)
@@ -148,7 +168,7 @@ it.each([
     expect(peers.every(peer => hasRtc(peer.node)), 'both peers must reconnect without application traffic').toBe(true)
     expect(Date.now() - start).toBeLessThan(10_000)
     expect(oldKeys.state).toBe('closed')
-    if (restarted === 1) expect(recoveryPhases).toContain(resolutionDelay ? 'awaiting-answer' : 'sending-offer')
+    if (restarted === 1 && !origin) expect(recoveryPhases).toContain(resolutionDelay ? 'awaiting-answer' : 'sending-offer')
     expect(session(peers[survivor]!.node, identities[restarted]!)!.fsp).not.toBe(oldKeys)
     await send(0, 20)
     await send(1, 21)
