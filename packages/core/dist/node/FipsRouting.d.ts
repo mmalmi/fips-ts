@@ -35,6 +35,8 @@ export declare class FipsRouting {
     constructor(cfg: FipsRoutingConfig);
     get coords(): NodeAddr[];
     coordinatesFor(nodeAddrHex: string): NodeAddr[] | undefined;
+    /** Whether a currently usable carrier can still route to this identity. */
+    hasUsableRoute(nodeAddrHex: string): boolean;
     stop(): void;
     removePeer(peerNodeAddr: NodeAddr): void;
     handleLinkMessage(peer: AdjacentPeer, msgType: number, payload: Uint8Array): Promise<void>;

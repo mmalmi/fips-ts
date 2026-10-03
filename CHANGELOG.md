@@ -1,5 +1,11 @@
 # Changelog
 
+## Runtime packages 0.0.52 - 2026-10-03
+
+- Preserve an established endpoint session when a direct carrier closes and another usable route still reaches the same identity. This avoids discarding end-to-end keys during direct connection recovery.
+- Continue closing sessions when no usable route remains, on authenticated process restart, and when the node stops.
+- Release `@fips/core` 0.0.50. Other runtime packages and wire formats are unchanged.
+
 ## Runtime packages 0.0.51 - 2026-10-03
 
 - Recover an unanswered WebRTC dial when the authenticated peer retries with a fresh offer after a crossed-offer rejection. Preserve deterministic initial arbitration, negotiated answers, replay handling, and established carriers.
