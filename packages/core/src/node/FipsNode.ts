@@ -513,7 +513,12 @@ export class FipsNode {
       }
       this.routing.removePeer(peerNodeAddr);
     }
-    if (closeSessionWithoutAlternate && alternates.length === 0) {
+    // An FSP session belongs to the remote identity, not this direct carrier.
+    // Retain its keys when authenticated routing can still reach that identity;
+    // a new local session would disagree with the surviving peer's key epoch.
+    if (closeSessionWithoutAlternate && alternates.length === 0
+      && (peer.pubkey.length === 0
+        || !this.routing.hasUsableRoute(nodeAddrToHex(deriveNodeAddr(peer.pubkey))))) {
       this.sessionManager.closePeerSessions(peer.pubkeyHex);
     }
   }

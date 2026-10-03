@@ -151,6 +151,11 @@ export class FipsRouting {
     return this.coordCache.get(nodeAddrHex);
   }
 
+  /** Whether a currently usable carrier can still route to this identity. */
+  hasUsableRoute(nodeAddrHex: string): boolean {
+    return this.nextHopFor(nodeAddrHex) !== undefined;
+  }
+
   stop(): void {
     for (const pending of this.pendingRouteResolutions.values()) {
       pending.abort.abort();
