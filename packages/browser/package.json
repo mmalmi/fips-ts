@@ -1,6 +1,6 @@
 {
   "name": "@fips/browser",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -19,7 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.48/fips-core-0.0.48.tgz"
+    "@fips/core": "https://github.com/mmalmi/fips-ts/releases/download/runtime-v0.0.53/fips-core-0.0.51.tgz"
   },
   "devDependencies": {
     "typescript": "^5.7.3"
