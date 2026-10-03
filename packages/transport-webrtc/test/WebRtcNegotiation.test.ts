@@ -29,6 +29,7 @@ class FakePeerConnection extends EventTarget {
   static instances: FakePeerConnection[] = []
   static offerGate: ReturnType<typeof deferred<RTCSessionDescriptionInit>> | undefined
   static localGate: ReturnType<typeof deferred<void>> | undefined
+  static remoteGate: ReturnType<typeof deferred<void>> | undefined
   connectionState = 'new'
   iceConnectionState = 'new'
   iceGatheringState = 'gathering'
@@ -58,6 +59,7 @@ class FakePeerConnection extends EventTarget {
     this.localDescription = description
   }
   async setRemoteDescription(description: RTCSessionDescriptionInit) {
+    if (this.initiator) await FakePeerConnection.remoteGate?.promise
     this.remoteDescription = description
   }
   close() {
@@ -157,6 +159,7 @@ beforeEach(() => {
   FakePeerConnection.instances = []
   FakePeerConnection.offerGate = undefined
   FakePeerConnection.localGate = undefined
+  FakePeerConnection.remoteGate = undefined
 })
 
 describe('WebRTC failed answer route recovery', () => {
@@ -275,6 +278,101 @@ describe('WebRTC connection configuration', () => {
 })
 
 describe('WebRTC simultaneous negotiation ownership', () => {
+  it('hands an unanswered winning dial to a fresh peer retry without waiting for its deadline', async () => {
+    const { transport, sent, states, result } = await fixture(undefined, 22, 1, { autoConnect: true })
+    const outgoing = FakePeerConnection.instances[0]
+    outgoing.deferCloseEvents = true
+    outgoing.channel.deferCloseEvents = true
+    outgoing.finishGathering()
+    await flush()
+    const oldOffer = sent[0]
+    const first = incomingOffer('first-crossed-offer')
+    await transport.handleLinkNegotiation(remote.addr, first)
+    expect(sent.map(signal => signal.kind)).toEqual(['offer', 'reject'])
+    await expect(transport.handleLinkNegotiation(remote.addr, first)).rejects.toThrow()
+    expect(FakePeerConnection.instances).toHaveLength(1)
+
+    const replacement = await incomingWins(transport, 'fresh-peer-retry')
+    expect(await result).toBe('incoming WebRTC offer won simultaneous dial')
+    expect(outgoing.connectionState).toBe('closed')
+    expect(sent.map(signal => signal.kind)).toEqual(['offer', 'reject', 'answer'])
+    expect(states).toEqual(['connected'])
+    expect(Reflect.get(transport, 'autoConnectPolicy').cooldownUntil(remote.addr)).toBe(0)
+
+    // Late replies and queued old-PC callbacks must not retire the new path.
+    await transport.handleLinkNegotiation(remote.addr, { ...oldOffer, kind: 'answer', payload: { sdp: 'late' } })
+    await transport.handleLinkNegotiation(remote.addr, { ...oldOffer, kind: 'reject', payload: {} })
+    await vi.advanceTimersByTimeAsync(1)
+    await transport.send(remote, new Uint8Array([51]))
+    expect(replacement.channel.sent.at(-1)).toEqual(new Uint8Array([51]))
+    expect(states).toEqual(['connected'])
+  })
+
+  it('retries a failed inbound handoff without imposing an outbound failure cooldown', async () => {
+    const { transport, sent, result } = await fixture(undefined, 22, 1, { autoConnect: true, connectTimeoutMs: 1_000 })
+    Reflect.get(transport, 'advertCache').store('known-peer', { remoteAddr: remote }, {
+      created_at: Math.floor(Date.now() / 1_000), tags: [],
+    })
+    const retry = transport.discover()[Symbol.asyncIterator]().next().then(({ value }) => {
+      void transport.connect(value.remoteAddr).catch(() => undefined)
+    })
+    FakePeerConnection.instances[0].finishGathering()
+    await flush()
+    await transport.handleLinkNegotiation(remote.addr, incomingOffer('first-crossed-offer'))
+    await transport.handleLinkNegotiation(remote.addr, incomingOffer('fresh-peer-retry'))
+    expect(await result).toBe('incoming WebRTC offer won simultaneous dial')
+    expect(Reflect.get(transport, 'autoConnectPolicy').cooldownUntil(remote.addr)).toBe(0)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(FakePeerConnection.instances[1].connectionState).toBe('closed')
+    expect(Reflect.get(transport, 'autoReconnectTimers').has(remote.addr)).toBe(true)
+    expect(Reflect.get(transport, 'autoConnectPolicy').cooldownUntil(remote.addr)).toBe(0)
+    await vi.advanceTimersByTimeAsync(500)
+    await retry
+    expect(FakePeerConnection.instances).toHaveLength(3)
+    expect(sent.map(signal => signal.kind)).toEqual(['offer', 'reject', 'answer', 'offer'])
+  })
+
+  it.each(['applying-answer', 'opening-data-channel'])('does not hand off a winning dial while %s', async phase => {
+    const { transport, sent, result } = await fixture(undefined, 22, 1)
+    const outgoing = FakePeerConnection.instances[0]
+    outgoing.finishGathering()
+    await flush()
+    await transport.handleLinkNegotiation(remote.addr, incomingOffer('first-crossed-offer'))
+    const gate = deferred<void>()
+    if (phase === 'applying-answer') FakePeerConnection.remoteGate = gate
+    const answer = transport.handleLinkNegotiation(remote.addr, {
+      ...sent[0], kind: 'answer', payload: { sdp: 'valid-answer' },
+    })
+    await flush()
+    await transport.handleLinkNegotiation(remote.addr, incomingOffer('fresh-peer-retry'))
+    expect(FakePeerConnection.instances).toHaveLength(1)
+    expect(sent.map(signal => signal.kind)).toEqual(['offer', 'reject', 'reject'])
+    gate.resolve()
+    await answer
+    outgoing.connectChannel()
+    await flush()
+    expect(await result).toBe('connected')
+  })
+
+  it('keeps an early answer when the outgoing offer write resolves later', async () => {
+    const sendGate = deferred<void>()
+    const { transport, sent, result } = await fixture(sendGate, 22, 1)
+    const outgoing = FakePeerConnection.instances[0]
+    outgoing.finishGathering()
+    await flush()
+    await transport.handleLinkNegotiation(remote.addr, incomingOffer('first-crossed-offer'))
+    await transport.handleLinkNegotiation(remote.addr, {
+      ...sent[0], kind: 'answer', payload: { sdp: 'valid-answer' },
+    })
+    sendGate.resolve()
+    await flush()
+    await transport.handleLinkNegotiation(remote.addr, incomingOffer('fresh-peer-retry'))
+    expect(FakePeerConnection.instances).toHaveLength(1)
+    outgoing.connectChannel()
+    await flush()
+    expect(await result).toBe('connected')
+  })
+
   it('reuses an incumbent for exact and opposite-parity connect requests', async () => {
     const { transport, states, result } = await fixture()
     const incumbent = FakePeerConnection.instances[0]

@@ -13,6 +13,83 @@ function session(node: FipsNode, address: Uint8Array): ObservedSession | undefin
 const counter = (value: ObservedSession) => Reflect.get(value.fsp, 'txCounter') as bigint
 const flush = () => vi.advanceTimersByTimeAsync(0)
 
+it('recovers a lost winning offer on the next authenticated retry while preserving FSP traffic', async () => {
+  vi.useFakeTimers()
+  PairedPeerConnection.instances = []
+  const identities = await Promise.all([1, 2].map(async scalar => {
+    const secret = new Uint8Array(32); secret[31] = scalar
+    return identityFromSecretKey(secret)
+  }))
+  identities.sort((a, b) => toHex(a.xOnlyPubkey).localeCompare(toHex(b.xOnlyPubkey)))
+  const keys = identities.map(identity => toHex(identity.publicKey))
+  const bootstraps = [new BootstrapTransport(), new BootstrapTransport()]
+  bootstraps[0]!.other = bootstraps[1]!
+  bootstraps[1]!.other = bootstraps[0]!
+  const transports = identities.map(() => new WebRtcTransport({
+    rtcPeerConnection: PairedPeerConnection as unknown as typeof RTCPeerConnection,
+    acceptConnections: true, stunServers: [],
+  }))
+  const nodes = identities.map((identity, i) => new FipsNode({
+    identity, transports: [bootstraps[i]!, transports[i]!],
+  }))
+  const received: number[][] = [[], []]
+  nodes.forEach((node, i) => node.registerService(4242, ({ payload }) => { received[i]!.push(payload[0]!) }))
+  const send = async (from: number, value: number) => {
+    await nodes[from]!.sendDatagram({ dst: keys[1 - from]!, dstPort: 4242, payload: new Uint8Array([value]) })
+    await flush()
+  }
+  const originalHandler = transports[1]!.handleLinkNegotiation.bind(transports[1])
+  let dropped = false
+  const gate = vi.spyOn(transports[1]!, 'handleLinkNegotiation').mockImplementation(async (key, message) => {
+    // The signaling write succeeds locally, but its peer never receives it.
+    if (!dropped && message.kind === 'offer') { dropped = true; return }
+    await originalHandler(key, message)
+  })
+  const operations: Promise<unknown>[] = []
+  try {
+    await Promise.all(nodes.map(node => node.start()))
+    await nodes[0]!.connect({ transport: 'bootstrap', addr: keys[1]! })
+    await send(0, 10)
+    await send(1, 11)
+    const original = nodes.map((node, i) => session(node, identities[1 - i]!.nodeAddr)!)
+    const started = Date.now()
+    const winningDial = nodes[0]!.connect({ transport: 'webrtc', addr: keys[1]! })
+      .then(() => 'connected', error => (error as Error).message)
+    operations.push(winningDial)
+    await flush()
+    expect(dropped).toBe(true)
+    const firstRetry = nodes[1]!.connect({ transport: 'webrtc', addr: keys[0]! })
+      .then(() => 'connected', error => (error as Error).message)
+    operations.push(firstRetry)
+    await flush()
+    expect(await firstRetry).toBe('peer rejected')
+    const nextRetry = nodes[1]!.connect({ transport: 'webrtc', addr: keys[0]! })
+      .then(() => 'connected', error => (error as Error).message)
+    operations.push(nextRetry)
+    await flush()
+    expect(PairedPeerConnection.instances).toHaveLength(4)
+    expect(await winningDial).toBe('incoming WebRTC offer won simultaneous dial')
+    PairedPeerConnection.instances[2]!.openPair()
+    await flush()
+    expect(await nextRetry).toBe('connected')
+    expect(Date.now() - started).toBeLessThan(1_000)
+    bootstraps.forEach(bootstrap => bootstrap.disconnect())
+    await send(0, 20)
+    await send(1, 21)
+    expect(received).toEqual([[11, 21], [10, 20]])
+    nodes.forEach((node, i) => {
+      expect(session(node, identities[1 - i]!.nodeAddr)).toBe(original[i])
+      expect(original[i]!.fsp.state).toBe('established')
+    })
+  } finally {
+    gate.mockRestore()
+    await Promise.all(nodes.map(node => node.stop()))
+    await vi.runOnlyPendingTimersAsync()
+    await Promise.allSettled(operations)
+    vi.useRealTimers()
+  }
+})
+
 it('keeps the end-to-end session and bidirectional traffic after a delayed crossed RTC offer', async () => {
   vi.useFakeTimers()
   PairedPeerConnection.instances = []
