@@ -81,3 +81,34 @@ it('does not create a session when a resolver completes after stop', async () =>
   expect(sendFspToward).not.toHaveBeenCalled();
   expect(delivered).not.toHaveBeenCalled();
 });
+
+
+it('keeps a new recovery marker when the previous generation finishes its handshake', async () => {
+  const { manager, remote, receive, resolveIdentity } = await fixture();
+  let finishSession!: () => void;
+  const ensure = vi.spyOn(manager as unknown as { ensureSession(key: string): Promise<unknown> }, 'ensureSession')
+    .mockImplementationOnce(() => new Promise<void>(resolve => { finishSession = resolve; }));
+  resolveIdentity.mockResolvedValueOnce(remote.publicKey);
+  const first = receive();
+  await Promise.resolve();
+  expect(ensure).toHaveBeenCalledTimes(1);
+  finishSession();
+  manager.stop();
+  const lookups: AbortController[] = [];
+  resolveIdentity.mockImplementation((_node, abort) => new Promise((_resolve, reject) => {
+    lookups.push(abort);
+    abort.signal.addEventListener('abort', () => reject(new Error('stopped')), { once: true });
+  }));
+  const second = receive();
+  const operations = [first, second];
+  try {
+    await first;
+    operations.push(receive());
+    expect(resolveIdentity).toHaveBeenCalledTimes(2);
+  } finally {
+    manager.stop();
+    for (const lookup of lookups) lookup.abort();
+    await Promise.all(operations);
+    ensure.mockRestore();
+  }
+});

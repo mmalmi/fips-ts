@@ -205,7 +205,8 @@ export class FspSessionManager {
             if (generation !== this.recoveryGeneration)
                 return;
             await this.ensureSession(toHex(identity));
-            this.missingSessionRecoveries.delete(nodeHex);
+            if (generation === this.recoveryGeneration)
+                this.missingSessionRecoveries.delete(nodeHex);
         }).catch(error => {
             this.cfg.logger.debug("missing FSP session recovery failed", nodeHex, error);
             const recovery = this.missingSessionRecoveries.get(nodeHex);
