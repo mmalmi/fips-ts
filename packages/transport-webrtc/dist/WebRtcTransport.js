@@ -6,6 +6,11 @@ import { WebRtcConnection } from "./WebRtcConnection.js";
 import { WebRtcAdvertCache } from "./WebRtcAdvertCache.js";
 import { AsyncEventStream, cloneDiscoveredPeer, emptyAsyncIterable, hasPendingInboundForPeer, incomingOfferReplacesPendingDial, randomId, resolveWebRtcTransportConfig, waitForIceGatheringComplete, } from "./WebRtcTransportSupport.js";
 import { createWebRtcSignal, sendAnswerWithRouteRetry, validateWebRtcSignal, } from "./WebRtcSignal.js";
+class IncomingOfferHandoff extends Error {
+    constructor() {
+        super("incoming WebRTC offer won simultaneous dial");
+    }
+}
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
 const AUTO_RECONNECT_DELAY_MS = 500;
 const AUTO_CONNECT_SETTLE_MS = 750;
@@ -214,7 +219,8 @@ export class WebRtcTransport {
             if (this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects())
                 return;
             const ownedRemote = this.ownedPeerAddress(remote);
-            if (this.conns.has(ownedRemote) || this.pendingConnects.has(ownedRemote) || this.autoConnectPeers.has(remote))
+            if (this.conns.has(ownedRemote) || this.pendingConnects.has(ownedRemote) || this.autoConnectPeers.has(remote)
+                || hasPendingInboundForPeer(this.pendingInbound.values(), ownedRemote))
                 continue;
             if (this.autoConnectPolicy.cooldownUntil(remote) > now)
                 continue;
@@ -370,7 +376,11 @@ export class WebRtcTransport {
             await connectPromise;
         }
         catch (error) {
-            this.handleAutoConnectFailure(remotePubkeyHex, awaitingSessionRecovery);
+            // A live inbound negotiation has taken ownership of this peer. It is
+            // not a failed connection attempt and must not acquire a retry cooldown.
+            if (!(error instanceof IncomingOfferHandoff)) {
+                this.handleAutoConnectFailure(remotePubkeyHex, awaitingSessionRecovery);
+            }
             throw error;
         }
         finally {
@@ -451,7 +461,9 @@ export class WebRtcTransport {
         await this.sendWebRtcSignal(dial.remotePubkeyHex, signal);
         if (!ownsDial())
             return;
-        dial.phase = "awaiting-answer";
+        // A fast answer can arrive before the signaling write has settled.
+        if (dial.phase === "sending-offer")
+            dial.phase = "awaiting-answer";
         this.logger.debug("webrtc offer sent", dial.remotePubkeyHex, dial.sessionId);
         // Wire connection state to dialer promise once data channel opens.
         let conn = null;
@@ -558,14 +570,23 @@ export class WebRtcTransport {
             return;
         }
         if (competingDial) {
-            if (!incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex)) {
+            // Keep deterministic arbitration for the first crossed offer. A fresh
+            // authenticated retry after rejection means the peer abandoned that
+            // negotiation. Yield only while our winning offer is still unanswered,
+            // so a lost offer cannot block recovery until the full dial deadline.
+            const retryOfRejectedOffer = competingDial.rejectedOfferId !== undefined
+                && competingDial.rejectedOfferId !== offer.negotiationId
+                && competingDial.phase === "awaiting-answer";
+            if (!incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex)
+                && !retryOfRejectedOffer) {
+                competingDial.rejectedOfferId ??= offer.negotiationId;
                 await this.rejectIncomingOffer(offer, remotePubkeyHex);
                 return;
             }
             clearTimeout(competingDial.timer);
             this.pendingDials.delete(competingDial.sessionId);
             competingDial.pc.close();
-            competingDial.reject(new Error("incoming WebRTC offer won simultaneous dial"));
+            competingDial.reject(new IncomingOfferHandoff());
         }
         if (this.conns.size + this.pendingDials.size + this.pendingInbound.size
             - Number(this.conns.has(remotePubkeyHex))
@@ -581,6 +602,8 @@ export class WebRtcTransport {
         const timer = setTimeout(() => {
             this.pendingInbound.delete(offer.negotiationId);
             pc.close();
+            if (competingDial)
+                this.scheduleAutoReconnect(remotePubkeyHex);
         }, this.cfg.connectTimeoutMs);
         const pending = { timer, remotePubkeyHex, pc };
         this.pendingInbound.set(offer.negotiationId, pending);
@@ -611,6 +634,8 @@ export class WebRtcTransport {
         catch (err) {
             this.clearPendingInbound(offer.negotiationId);
             pc.close();
+            if (competingDial)
+                this.scheduleAutoReconnect(remotePubkeyHex);
             throw err;
         }
         dcPromise.then((dataChannel) => {

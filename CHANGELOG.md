@@ -1,5 +1,11 @@
 # Changelog
 
+## Runtime packages 0.0.51 - 2026-10-03
+
+- Recover an unanswered WebRTC dial when the authenticated peer retries with a fresh offer after a crossed-offer rejection. Preserve deterministic initial arbitration, negotiated answers, replay handling, and established carriers.
+- Continue discovery after an inbound handoff fails without adding the outgoing failure cooldown.
+- Release `@fips/transport-webrtc` 0.0.53 using the published `@fips/core` 0.0.49 dependency. Wire formats are unchanged.
+
 ## Runtime packages 0.0.50 - 2026-10-02
 
 - Give each bounded lookup retry a fresh request ID so native duplicate suppression does not block recovery from a lost reply. Earlier signed replies remain valid until the original five-second deadline. The 64-lookup capacity and seven-attempt schedule are unchanged; success, timeout and close remove every issued ID.
