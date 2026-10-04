@@ -1,4 +1,5 @@
 import { toHex } from "@fips/core";
+import { randomBytes } from "@noble/hashes/utils";
 import { DEFAULT_STUN_SERVERS, DEFAULT_ICE_GATHER_TIMEOUT_MS, } from "./WebRtcTransportConfig.js";
 export function resolveWebRtcTransportConfig(config) {
     const maxConnections = config.maxConnections ?? 32;
@@ -20,16 +21,7 @@ export function resolveWebRtcTransportConfig(config) {
     };
 }
 export function randomId() {
-    const bytes = new Uint8Array(16);
-    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-        crypto.getRandomValues(bytes);
-    }
-    else {
-        for (let index = 0; index < bytes.length; index++) {
-            bytes[index] = Math.floor(Math.random() * 256);
-        }
-    }
-    return toHex(bytes);
+    return toHex(randomBytes(16));
 }
 export function incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex) {
     // Rust FIPS orders the complete x-only identity, independent of the

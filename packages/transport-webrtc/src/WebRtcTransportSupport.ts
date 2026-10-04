@@ -1,4 +1,5 @@
 import { toHex, type DiscoveredPeer } from "@fips/core";
+import { randomBytes } from "@noble/hashes/utils";
 
 import type { NostrEvent } from "./NostrRelayClient.js";
 import {
@@ -56,15 +57,7 @@ export interface PendingInboundConnection {
 }
 
 export function randomId(): string {
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-    crypto.getRandomValues(bytes);
-  } else {
-    for (let index = 0; index < bytes.length; index++) {
-      bytes[index] = Math.floor(Math.random() * 256);
-    }
-  }
-  return toHex(bytes);
+  return toHex(randomBytes(16));
 }
 
 export function incomingOfferReplacesPendingDial(

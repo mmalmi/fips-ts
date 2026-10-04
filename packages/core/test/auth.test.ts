@@ -3,7 +3,8 @@
  * ~/src/fips/crates/fips-identity/src/tests.rs.
  */
 
-import { describe, expect, it } from "vitest";
+import { webcrypto } from "node:crypto";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   authChallengeDigest,
@@ -20,7 +21,35 @@ import {
 
 import { sha256 } from "@noble/hashes/sha256";
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
 describe("AuthChallenge (Rust auth.rs)", () => {
+  it.each([true, false])("uses secure randomness with global crypto available: %s", (hasGlobalCrypto) => {
+    if (!hasGlobalCrypto) vi.stubGlobal("crypto", undefined);
+    const secureRandom = vi.spyOn(webcrypto, "getRandomValues");
+    const insecureRandom = vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    const challenge = generateAuthChallenge();
+
+    expect(challenge).toHaveLength(32);
+    expect(secureRandom).toHaveBeenCalledOnce();
+    expect(secureRandom.mock.calls[0]?.[0]?.byteLength).toBe(32);
+    expect(insecureRandom).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("fails on entropy errors with global crypto available: %s", (hasGlobalCrypto) => {
+    if (!hasGlobalCrypto) vi.stubGlobal("crypto", undefined);
+    const failure = new Error("secure entropy unavailable");
+    vi.spyOn(webcrypto, "getRandomValues").mockImplementation(() => { throw failure; });
+    const insecureRandom = vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    expect(() => generateAuthChallenge()).toThrow(failure);
+    expect(insecureRandom).not.toHaveBeenCalled();
+  });
+
   it("test_auth_challenge_verify_success: signed response verifies and yields the signer's NodeAddr", async () => {
     const id = await generateIdentity();
     const challenge = generateAuthChallenge();

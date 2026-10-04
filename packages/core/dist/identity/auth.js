@@ -6,6 +6,7 @@
  * Verify yields the responder's 16-byte NodeAddr on success.
  */
 import { sha256 } from "@noble/hashes/sha256";
+import { randomBytes } from "@noble/hashes/utils";
 import { concatBytes } from "../codec/hex.js";
 import { deriveNodeAddr, } from "../nodeaddr/index.js";
 import { signSchnorr, verifySchnorr } from "./index.js";
@@ -53,14 +54,6 @@ export function verifyChallenge(challenge, response) {
 }
 /** Generate a fresh 32-byte random challenge. */
 export function generateAuthChallenge() {
-    const out = new Uint8Array(32);
-    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-        crypto.getRandomValues(out);
-    }
-    else {
-        for (let i = 0; i < out.length; i++)
-            out[i] = Math.floor(Math.random() * 256);
-    }
-    return out;
+    return randomBytes(32);
 }
 //# sourceMappingURL=auth.js.map

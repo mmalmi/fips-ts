@@ -7,6 +7,7 @@
  */
 
 import { sha256 } from "@noble/hashes/sha256";
+import { randomBytes } from "@noble/hashes/utils";
 
 import { concatBytes } from "../codec/hex.js";
 import {
@@ -83,11 +84,5 @@ export function verifyChallenge(
 
 /** Generate a fresh 32-byte random challenge. */
 export function generateAuthChallenge(): Uint8Array {
-  const out = new Uint8Array(32);
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-    crypto.getRandomValues(out);
-  } else {
-    for (let i = 0; i < out.length; i++) out[i] = Math.floor(Math.random() * 256);
-  }
-  return out;
+  return randomBytes(32);
 }
