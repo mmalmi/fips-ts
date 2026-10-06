@@ -41,6 +41,7 @@ export class FipsRouting {
         this.treeState = new TreeState(cfg.identity);
         this.bloomRouting = new BloomRouting({
             identity: cfg.identity,
+            forwarding: cfg.forwarding,
             logger: cfg.logger,
             getPeers: cfg.getPeers,
             isTreePeer: (nodeAddr) => this.treeState.isTreePeer(nodeAddr),

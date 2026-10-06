@@ -65,6 +65,8 @@ export class BloomRouting {
     outgoingFilterFor(excludedPeer) {
         const filter = BloomFilter.empty();
         filter.insertBytes(this.cfg.identity.nodeAddr);
+        if (!this.cfg.forwarding)
+            return filter;
         for (const peer of this.cfg.getPeers()) {
             if (peer === excludedPeer
                 || peer.link.state !== "established"

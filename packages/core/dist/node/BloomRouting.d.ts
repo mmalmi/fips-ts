@@ -4,6 +4,7 @@ import type { Logger } from "../transport/types.js";
 import type { AdjacentPeer } from "./PeerState.js";
 interface BloomRoutingConfig {
     identity: FipsIdentity;
+    forwarding: boolean;
     logger: Logger;
     getPeers: () => Iterable<AdjacentPeer>;
     isTreePeer: (nodeAddr: NodeAddr) => boolean;
