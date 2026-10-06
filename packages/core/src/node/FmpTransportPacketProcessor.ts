@@ -604,6 +604,11 @@ export class FmpTransportPacketProcessor {
       const previous = peer.link;
       peer.link = link;
       this.pendingResponders.take(peer);
+      // These announcements were sent on the previous authenticated carrier.
+      // The new initiator still needs a frame confirming this carrier works.
+      peer.treeAnnounced = false;
+      peer.filterAnnounced = false;
+      peer.outboundFilter = undefined;
       if (previous.state === "established") {
         this.drainAuthenticatedLink(peer, previous);
       } else {

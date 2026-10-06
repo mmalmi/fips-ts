@@ -14,6 +14,7 @@ import type { AdjacentPeer } from "./PeerState.js";
 
 interface BloomRoutingConfig {
   identity: FipsIdentity;
+  forwarding: boolean;
   logger: Logger;
   getPeers: () => Iterable<AdjacentPeer>;
   isTreePeer: (nodeAddr: NodeAddr) => boolean;
@@ -103,6 +104,7 @@ export class BloomRouting {
   private outgoingFilterFor(excludedPeer: AdjacentPeer): BloomFilter {
     const filter = BloomFilter.empty();
     filter.insertBytes(this.cfg.identity.nodeAddr);
+    if (!this.cfg.forwarding) return filter;
     for (const peer of this.cfg.getPeers()) {
       if (
         peer === excludedPeer

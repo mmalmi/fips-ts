@@ -6,7 +6,7 @@ import type {AdjacentPeer} from '../src/node/PeerState.js';
 async function fixture() {
   const identity = await identityFromSecretKey(new Uint8Array(32).fill(0x61));
   const peer = {pubkey: identity.publicKey, pubkeyHex: toHex(identity.publicKey)} as AdjacentPeer;
-  const routing = new BloomRouting({identity, logger: noopLogger, getPeers: () => [peer], isTreePeer: () => false, sendLinkMessage: async () => {}, emitError: () => {}});
+  const routing = new BloomRouting({identity, forwarding: true, logger: noopLogger, getPeers: () => [peer], isTreePeer: () => false, sendLinkMessage: async () => {}, emitError: () => {}});
   const receive = (filledBytes: number, sequence: bigint) => {
     const bytes = new Uint8Array(1024); bytes.fill(255, 0, filledBytes);
     const filter = BloomFilter.fromBytes(bytes, 5);

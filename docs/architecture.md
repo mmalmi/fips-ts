@@ -53,6 +53,8 @@ availability, provider ranking, retries, or caching.
 
 Browser forwarding defaults to disabled because tabs are not reliable transit
 nodes. Enable it deliberately for routed test topologies such as A—B—C.
+Nonforwarding nodes advertise only their own identity in reachability filters;
+they retain incoming filters for their own route discovery.
 
 ## Browser boundary
 
