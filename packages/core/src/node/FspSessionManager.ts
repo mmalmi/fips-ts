@@ -349,7 +349,7 @@ export class FspSessionManager {
       }
     }
     if (!result) {
-      if (receivedKBit !== session.currentKBit && session.pendingResponderFsp?.state === "handshaking") {
+      if (session.pendingResponderFsp?.state === "handshaking") {
         this.queueEarlyEstablishedRecord(session, peer, fspFrame, srcNodeHex);
         return;
       }

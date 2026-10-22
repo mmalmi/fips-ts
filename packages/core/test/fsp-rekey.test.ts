@@ -318,4 +318,48 @@ describe("FipsNode FSP rekey epochs", () => {
     expect(session.currentKBit).toBe(false);
     expect(received).toEqual(["old-epoch-at-k1", "new-epoch-at-k0"]);
   });
+
+  it("queues a new-epoch frame at the current K-bit while the pending rekey is still handshaking", async () => {
+    // A restart-aware peer cuts over at K=0 while our old session is also at 0.
+    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
+    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x73));
+    const node = new FipsNode({ identity: responderIdentity, transports: [] });
+    const handshake = () => {
+      const initiator = new FspSession({
+        identity: initiatorIdentity,
+        role: "initiator",
+        remotePubkey: responderIdentity.publicKey,
+      });
+      const responder = new FspSession({ identity: responderIdentity, role: "responder" });
+      const ack = responder.handleSessionSetup(
+        initiator.buildSessionSetup(() => new Uint8Array(0), initiatorIdentity.nodeAddr, responderIdentity.nodeAddr),
+        () => new Uint8Array(0),
+        responderIdentity.nodeAddr,
+      );
+      const msg3 = initiator.handleSessionAck(ack, () => new Uint8Array(0));
+      return { initiator, responder, msg3 };
+    };
+    const current = handshake();
+    current.responder.handleSessionMsg3(current.msg3);
+    const pending = handshake();
+    const session = {
+      remoteNodeAddr: initiatorIdentity.nodeAddr,
+      remotePubkey: initiatorIdentity.publicKey,
+      remotePubkeyHex: toHex(initiatorIdentity.publicKey),
+      fsp: current.responder,
+      currentKBit: false,
+      pendingResponderFsp: pending.responder as FspSession | undefined,
+      earlyEstablishedRecords: undefined as unknown[] | undefined,
+    };
+    const internal = node as any;
+    internal.sessionManager.sessions.set(nodeAddrToHex(initiatorIdentity.nodeAddr), session);
+
+    await internal.sessionManager.handleFromPeer(
+      {},
+      initiatorIdentity.nodeAddr,
+      pending.initiator.encryptEndpointData(new TextEncoder().encode("before-our-msg3"), FSP_FLAG_DIRECT_TRANSPORT),
+    );
+    expect(pending.responder.state).toBe("handshaking");
+    expect(session.earlyEstablishedRecords).toHaveLength(1);
+  });
 });
