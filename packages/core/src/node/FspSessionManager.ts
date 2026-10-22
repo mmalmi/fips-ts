@@ -319,6 +319,7 @@ export class FspSessionManager {
     const receivedKBit = (established.flags & FSP_FLAG_K) !== 0;
     let receiveFsp = session.fsp;
     let promotePending = false;
+    let adoptKBit = false;
     if (receivedKBit !== session.currentKBit) {
       if (session.pendingResponderFsp?.state === "established") {
         receiveFsp = session.pendingResponderFsp;
@@ -329,18 +330,30 @@ export class FspSessionManager {
       } else if (session.previousFsp?.kBit === receivedKBit) {
         receiveFsp = session.previousFsp.fsp;
       } else {
-        throw new Error(
-          `FSP Established epoch mismatch: receivedK=${Number(receivedKBit)}`
-          + ` currentK=${Number(session.currentKBit)}`,
-        );
+        // The K-bit is a hint, as in Rust's trial decrypt. A peer that lost its
+        // session can rekey to us and toggle the bit while we answered as a fresh
+        // session at 0. If the frame authenticates against the current session,
+        // adopt the peer's bit.
+        adoptKBit = true;
       }
     }
-    const result = receiveFsp.decryptIncoming(fspFrame, (received) => {
-      this.cfg.routing.learnReverseRoute(srcNodeHex, peer);
-      if (promotePending) this.promotePendingSession(session, receiveFsp, receivedKBit, srcNodeHex);
-      session.receiverReports ??= new FspReceiverReports();
-      session.receiverReports.record(received, performance.now(), receiveFsp === session.fsp);
-    });
+    let result;
+    try {
+      result = receiveFsp.decryptIncoming(fspFrame, (received) => {
+        this.cfg.routing.learnReverseRoute(srcNodeHex, peer);
+        if (promotePending) this.promotePendingSession(session, receiveFsp, receivedKBit, srcNodeHex);
+        if (adoptKBit) this.adoptPeerKBit(session, receivedKBit, srcNodeHex);
+        session.receiverReports ??= new FspReceiverReports();
+        session.receiverReports.record(received, performance.now(), receiveFsp === session.fsp);
+      });
+    } catch (error) {
+      if (!adoptKBit) throw error;
+      throw new Error(
+        `FSP Established epoch mismatch: receivedK=${Number(receivedKBit)}`
+        + ` currentK=${Number(session.currentKBit)}`,
+        { cause: error },
+      );
+    }
     const srcHex = session.remotePubkeyHex ?? srcNodeHex;
     if (result.msgType === FSP_MSG_DATA && result.data) {
       await this.deliverDatagram(srcHex, result.data);
@@ -353,6 +366,11 @@ export class FspSessionManager {
       });
       return;
     }
+  }
+
+  private adoptPeerKBit(session: Session, receivedKBit: boolean, srcNodeHex: string): void {
+    session.currentKBit = receivedKBit;
+    this.cfg.logger.debug("adopted authenticated FSP K-bit", srcNodeHex, receivedKBit);
   }
 
   private promotePendingSession(
