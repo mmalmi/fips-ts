@@ -262,4 +262,60 @@ describe("FipsNode FSP rekey epochs", () => {
     expect(session.currentKBit).toBe(true);
     expect(session.fsp).toBe(current.responder);
   });
+
+  it("tries the current session when the K-bit points at a pending rekey that cannot open the frame", async () => {
+    // Same divergence, but the peer's next rekey already reached us, so the
+    // received bit names our pending slot rather than nothing.
+    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
+    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x73));
+    const node = new FipsNode({ identity: responderIdentity, transports: [] });
+    const establish = () => {
+      const initiator = new FspSession({
+        identity: initiatorIdentity,
+        role: "initiator",
+        remotePubkey: responderIdentity.publicKey,
+      });
+      const responder = new FspSession({ identity: responderIdentity, role: "responder" });
+      const ack = responder.handleSessionSetup(
+        initiator.buildSessionSetup(() => new Uint8Array(0), initiatorIdentity.nodeAddr, responderIdentity.nodeAddr),
+        () => new Uint8Array(0),
+        responderIdentity.nodeAddr,
+      );
+      responder.handleSessionMsg3(initiator.handleSessionAck(ack, () => new Uint8Array(0)));
+      return { initiator, responder };
+    };
+    const current = establish();
+    const pending = establish();
+    const session = {
+      remoteNodeAddr: initiatorIdentity.nodeAddr,
+      remotePubkey: initiatorIdentity.publicKey,
+      remotePubkeyHex: toHex(initiatorIdentity.publicKey),
+      fsp: current.responder,
+      currentKBit: false,
+      pendingResponderFsp: pending.responder as FspSession | undefined,
+    };
+    const internal = node as any;
+    internal.sessionManager.sessions.set(nodeAddrToHex(initiatorIdentity.nodeAddr), session);
+    const received: string[] = [];
+    node.on("endpointData", (event) => {
+      received.push(new TextDecoder().decode((event as { payload: Uint8Array }).payload));
+    });
+    const send = (fsp: FspSession, text: string, flags: number) => internal.sessionManager.handleFromPeer(
+      {},
+      initiatorIdentity.nodeAddr,
+      fsp.encryptEndpointData(new TextEncoder().encode(text), FSP_FLAG_DIRECT_TRANSPORT | flags),
+    );
+
+    await send(current.initiator, "old-epoch-at-k1", FSP_FLAG_K);
+    expect(session.fsp).toBe(current.responder);
+    expect(session.pendingResponderFsp).toBe(pending.responder);
+    expect(session.currentKBit).toBe(true);
+
+    // The peer's cutover toggles from 1 to 0; the pending slot now carries 0.
+    await send(pending.initiator, "new-epoch-at-k0", 0);
+    expect(session.fsp).toBe(pending.responder);
+    expect(session.pendingResponderFsp).toBeUndefined();
+    expect(session.currentKBit).toBe(false);
+    expect(received).toEqual(["old-epoch-at-k1", "new-epoch-at-k0"]);
+  });
 });

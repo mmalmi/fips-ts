@@ -317,41 +317,48 @@ export class FspSessionManager {
     this.prunePreviousFsp(session, Date.now());
     const established = decodeFspEstablished(fspFrame);
     const receivedKBit = (established.flags & FSP_FLAG_K) !== 0;
-    let receiveFsp = session.fsp;
-    let promotePending = false;
-    let adoptKBit = false;
-    if (receivedKBit !== session.currentKBit) {
-      if (session.pendingResponderFsp?.state === "established") {
-        receiveFsp = session.pendingResponderFsp;
-        promotePending = true;
-      } else if (session.pendingResponderFsp?.state === "handshaking") {
-        this.queueEarlyEstablishedRecord(session, peer, fspFrame, srcNodeHex);
-        return;
-      } else if (session.previousFsp?.kBit === receivedKBit) {
-        receiveFsp = session.previousFsp.fsp;
-      } else {
-        // The K-bit is a hint, as in Rust's trial decrypt. A peer that lost its
-        // session can rekey to us and toggle the bit while we answered as a fresh
-        // session at 0. If the frame authenticates against the current session,
-        // adopt the peer's bit.
-        adoptKBit = true;
+    // The K-bit is a hint, as in Rust's trial decrypt: try the slots carrying the
+    // received bit first, then the others. A peer that lost its session can rekey
+    // to us and toggle the bit while we answered as a fresh session at 0, so a
+    // frame may authenticate against a slot whose bit differs. Failed attempts
+    // leave replay windows untouched.
+    const slots: Array<{ fsp: FspSession; kBit: boolean; slot: "current" | "pending" | "previous" }> = [
+      { fsp: session.fsp, kBit: session.currentKBit, slot: "current" },
+    ];
+    if (session.pendingResponderFsp?.state === "established") {
+      slots.push({ fsp: session.pendingResponderFsp, kBit: !session.currentKBit, slot: "pending" });
+    }
+    if (session.previousFsp) {
+      slots.push({ fsp: session.previousFsp.fsp, kBit: session.previousFsp.kBit, slot: "previous" });
+    }
+    slots.sort((a, b) => Number(b.kBit === receivedKBit) - Number(a.kBit === receivedKBit));
+    let result: ReturnType<FspSession["decryptIncoming"]> | undefined;
+    const errors: Array<{ kBit: boolean; error: unknown }> = [];
+    for (const { fsp: receiveFsp, kBit, slot } of slots) {
+      try {
+        result = receiveFsp.decryptIncoming(fspFrame, (received) => {
+          this.cfg.routing.learnReverseRoute(srcNodeHex, peer);
+          if (slot === "pending") this.promotePendingSession(session, receiveFsp, receivedKBit, srcNodeHex);
+          if (slot === "current" && kBit !== receivedKBit) this.adoptPeerKBit(session, receivedKBit, srcNodeHex);
+          session.receiverReports ??= new FspReceiverReports();
+          session.receiverReports.record(received, performance.now(), receiveFsp === session.fsp);
+        });
+        break;
+      } catch (error) {
+        errors.push({ kBit, error });
       }
     }
-    let result;
-    try {
-      result = receiveFsp.decryptIncoming(fspFrame, (received) => {
-        this.cfg.routing.learnReverseRoute(srcNodeHex, peer);
-        if (promotePending) this.promotePendingSession(session, receiveFsp, receivedKBit, srcNodeHex);
-        if (adoptKBit) this.adoptPeerKBit(session, receivedKBit, srcNodeHex);
-        session.receiverReports ??= new FspReceiverReports();
-        session.receiverReports.record(received, performance.now(), receiveFsp === session.fsp);
-      });
-    } catch (error) {
-      if (!adoptKBit) throw error;
+    if (!result) {
+      if (receivedKBit !== session.currentKBit && session.pendingResponderFsp?.state === "handshaking") {
+        this.queueEarlyEstablishedRecord(session, peer, fspFrame, srcNodeHex);
+        return;
+      }
+      const hinted = errors.find(attempt => attempt.kBit === receivedKBit);
+      if (hinted) throw hinted.error;
       throw new Error(
         `FSP Established epoch mismatch: receivedK=${Number(receivedKBit)}`
         + ` currentK=${Number(session.currentKBit)}`,
-        { cause: error },
+        { cause: errors[0]?.error },
       );
     }
     const srcHex = session.remotePubkeyHex ?? srcNodeHex;
