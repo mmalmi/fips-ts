@@ -210,4 +210,156 @@ describe("FipsNode FSP rekey epochs", () => {
       "reply-after-restart",
     );
   });
+
+  it("adopts the K-bit of a frame that authenticates against the current session", async () => {
+    // The peer dropped its session and rekeyed to us; we answered as a fresh
+    // session at K=0 while its timer cutover toggled to K=1.
+    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
+    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x73));
+    const node = new FipsNode({ identity: responderIdentity, transports: [] });
+    const establish = () => {
+      const initiator = new FspSession({
+        identity: initiatorIdentity,
+        role: "initiator",
+        remotePubkey: responderIdentity.publicKey,
+      });
+      const responder = new FspSession({ identity: responderIdentity, role: "responder" });
+      const ack = responder.handleSessionSetup(
+        initiator.buildSessionSetup(() => new Uint8Array(0), initiatorIdentity.nodeAddr, responderIdentity.nodeAddr),
+        () => new Uint8Array(0),
+        responderIdentity.nodeAddr,
+      );
+      responder.handleSessionMsg3(initiator.handleSessionAck(ack, () => new Uint8Array(0)));
+      return { initiator, responder };
+    };
+    const current = establish();
+    const unrelated = establish();
+    const session = {
+      remoteNodeAddr: initiatorIdentity.nodeAddr,
+      remotePubkey: initiatorIdentity.publicKey,
+      remotePubkeyHex: toHex(initiatorIdentity.publicKey),
+      fsp: current.responder,
+      currentKBit: false,
+    };
+    const internal = node as any;
+    internal.sessionManager.sessions.set(nodeAddrToHex(initiatorIdentity.nodeAddr), session);
+    const received: string[] = [];
+    node.on("endpointData", (event) => {
+      received.push(new TextDecoder().decode((event as { payload: Uint8Array }).payload));
+    });
+    const send = (fsp: FspSession, text: string) => internal.sessionManager.handleFromPeer(
+      {},
+      initiatorIdentity.nodeAddr,
+      fsp.encryptEndpointData(new TextEncoder().encode(text), FSP_FLAG_DIRECT_TRANSPORT | FSP_FLAG_K),
+    );
+
+    // A K=1 frame that does not authenticate is still refused and changes nothing.
+    await expect(send(unrelated.initiator, "forged")).rejects.toThrow("FSP Established epoch mismatch");
+    expect(session.currentKBit).toBe(false);
+
+    await send(current.initiator, "after-peer-cutover");
+    expect(received).toEqual(["after-peer-cutover"]);
+    expect(session.currentKBit).toBe(true);
+    expect(session.fsp).toBe(current.responder);
+  });
+
+  it("tries the current session when the K-bit points at a pending rekey that cannot open the frame", async () => {
+    // Same divergence, but the peer's next rekey already reached us, so the
+    // received bit names our pending slot rather than nothing.
+    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
+    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x73));
+    const node = new FipsNode({ identity: responderIdentity, transports: [] });
+    const establish = () => {
+      const initiator = new FspSession({
+        identity: initiatorIdentity,
+        role: "initiator",
+        remotePubkey: responderIdentity.publicKey,
+      });
+      const responder = new FspSession({ identity: responderIdentity, role: "responder" });
+      const ack = responder.handleSessionSetup(
+        initiator.buildSessionSetup(() => new Uint8Array(0), initiatorIdentity.nodeAddr, responderIdentity.nodeAddr),
+        () => new Uint8Array(0),
+        responderIdentity.nodeAddr,
+      );
+      responder.handleSessionMsg3(initiator.handleSessionAck(ack, () => new Uint8Array(0)));
+      return { initiator, responder };
+    };
+    const current = establish();
+    const pending = establish();
+    const session = {
+      remoteNodeAddr: initiatorIdentity.nodeAddr,
+      remotePubkey: initiatorIdentity.publicKey,
+      remotePubkeyHex: toHex(initiatorIdentity.publicKey),
+      fsp: current.responder,
+      currentKBit: false,
+      pendingResponderFsp: pending.responder as FspSession | undefined,
+    };
+    const internal = node as any;
+    internal.sessionManager.sessions.set(nodeAddrToHex(initiatorIdentity.nodeAddr), session);
+    const received: string[] = [];
+    node.on("endpointData", (event) => {
+      received.push(new TextDecoder().decode((event as { payload: Uint8Array }).payload));
+    });
+    const send = (fsp: FspSession, text: string, flags: number) => internal.sessionManager.handleFromPeer(
+      {},
+      initiatorIdentity.nodeAddr,
+      fsp.encryptEndpointData(new TextEncoder().encode(text), FSP_FLAG_DIRECT_TRANSPORT | flags),
+    );
+
+    await send(current.initiator, "old-epoch-at-k1", FSP_FLAG_K);
+    expect(session.fsp).toBe(current.responder);
+    expect(session.pendingResponderFsp).toBe(pending.responder);
+    expect(session.currentKBit).toBe(true);
+
+    // The peer's cutover toggles from 1 to 0; the pending slot now carries 0.
+    await send(pending.initiator, "new-epoch-at-k0", 0);
+    expect(session.fsp).toBe(pending.responder);
+    expect(session.pendingResponderFsp).toBeUndefined();
+    expect(session.currentKBit).toBe(false);
+    expect(received).toEqual(["old-epoch-at-k1", "new-epoch-at-k0"]);
+  });
+
+  it("queues a new-epoch frame at the current K-bit while the pending rekey is still handshaking", async () => {
+    // A restart-aware peer cuts over at K=0 while our old session is also at 0.
+    const initiatorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x31));
+    const responderIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x73));
+    const node = new FipsNode({ identity: responderIdentity, transports: [] });
+    const handshake = () => {
+      const initiator = new FspSession({
+        identity: initiatorIdentity,
+        role: "initiator",
+        remotePubkey: responderIdentity.publicKey,
+      });
+      const responder = new FspSession({ identity: responderIdentity, role: "responder" });
+      const ack = responder.handleSessionSetup(
+        initiator.buildSessionSetup(() => new Uint8Array(0), initiatorIdentity.nodeAddr, responderIdentity.nodeAddr),
+        () => new Uint8Array(0),
+        responderIdentity.nodeAddr,
+      );
+      const msg3 = initiator.handleSessionAck(ack, () => new Uint8Array(0));
+      return { initiator, responder, msg3 };
+    };
+    const current = handshake();
+    current.responder.handleSessionMsg3(current.msg3);
+    const pending = handshake();
+    const session = {
+      remoteNodeAddr: initiatorIdentity.nodeAddr,
+      remotePubkey: initiatorIdentity.publicKey,
+      remotePubkeyHex: toHex(initiatorIdentity.publicKey),
+      fsp: current.responder,
+      currentKBit: false,
+      pendingResponderFsp: pending.responder as FspSession | undefined,
+      earlyEstablishedRecords: undefined as unknown[] | undefined,
+    };
+    const internal = node as any;
+    internal.sessionManager.sessions.set(nodeAddrToHex(initiatorIdentity.nodeAddr), session);
+
+    await internal.sessionManager.handleFromPeer(
+      {},
+      initiatorIdentity.nodeAddr,
+      pending.initiator.encryptEndpointData(new TextEncoder().encode("before-our-msg3"), FSP_FLAG_DIRECT_TRANSPORT),
+    );
+    expect(pending.responder.state).toBe("handshaking");
+    expect(session.earlyEstablishedRecords).toHaveLength(1);
+  });
 });
