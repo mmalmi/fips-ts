@@ -109,3 +109,53 @@ describe("NostrPeerDiscovery", () => {
     expect(seen).toEqual([[event, "ws://relay.test/"]]);
   });
 });
+
+
+it("restores through an injected provider without opening a relay and keeps advert validation", async () => {
+  const identity = await identityFromSecretKey(new Uint8Array(32).fill(0x62));
+  const now = Math.floor(Date.now() / 1_000);
+  const event = signEvent(identity, { kind: FIPS_ADVERT_KIND, created_at: now,
+    tags: [["d", FIPS_ADVERT_D_TAG], ["protocol", FIPS_ADVERT_D_TAG],
+      ["version", "1"], ["expiration", String(now + 600)]],
+    content: JSON.stringify(advertContent(toHex(identity.publicKey))) });
+  const published: NostrEvent[] = [], received: NostrEvent[] = [];
+  let closed = false;
+  const relay = new FakeRelay();
+  const discovery = new NostrPeerDiscovery({ identity, relays: [relayClient(relay)],
+    provider: {
+      publish: async value => { published.push(value); },
+      subscribe: async (filter, onEvent) => {
+        expect(filter).toMatchObject({ kinds: [FIPS_ADVERT_KIND], "#d": [FIPS_ADVERT_D_TAG] });
+        onEvent(event, "local-cache");
+        onEvent({ ...event, content: "tampered" }, "local-cache");
+        onEvent(signEvent(identity, { kind: FIPS_ADVERT_KIND, created_at: now - 601,
+          tags: [["d", FIPS_ADVERT_D_TAG], ["protocol", FIPS_ADVERT_D_TAG], ["expiration", String(now - 1)]],
+          content: event.content }), "local-cache");
+        return () => { closed = true; };
+      },
+    },
+  });
+  await discovery.subscribeAdverts(value => received.push(value));
+  await discovery.publishAdvert(advertContent(toHex(identity.publicKey)));
+  expect(received).toEqual([event]);
+  expect(published).toHaveLength(1);
+  expect(relay.filters).toEqual([]);
+  expect(relay.published).toEqual([]);
+  discovery.stop(); expect(closed).toBe(true);
+});
+
+it("closes a provider whose restoration completes after discovery stops", async () => {
+  const identity = await identityFromSecretKey(new Uint8Array(32).fill(0x63));
+  let finish!: (close: () => void) => void;
+  let closes = 0;
+  const pending = new Promise<() => void>(resolve => { finish = resolve; });
+  const discovery = new NostrPeerDiscovery({ identity, relays: [], provider: {
+    publish: async () => {}, subscribe: async () => pending,
+  } });
+  const opening = discovery.subscribeAdverts(() => { throw new Error("stopped discovery delivered an advert"); });
+  discovery.stop();
+  finish(() => { closes++; });
+  const close = await opening;
+  close(); discovery.stop();
+  expect(closes).toBe(1);
+});

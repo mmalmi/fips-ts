@@ -18,6 +18,7 @@ export {
   DEFAULT_FIPS_ADVERT_TTL_MS,
   type FipsAdvertContent,
   type NostrPeerDiscoveryOptions,
+  type NostrDiscoveryProvider,
 } from "./NostrPeerDiscovery.js";
 
 export {

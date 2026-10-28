@@ -35,7 +35,7 @@ docs/                      Architecture, rust-compat, signal protocol
 ## Quickstart
 
 ```sh
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev               # open http://127.0.0.1:5173
 pnpm test:unit         # vitest unit/interop tests
 pnpm test:e2e          # 7 playwright tests (chromium)
@@ -58,6 +58,15 @@ An explicit WSS seed supplies the first adjacency when no physical peer is
 already reachable. Link offers and answers then use the generic service on FSP
 DataPacket port 257; they do not allocate an FSP message type. Nostr relays may
 carry signed peer adverts, but never FIPS packets or WebRTC signaling.
+
+Applications may supply a `discoveryProvider` with `publish` and `subscribe`
+methods to `WebRtcTransport`. This routes ordinary signed kind-37195 events
+through application-owned storage and pubsub, with the same namespace,
+signature and expiry validation. When a provider is supplied, the transport
+opens no Nostr relay clients; an empty relay list is valid. The application
+owns the provider's lifetime and can restore saved events before network
+responses arrive. Cached adverts still require a reachable carrier for a new
+connection; they do not replace authenticated FIPS routing or signaling.
 
 `WebRtcTransport` defaults to `stun:stun.l.google.com:19302` and
 `stun:stun.cloudflare.com:3478`, with a 2-second ICE gathering limit so silent
