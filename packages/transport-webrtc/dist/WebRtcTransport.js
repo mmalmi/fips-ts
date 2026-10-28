@@ -59,7 +59,7 @@ export class WebRtcTransport {
         if (!this.RTCPC) {
             throw new Error("RTCPeerConnection not available in this environment");
         }
-        if (this.cfg.advertiseOnNostr && this.cfg.relays.length === 0) {
+        if (this.cfg.advertiseOnNostr && this.cfg.relays.length === 0 && !this.cfg.discoveryProvider) {
             throw new Error("advertiseOnNostr requires at least one Nostr relay");
         }
     }
@@ -68,7 +68,11 @@ export class WebRtcTransport {
         this.ctx = ctx;
         this.discoveryStream = new AsyncEventStream();
         const sharedRelayClients = this.cfg.relayClients;
-        if (this.cfg.relays.length === 0) {
+        if (this.cfg.discoveryProvider) {
+            this.relayClients = [];
+            this.ownsRelayClients = false;
+        }
+        else if (this.cfg.relays.length === 0) {
             if (sharedRelayClients && sharedRelayClients.length > 0) {
                 throw new Error("shared relay clients require matching configured relays");
             }
@@ -95,9 +99,10 @@ export class WebRtcTransport {
             }));
             this.ownsRelayClients = true;
         }
-        if (this.relayClients.length > 0) {
+        if (this.relayClients.length > 0 || this.cfg.discoveryProvider) {
             this.peerDiscovery = new NostrPeerDiscovery({
                 identity: ctx.localIdentity,
+                provider: this.cfg.discoveryProvider,
                 relays: this.relayClients,
                 discoveryApp: this.cfg.discoveryApp,
                 advertTtlMs: this.cfg.advertTtlMs,

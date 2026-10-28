@@ -1,4 +1,5 @@
 import { signEvent, verifyEvent } from "./nostrEvent.js";
+import { advertExpiryMs } from "./WebRtcTransportSupport.js";
 export const FIPS_ADVERT_KIND = 37_195;
 export const FIPS_ADVERT_IDENTIFIER = "fips-overlay-v1";
 export const FIPS_ADVERT_D_TAG = FIPS_ADVERT_IDENTIFIER;
@@ -8,24 +9,30 @@ export const DEFAULT_FIPS_ADVERT_TTL_MS = 60 * 60 * 1_000;
 const RELAY_OPERATION_WARMUP_MS = 1_500;
 /** Public Nostr peer adverts. Private transport negotiation happens over FSP. */
 export class NostrPeerDiscovery {
+    provider;
     identity;
     relays;
     discoveryApp;
     advertTtlMs;
     logger;
     cleanups = [];
+    stopped = false;
     constructor(opts) {
         this.identity = opts.identity;
+        this.provider = opts.provider;
         this.relays = opts.relays;
         this.discoveryApp = normalizeDiscoveryApp(opts.discoveryApp);
         this.advertTtlMs = opts.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS;
         this.logger = opts.logger;
     }
     stop() {
+        this.stopped = true;
         for (const cleanup of this.cleanups.splice(0))
             cleanup();
     }
     async publishAdvert(advert) {
+        if (this.stopped)
+            throw new Error("Peer discovery is stopped");
         const expiresAt = Math.floor((Date.now() + this.advertTtlMs) / 1_000);
         const event = signEvent(this.identity, {
             created_at: Math.floor(Date.now() / 1_000),
@@ -38,6 +45,10 @@ export class NostrPeerDiscovery {
             ],
             content: JSON.stringify(advert),
         });
+        if (this.provider) {
+            await this.provider.publish(event);
+            return;
+        }
         const results = await Promise.all(this.relays.map(async (relay) => {
             try {
                 await relay.publish(event);
@@ -52,6 +63,44 @@ export class NostrPeerDiscovery {
             throw new Error("no Nostr relay accepted peer advert");
     }
     async subscribeAdverts(cb, extraFilter = {}) {
+        if (this.stopped)
+            throw new Error("Peer discovery is stopped");
+        const deliver = (event, source) => {
+            if (this.stopped || !verifyEvent(event) || event.kind !== FIPS_ADVERT_KIND ||
+                tagValue(event, "d") !== this.discoveryApp ||
+                tagValue(event, "protocol") !== this.discoveryApp ||
+                (extraFilter.authors && !extraFilter.authors.includes(event.pubkey)))
+                return;
+            const version = tagValue(event, "version");
+            if (version && version !== FIPS_PROTOCOL_VERSION)
+                return;
+            const now = Date.now();
+            const expiry = advertExpiryMs(event, this.advertTtlMs, now);
+            if (expiry === undefined || expiry <= now)
+                return;
+            try {
+                const advert = JSON.parse(event.content);
+                if (advert.identifier !== FIPS_ADVERT_IDENTIFIER ||
+                    advert.version !== 1 || !Array.isArray(advert.endpoints))
+                    return;
+                cb(event, advert, source);
+            }
+            catch { /* Malformed announcement. */ }
+        };
+        if (this.provider) {
+            const close = await this.provider.subscribe({ kinds: [FIPS_ADVERT_KIND], "#d": [this.discoveryApp], ...extraFilter }, deliver);
+            if (this.stopped) {
+                close();
+                return () => { };
+            }
+            this.cleanups.push(close);
+            return () => {
+                close();
+                const index = this.cleanups.indexOf(close);
+                if (index >= 0)
+                    this.cleanups.splice(index, 1);
+            };
+        }
         const localCleanups = [];
         const operations = this.relays.map(async (relay) => {
             try {
@@ -60,27 +109,12 @@ export class NostrPeerDiscovery {
                     "#d": [this.discoveryApp],
                     ...extraFilter,
                 }, {
-                    onEvent: (event) => {
-                        if (!verifyEvent(event))
-                            return;
-                        if (tagValue(event, "protocol") !== this.discoveryApp)
-                            return;
-                        const version = tagValue(event, "version");
-                        if (version && version !== FIPS_PROTOCOL_VERSION)
-                            return;
-                        try {
-                            const advert = JSON.parse(event.content);
-                            if (advert.identifier !== FIPS_ADVERT_IDENTIFIER)
-                                return;
-                            if (advert.version !== 1 || !Array.isArray(advert.endpoints))
-                                return;
-                            cb(event, advert, normalizeRelayUrl(relay.url));
-                        }
-                        catch {
-                            // Malformed public advert; ignore it.
-                        }
-                    },
+                    onEvent: (event) => deliver(event, normalizeRelayUrl(relay.url)),
                 });
+                if (this.stopped) {
+                    cleanup();
+                    return false;
+                }
                 localCleanups.push(cleanup);
                 this.cleanups.push(cleanup);
                 return true;

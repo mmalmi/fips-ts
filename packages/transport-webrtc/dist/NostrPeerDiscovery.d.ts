@@ -1,5 +1,5 @@
 import type { FipsIdentity, Logger } from "@fips/core";
-import { NostrRelayClient, type NostrEvent } from "./NostrRelayClient.js";
+import { NostrRelayClient, type NostrEvent, type NostrFilter } from "./NostrRelayClient.js";
 export declare const FIPS_ADVERT_KIND = 37195;
 export declare const FIPS_ADVERT_IDENTIFIER = "fips-overlay-v1";
 export declare const FIPS_ADVERT_D_TAG = "fips-overlay-v1";
@@ -15,21 +15,29 @@ export interface FipsAdvertContent {
     }>;
     stunServers: string[];
 }
+/** Application-selected event routing/storage; no transport dependency on pubsub. */
+export interface NostrDiscoveryProvider {
+    publish(event: NostrEvent): Promise<void>;
+    subscribe(filter: NostrFilter, onEvent: (event: NostrEvent, source: string) => void): Promise<() => void>;
+}
 export interface NostrPeerDiscoveryOptions {
     identity: FipsIdentity;
     relays: NostrRelayClient[];
+    provider?: NostrDiscoveryProvider;
     discoveryApp?: string;
     advertTtlMs?: number;
     logger?: Logger;
 }
 /** Public Nostr peer adverts. Private transport negotiation happens over FSP. */
 export declare class NostrPeerDiscovery {
+    private readonly provider?;
     private readonly identity;
     private readonly relays;
     private readonly discoveryApp;
     private readonly advertTtlMs;
     private readonly logger?;
     private readonly cleanups;
+    private stopped;
     constructor(opts: NostrPeerDiscoveryOptions);
     stop(): void;
     publishAdvert(advert: FipsAdvertContent): Promise<void>;

@@ -1,3 +1,4 @@
+import type { NostrDiscoveryProvider } from "./NostrPeerDiscovery.js";
 import type { Logger } from "@fips/core";
 import type { NostrRelayClient } from "./NostrRelayClient.js";
 export declare const DEFAULT_STUN_SERVERS: readonly string[];
@@ -6,6 +7,8 @@ export interface WebRtcTransportConfig {
     /** Optional Nostr relays for bounded signed WebRTC peer announcements. */
     relays?: string[];
     relayClients?: NostrRelayClient[];
+    /** Uses the application event store/pubsub instead of opening relay connections. */
+    discoveryProvider?: NostrDiscoveryProvider;
     /** Defaults to DEFAULT_STUN_SERVERS; [] gathers host candidates only. */
     stunServers?: string[];
     advertiseOnNostr?: boolean;
