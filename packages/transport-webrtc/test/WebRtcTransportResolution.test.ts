@@ -342,6 +342,39 @@ describe("WebRtcTransport NodeAddr resolution", () => {
     }
   });
 
+  it.each(["revoked", "restarted"])("discards an asynchronous offer after its context is %s", async reason => {
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x5a));
+    const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x5b));
+    const relay = new FakeRelay();
+    let finish!: (allowed: boolean) => void;
+    const admission = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve; }));
+    let allowed = true;
+    const replies: LinkNegotiationMessage[] = [];
+    const allocate = vi.fn();
+    class UnexpectedRtc { constructor() { allocate(); throw new Error("revoked offer allocated WebRTC"); } }
+    const transport = new WebRtcTransport({
+      relays: [relay.url], relayClients: [relayClient(relay)], acceptConnections: true,
+      rtcPeerConnection: UnexpectedRtc as unknown as typeof RTCPeerConnection, allowIncomingPeer: admission,
+    });
+    const context = (): TransportContext => ({ localIdentity: local, onPacket: () => {},
+      allowPeer: () => allowed, sendLinkNegotiation: async (_peer, message) => { replies.push(message); } });
+    await transport.start(context());
+    try {
+      const now = Date.now();
+      const offer = transport.handleLinkNegotiation(toHex(remote.publicKey), {
+        version: 1, negotiationId: "pending-admission", linkType: "webrtc", kind: "offer",
+        createdAtMs: now, expiresAtMs: now + 60_000, payload: { sdp: "v=0" },
+      });
+      await vi.waitFor(() => expect(admission).toHaveBeenCalledOnce());
+      if (reason === "revoked") allowed = false;
+      else { await transport.stop(); await transport.start(context()); }
+      finish(true);
+      await offer;
+      expect(allocate).not.toHaveBeenCalled();
+      expect(replies).toEqual([]);
+    } finally { finish?.(false); await transport.stop(); }
+  });
+
   it("resolves simultaneous WebRTC dials to the lower public-key initiator", () => {
     const lower = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const higher = "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

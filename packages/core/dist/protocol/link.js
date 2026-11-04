@@ -35,6 +35,8 @@ export const LinkMessageType = {
     // Link Control (0x50-0x5F)
     Disconnect: 0x50,
     Heartbeat: 0x51,
+    ClientOnly: 0x52,
+    ClientSupport: 0x53,
 };
 const LINK_MESSAGE_TYPE_BYTES = new Set([
     LinkMessageType.SessionDatagram,
@@ -46,6 +48,8 @@ const LINK_MESSAGE_TYPE_BYTES = new Set([
     LinkMessageType.LookupResponse,
     LinkMessageType.Disconnect,
     LinkMessageType.Heartbeat,
+    LinkMessageType.ClientOnly,
+    LinkMessageType.ClientSupport,
 ]);
 export function linkMessageTypeFromByte(b) {
     return LINK_MESSAGE_TYPE_BYTES.has(b) ? b : undefined;

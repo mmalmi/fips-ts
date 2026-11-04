@@ -32,6 +32,8 @@ export class FmpTransportPacketProcessor {
             const key = transportAddressKey(received.remoteAddr);
             const peer = this.cfg.peers.get(key)
                 ?? this.findXOnlyTransportPeer(transport, received.remoteAddr);
+            if (peer?.pubkey.length)
+                this.cfg.assertPeerAllowed?.(peer.pubkey);
             let packet = received.data;
             if (isDirectFspTransportFragment(packet)) {
                 if (!peer || peer.link.state !== "established" || peer.pubkey.length === 0) {
@@ -147,6 +149,18 @@ export class FmpTransportPacketProcessor {
         let { peer, wasEstablished } = context;
         const { result, handshakeLink, peerEpochBeforeMsg1, transport, remoteAddr, key, replacedHandshake, } = context;
         const remotePubkeyHex = toHex(result.remotePubkey);
+        try {
+            this.cfg.assertPeerAllowed?.(result.remotePubkey);
+        }
+        catch (error) {
+            handshakeLink.close();
+            this.pendingResponders.discard(peer);
+            if (peer.link === handshakeLink || peer.link.state !== "established") {
+                peer.outgoingHandshake?.reject(error);
+                this.cfg.removePeerPath(peer);
+            }
+            throw error;
+        }
         const identityChanged = peer.pubkey.length > 0
             && !sameCompressedIdentity(peer.pubkey, result.remotePubkey);
         let identityRebound = false;
@@ -300,6 +314,7 @@ export class FmpTransportPacketProcessor {
         peer.link.handleMsg2(packet);
         peer.pubkey = peer.link.remotePubkey;
         peer.pubkeyHex = toHex(peer.link.remotePubkey);
+        this.cfg.assertPeerAllowed?.(peer.pubkey);
         const candidateEpoch = peer.link.remoteEpoch;
         const changedEpoch = previousRemoteEpoch !== undefined
             && candidateEpoch !== undefined
@@ -329,6 +344,7 @@ export class FmpTransportPacketProcessor {
             if (!confirmationSent || peer.outgoingHandshake !== handshake || peer.link !== link
                 || link.state !== "established")
                 return;
+            this.cfg.assertPeerAllowed?.(peer.pubkey);
             const current = this.cfg.peersByPubkey.get(peer.pubkeyHex);
             if (current !== peer && current?.link.state === "established"
                 && !confirmationReceived)
@@ -352,6 +368,7 @@ export class FmpTransportPacketProcessor {
         try {
             // Sending confirms our side; an alternate must also receive confirmation
             // before it can replace the healthy path used by direct FSP data.
+            this.cfg.assertPeerAllowed?.(peer.pubkey);
             await peer.transport.send(peer.remoteAddr, link.encryptOutgoing(new Uint8Array(0), FMP_INNER_KEEPALIVE));
             confirmationSent = true;
             complete();
@@ -435,6 +452,7 @@ export class FmpTransportPacketProcessor {
             return;
         }
         const { peer, link, promotePending } = match;
+        this.cfg.assertPeerAllowed?.(peer.pubkey);
         const { msgType, payload } = receiveFmpLinkPacket(peer, link, packet, this.cfg.emitError);
         if (peer.link === link)
             peer.outgoingHandshake?.confirmCarrier?.();
@@ -444,6 +462,8 @@ export class FmpTransportPacketProcessor {
             this.pendingResponders.take(peer);
             // Announce again so the new initiator can confirm this authenticated carrier.
             peer.treeAnnounced = peer.filterAnnounced = false;
+            peer.clientSupported = peer.clientOnly = undefined;
+            peer.routingRoleSequence = undefined;
             peer.outboundFilter = undefined;
             if (previous.state === "established") {
                 this.drainAuthenticatedLink(peer, previous);

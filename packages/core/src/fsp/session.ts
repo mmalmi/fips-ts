@@ -10,7 +10,7 @@ import { ReplayWindow } from "../crypto/replay.js";
 import { bytesEqual } from "../codec/hex.js";
 import type { FipsIdentity } from "../identity/index.js";
 import { CipherState, NoiseHandshake } from "../noise/index.js";
-import type { NodeAddr } from "../nodeaddr/index.js";
+import { deriveNodeAddr, type NodeAddr } from "../nodeaddr/index.js";
 import {
   decodeSessionAck,
   decodeSessionMsg3,
@@ -52,6 +52,7 @@ export interface FspSessionInit {
   role: FspRole;
   ephemeralOverride?: Uint8Array;
   localEpoch?: Uint8Array;
+  strictClient?: boolean;
 }
 
 const EPOCH_LEN = 8;
@@ -63,6 +64,7 @@ export class FspSession {
   remoteEpoch?: Uint8Array;
 
   private readonly localEpoch: Uint8Array;
+  private readonly strictClient: boolean;
   private hs?: NoiseHandshake;
   private tx?: CipherState;
   private rx?: CipherState;
@@ -81,6 +83,7 @@ export class FspSession {
   constructor(init: FspSessionInit) {
     this.identity = init.identity;
     this.role = init.role;
+    this.strictClient = init.strictClient ?? false;
     this.localEpoch = init.localEpoch
       ? new Uint8Array(init.localEpoch)
       : new Uint8Array(EPOCH_LEN);
@@ -128,8 +131,8 @@ export class FspSession {
       throw new Error(`XK msg1 size ${noiseMsg.length} != ${NOISE_XK_MSG1_LEN}`);
     }
     return encodeSessionSetup({
-      srcCoords: normalizeCoords(srcCoords),
-      destCoords: normalizeCoords(destCoords),
+      srcCoords: this.strictClient ? [this.identity.nodeAddr] : normalizeCoords(srcCoords),
+      destCoords: this.strictClient ? [deriveNodeAddr(this.remotePubkey)] : normalizeCoords(destCoords),
       flags: SESSION_FLAG_DIRECT_FSP_TRANSPORT,
       handshakePayload: noiseMsg,
     });
@@ -153,6 +156,7 @@ export class FspSession {
     packet: Uint8Array,
     _rand: (n: number) => Uint8Array,
     localCoords: NodeAddr | NodeAddr[],
+    remoteNodeAddr?: NodeAddr,
   ): Uint8Array {
     if (this.role !== "responder") throw new Error("only responder handles SessionSetup");
     if (this.receivedSessionSetup) {
@@ -175,8 +179,8 @@ export class FspSession {
       throw new Error(`XK msg2 size ${noiseMsg.length} != ${NOISE_XK_MSG2_LEN}`);
     }
     const reply = encodeSessionAck({
-      srcCoords: normalizeCoords(localCoords),
-      destCoords: setup.srcCoords,
+      srcCoords: this.strictClient ? [this.identity.nodeAddr] : normalizeCoords(localCoords),
+      destCoords: this.strictClient ? (remoteNodeAddr ? [remoteNodeAddr] : setup.srcCoords.slice(0, 1)) : setup.srcCoords,
       flags: SESSION_FLAG_DIRECT_FSP_TRANSPORT,
       handshakePayload: noiseMsg,
     });
@@ -311,7 +315,13 @@ export class FspSession {
       payload,
     });
     validateEstablishedFlags(flags);
-    if (coords) flags |= FSP_FLAG_CP;
+    if (coords) {
+      flags |= FSP_FLAG_CP;
+      if (this.strictClient) coords = {
+        srcCoords: [this.identity.nodeAddr],
+        destCoords: this.remotePubkey ? [deriveNodeAddr(this.remotePubkey)] : [],
+      };
+    }
     const aad = encodeFspEstablishedHeader({ flags, counter }, inner.length);
     const ciphertext = aeadSeal(this.tx.getKey(), counter, inner, aad);
     return encodeFspEstablished({ flags, counter, payloadLen: inner.length, ciphertext, ...coords });

@@ -5,7 +5,7 @@
  * payload).
  */
 import type { FipsIdentity } from "../identity/index.js";
-import type { NodeAddr } from "../nodeaddr/index.js";
+import { type NodeAddr } from "../nodeaddr/index.js";
 import { type DataPacket, type FspEstablished } from "./wire.js";
 export type FspRole = "initiator" | "responder";
 export interface FspSessionInit {
@@ -14,6 +14,7 @@ export interface FspSessionInit {
     role: FspRole;
     ephemeralOverride?: Uint8Array;
     localEpoch?: Uint8Array;
+    strictClient?: boolean;
 }
 export declare class FspSession {
     readonly identity: FipsIdentity;
@@ -21,6 +22,7 @@ export declare class FspSession {
     remotePubkey?: Uint8Array;
     remoteEpoch?: Uint8Array;
     private readonly localEpoch;
+    private readonly strictClient;
     private hs?;
     private tx?;
     private rx?;
@@ -39,7 +41,7 @@ export declare class FspSession {
     buildMsg1(_rand: (n: number) => Uint8Array): Uint8Array;
     buildSessionSetup(_rand: (n: number) => Uint8Array, srcCoords: NodeAddr | NodeAddr[], destCoords: NodeAddr | NodeAddr[]): Uint8Array;
     handleMsg1(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array;
-    handleSessionSetup(packet: Uint8Array, _rand: (n: number) => Uint8Array, localCoords: NodeAddr | NodeAddr[]): Uint8Array;
+    handleSessionSetup(packet: Uint8Array, _rand: (n: number) => Uint8Array, localCoords: NodeAddr | NodeAddr[], remoteNodeAddr?: NodeAddr): Uint8Array;
     matchesSessionSetup(packet: Uint8Array): boolean;
     handleMsg2(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array;
     handleSessionAck(packet: Uint8Array, _rand: (n: number) => Uint8Array): Uint8Array;

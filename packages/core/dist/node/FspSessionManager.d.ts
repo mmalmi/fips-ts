@@ -11,6 +11,9 @@ interface FspSessionManagerConfig {
     localEpoch: Uint8Array;
     logger: Logger;
     routing: FipsRouting;
+    strictClient?: boolean;
+    assertPeerAllowed?: (pubkey: Uint8Array) => void;
+    assertNodeAllowed?: (nodeAddr: NodeAddr) => void;
     getPeerByNodeAddr: (nodeAddrHex: string) => AdjacentPeer | undefined;
     emitDatagram: (event: DatagramEvent) => void;
     emitEndpointData: (event: EndpointDataEvent) => void;
@@ -27,6 +30,7 @@ export declare class FspSessionManager {
     private readonly missingSessionRecoveries;
     private recoveryGeneration;
     constructor(cfg: FspSessionManagerConfig);
+    resetLocalEpoch(): void;
     registerService(port: number, handler: FipsServiceHandler): () => void;
     start(): void;
     stop(): void;

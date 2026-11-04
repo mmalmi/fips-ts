@@ -11,6 +11,8 @@ import { IndexedDbIdentityStore } from "./IndexedDbIdentityStore.js";
 export interface CreateBrowserFipsNodeConfig {
   identityStoreName?: string;
   forwarding?: boolean;
+  strictClient?: boolean;
+  blockedPeerPubkeys?: readonly string[];
   routingMode?: "tree" | "reply_learned";
   defaultRoute?: string;
   transports: Transport[];
@@ -27,6 +29,8 @@ export async function createBrowserFipsNode(
     identity,
     transports: cfg.transports,
     forwarding: cfg.forwarding ?? false,
+    strictClient: cfg.strictClient,
+    blockedPeerPubkeys: cfg.blockedPeerPubkeys,
     routingMode: cfg.routingMode,
     defaultRoute: cfg.defaultRoute,
     services: cfg.services,

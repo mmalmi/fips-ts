@@ -73,6 +73,8 @@ interface LookupReversePath {
 interface FipsRoutingConfig {
   identity: FipsIdentity;
   forwarding: boolean;
+  strictClient?: boolean;
+  assertNodeAllowed?: (nodeAddr: NodeAddr) => void;
   routingMode: "tree" | "reply_learned";
   defaultRoute?: string;
   transports: Transport[];
@@ -123,12 +125,14 @@ export class FipsRouting {
   private readonly learnedRoutes = new LearnedRouteTable();
   private readonly coordCache = new Map<string, NodeAddr[]>();
   private readonly bloomRouting: BloomRouting;
+  private clientSequence = 0n;
 
   constructor(private readonly cfg: FipsRoutingConfig) {
     this.treeState = new TreeState(cfg.identity);
     this.bloomRouting = new BloomRouting({
       identity: cfg.identity,
       forwarding: cfg.forwarding,
+      strictClient: cfg.strictClient,
       logger: cfg.logger,
       getPeers: cfg.getPeers,
       isTreePeer: (nodeAddr) => this.treeState.isTreePeer(nodeAddr),
@@ -138,11 +142,12 @@ export class FipsRouting {
   }
 
   get coords(): NodeAddr[] {
-    return this.treeState.coords;
+    return this.cfg.strictClient ? [this.cfg.identity.nodeAddr] : this.treeState.coords;
   }
 
   coordinatesFor(nodeAddrHex: string): NodeAddr[] | undefined {
-    return this.coordCache.get(nodeAddrHex);
+    const coords = this.coordCache.get(nodeAddrHex);
+    return this.cfg.strictClient ? coords?.slice(0, 1) : coords;
   }
 
   /** Whether a currently usable carrier can still route to this identity. */
@@ -160,6 +165,10 @@ export class FipsRouting {
     this.learnedRoutes.clear();
     this.coordCache.clear();
     this.treeState.reset();
+    for (const peer of this.cfg.getPeers()) {
+      peer.clientSupported = peer.clientOnly = undefined;
+      peer.routingRoleSequence = undefined;
+    }
   }
 
   removePeer(peerNodeAddr: NodeAddr): void {
@@ -174,6 +183,27 @@ export class FipsRouting {
     msgType: number,
     payload: Uint8Array,
   ): Promise<void> {
+    if (msgType === LinkMessageType.ClientSupport) {
+      if (payload.length !== 0 || peer.clientSupported) return;
+      peer.clientSupported = true;
+      if (this.cfg.strictClient) await this.sendTreeAnnounce(peer);
+      else await this.cfg.sendLinkMessage(peer, LinkMessageType.ClientSupport, new Uint8Array());
+      return;
+    }
+    if (msgType === LinkMessageType.ClientOnly) {
+      if (payload.length !== 8) return;
+      const sequence = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getBigUint64(0, true);
+      const last = peer.routingRoleSequence;
+      if (last !== undefined && (sequence < last || (sequence === last && !peer.clientOnly))) return;
+      peer.routingRoleSequence = sequence;
+      peer.clientSupported = true;
+      if (!peer.clientOnly) {
+        peer.clientOnly = true;
+        this.removePeer(deriveNodeAddr(peer.pubkey));
+        await this.bloomRouting.sendAll();
+      }
+      return;
+    }
     if (msgType === LinkMessageType.TreeAnnounce) {
       await this.handleTreeAnnounce(peer, payload);
       return;
@@ -184,6 +214,8 @@ export class FipsRouting {
     }
     if (msgType === LinkMessageType.LookupRequest) {
       const request = decodeLookupRequest(payload);
+      this.cfg.assertNodeAllowed?.(request.origin);
+      this.cfg.assertNodeAllowed?.(request.target);
       // The origin field is unsigned; identify our looped requests by ID and target.
       if (this.originLookups.findRequest(request.requestId)?.targetHex === nodeAddrToHex(request.target)) return;
       await this.handleLookupRequest(peer, request);
@@ -201,6 +233,8 @@ export class FipsRouting {
     }
 
     const datagram = decodeSessionDatagramPayload(payload);
+    this.cfg.assertNodeAllowed?.(datagram.srcAddr);
+    this.cfg.assertNodeAllowed?.(datagram.destAddr);
     this.cacheSessionCoordinates(datagram);
     if (bytesEqual(datagram.destAddr, this.cfg.identity.nodeAddr)) {
       this.cfg.logger.debug(
@@ -239,12 +273,22 @@ export class FipsRouting {
 
   async sendTreeAnnounce(peer: AdjacentPeer): Promise<void> {
     if (peer.link.state !== "established") return;
+    if (this.cfg.strictClient) {
+      if (!peer.clientSupported) {
+        await this.cfg.sendLinkMessage(peer, LinkMessageType.ClientSupport, new Uint8Array());
+      } else {
+        const payload = new Uint8Array(8);
+        new DataView(payload.buffer).setBigUint64(0, ++this.clientSequence, true);
+        await this.cfg.sendLinkMessage(peer, LinkMessageType.ClientOnly, payload);
+      }
+      return;
+    }
     const encoded = encodeTreeAnnounce(this.treeState.announce());
     await this.cfg.sendLinkMessage(peer, LinkMessageType.TreeAnnounce, encoded.subarray(1));
   }
 
   scheduleTreeAnnounce(peer: AdjacentPeer): void {
-    if (!peer.filterAnnounced) {
+    if (!this.cfg.strictClient && !peer.filterAnnounced) {
       peer.filterAnnounced = true;
       this.bloomRouting.schedule(peer);
     }
@@ -256,6 +300,11 @@ export class FipsRouting {
         this.cfg.emitError(error as Error, "send TreeAnnounce");
       });
     }, 0);
+  }
+
+  /** Reuse the authenticated heartbeat cadence for bounded capability retries. */
+  async refreshClientRole(): Promise<void> {
+    if (this.cfg.strictClient) await this.sendTreeAnnounceToAll();
   }
 
   async replayPendingLookupsFor(peer: AdjacentPeer): Promise<void> {
@@ -310,7 +359,7 @@ export class FipsRouting {
       origin: this.cfg.identity.nodeAddr,
       ttl: LOOKUP_ORIGIN_TTL,
       minMtu: 0,
-      originCoords: this.treeState.coords,
+      originCoords: this.coords,
     };
     const retrying = this.retryOriginLookup(pending, request);
     try {
@@ -346,7 +395,7 @@ export class FipsRouting {
       origin: this.cfg.identity.nodeAddr,
       ttl: LOOKUP_ORIGIN_TTL,
       minMtu,
-      originCoords: this.treeState.coords,
+      originCoords: this.coords,
     };
     const retrying = this.retryOriginLookup(pending, request, previousHop);
     try {
@@ -422,6 +471,10 @@ export class FipsRouting {
     if (!verifyTreeAnnounce(announce, peer.pubkey)) {
       throw new Error("TreeAnnounce signature verification failed");
     }
+    if (peer.routingRoleSequence !== undefined && announce.sequence <= peer.routingRoleSequence) return;
+    peer.routingRoleSequence = announce.sequence;
+    const wasClient = peer.clientOnly;
+    peer.clientOnly = false;
     const wasTreePeer = this.treeState.isTreePeer(peerNodeAddr);
     const changed = this.treeState.updatePeer(peerNodeAddr, announce);
     const isTreePeer = this.treeState.isTreePeer(peerNodeAddr);
@@ -434,7 +487,7 @@ export class FipsRouting {
       nodeAddrToHex(announce.ancestry.at(-1)!.nodeAddr),
     );
     if (changed) await this.sendTreeAnnounceToAll();
-    if (changed || wasTreePeer !== isTreePeer) await this.bloomRouting.sendAll();
+    if (changed || wasClient || wasTreePeer !== isTreePeer) await this.bloomRouting.sendAll();
   }
 
   private cacheSessionCoordinates(datagram: SessionDatagram): void {
@@ -470,7 +523,7 @@ export class FipsRouting {
     const targetHex = nodeAddrToHex(request.target);
     if (frameCapacity(sourcePeer) < request.minMtu) return;
     if (bytesEqual(request.target, this.cfg.identity.nodeAddr)) {
-      const targetCoords = this.treeState.coords;
+      const targetCoords = this.coords;
       const proof = signSchnorr(
         this.cfg.identity,
         sha256(lookupResponseProofBytes(request.requestId, request.target, targetCoords)),

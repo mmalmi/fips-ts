@@ -66,6 +66,9 @@ interface FspSessionManagerConfig {
   localEpoch: Uint8Array;
   logger: Logger;
   routing: FipsRouting;
+  strictClient?: boolean;
+  assertPeerAllowed?: (pubkey: Uint8Array) => void;
+  assertNodeAllowed?: (nodeAddr: NodeAddr) => void;
   getPeerByNodeAddr: (nodeAddrHex: string) => AdjacentPeer | undefined;
   emitDatagram: (event: DatagramEvent) => void;
   emitEndpointData: (event: EndpointDataEvent) => void;
@@ -97,6 +100,10 @@ export class FspSessionManager {
   constructor(private readonly cfg: FspSessionManagerConfig) {
     if (cfg.localEpoch.length !== 8) throw new Error("FSP local epoch must be 8 bytes");
     this.localEpoch = new Uint8Array(cfg.localEpoch);
+  }
+
+  resetLocalEpoch(): void {
+    this.localEpoch.set(this.cfg.localEpoch);
   }
 
   registerService(port: number, handler: FipsServiceHandler): () => void {
@@ -170,6 +177,7 @@ export class FspSessionManager {
   }
 
   private async sendSessionMessage(session: Session, msgType: number, payload: Uint8Array): Promise<void> {
+    this.cfg.assertNodeAllowed?.(session.remoteNodeAddr);
     const directPeer = this.directPeerForSession(session);
     if (directPeer) {
       session.routeWarmup = undefined;
@@ -232,6 +240,7 @@ export class FspSessionManager {
     srcNodeAddr: NodeAddr,
     fspFrame: Uint8Array,
   ): Promise<void> {
+    this.cfg.assertNodeAllowed?.(srcNodeAddr);
     const phase = peekFspPhase(fspFrame);
     const srcNodeHex = nodeAddrToHex(srcNodeAddr);
     const session = this.sessions.get(srcNodeHex);
@@ -429,23 +438,27 @@ export class FspSessionManager {
         fspFrame,
         (n) => this.cfg.random.bytes(n),
         this.cfg.routing.coords,
+        srcNodeAddr,
       );
     } else if (session?.fsp.matchesSessionSetup(fspFrame)) {
       reply = session.fsp.handleSessionSetup(
         fspFrame,
         (n) => this.cfg.random.bytes(n),
         this.cfg.routing.coords,
+        srcNodeAddr,
       );
     } else if (session?.fsp.state === "established") {
       const pending = new FspSession({
         identity: this.cfg.identity,
         role: "responder",
         localEpoch: this.localEpoch,
+        strictClient: this.cfg.strictClient,
       });
       reply = pending.handleSessionSetup(
         fspFrame,
         (n) => this.cfg.random.bytes(n),
         this.cfg.routing.coords,
+        srcNodeAddr,
       );
       session.pendingResponderFsp?.close();
       session.pendingResponderFsp = pending;
@@ -463,11 +476,13 @@ export class FspSessionManager {
         identity: this.cfg.identity,
         role: "responder",
         localEpoch: this.localEpoch,
+        strictClient: this.cfg.strictClient,
       });
       reply = responder.handleSessionSetup(
         fspFrame,
         (n) => this.cfg.random.bytes(n),
         this.cfg.routing.coords,
+        srcNodeAddr,
       );
       session.fsp = responder;
     } else {
@@ -475,11 +490,13 @@ export class FspSessionManager {
         identity: this.cfg.identity,
         role: "responder",
         localEpoch: this.localEpoch,
+        strictClient: this.cfg.strictClient,
       });
       reply = fsp.handleSessionSetup(
         fspFrame,
         (n) => this.cfg.random.bytes(n),
         this.cfg.routing.coords,
+        srcNodeAddr,
       );
       session = { remoteNodeAddr: srcNodeAddr, fsp, currentKBit: false };
       this.sessions.set(srcNodeHex, session);
@@ -503,23 +520,22 @@ export class FspSessionManager {
       && handshakeFsp.remoteEpoch !== undefined
       && !bytesEqual(session.fsp.remoteEpoch, handshakeFsp.remoteEpoch);
     if (handshakeFsp.remotePubkey) {
-      if (!bytesEqual(deriveNodeAddr(handshakeFsp.remotePubkey), srcNodeAddr)) {
+      try {
+        this.cfg.assertPeerAllowed?.(handshakeFsp.remotePubkey);
+        if (!bytesEqual(deriveNodeAddr(handshakeFsp.remotePubkey), srcNodeAddr)) {
+          throw new Error("FSP msg3 authenticated key does not match claimed source NodeAddr");
+        }
+        if (session.remotePubkey && !sameCompressedIdentity(session.remotePubkey, handshakeFsp.remotePubkey)) {
+          throw new Error("FSP rekey changed the authenticated remote identity");
+        }
+      } catch (error) {
         handshakeFsp.close();
         if (session.pendingResponderFsp === handshakeFsp) {
           session.pendingResponderFsp = undefined;
         } else {
           this.sessions.delete(srcNodeHex);
         }
-        throw new Error("FSP msg3 authenticated key does not match claimed source NodeAddr");
-      }
-      if (session.remotePubkey && !sameCompressedIdentity(session.remotePubkey, handshakeFsp.remotePubkey)) {
-        handshakeFsp.close();
-        if (session.pendingResponderFsp === handshakeFsp) {
-          session.pendingResponderFsp = undefined;
-        } else {
-          this.sessions.delete(srcNodeHex);
-        }
-        throw new Error("FSP rekey changed the authenticated remote identity");
+        throw error;
       }
       session.remotePubkey = handshakeFsp.remotePubkey;
       session.remotePubkeyHex = toHex(handshakeFsp.remotePubkey);
@@ -611,6 +627,7 @@ export class FspSessionManager {
 
   private async ensureSession(remotePubkeyHex: string): Promise<Session> {
     const remotePubkey = fromHex(remotePubkeyHex);
+    this.cfg.assertPeerAllowed?.(remotePubkey);
     const remoteNodeAddr = deriveNodeAddr(remotePubkey);
     const remoteNodeHex = nodeAddrToHex(remoteNodeAddr);
     let session = this.sessions.get(remoteNodeHex);
@@ -641,6 +658,7 @@ export class FspSessionManager {
       role: "initiator",
       remotePubkey,
       localEpoch: this.localEpoch,
+      strictClient: this.cfg.strictClient,
     });
     session = { remoteNodeAddr, remotePubkeyHex, remotePubkey, fsp, currentKBit: false };
     this.sessions.set(remoteNodeHex, session);
@@ -747,6 +765,7 @@ export class FspSessionManager {
     const pathMtu = Math.min(peer.transport.mtu, FSP_DEFAULT_PATH_MTU);
     const packets = segmentDirectFspTransportRecord(fspFrame, pathMtu);
     for (const packet of packets) {
+      this.cfg.assertPeerAllowed?.(peer.pubkey);
       await peer.transport.send(peer.remoteAddr, packet);
     }
   }

@@ -9,6 +9,8 @@ type OutboundSessionDatagram = Omit<SessionDatagram, "payload"> & {
 interface FipsRoutingConfig {
     identity: FipsIdentity;
     forwarding: boolean;
+    strictClient?: boolean;
+    assertNodeAllowed?: (nodeAddr: NodeAddr) => void;
     routingMode: "tree" | "reply_learned";
     defaultRoute?: string;
     transports: Transport[];
@@ -32,6 +34,7 @@ export declare class FipsRouting {
     private readonly learnedRoutes;
     private readonly coordCache;
     private readonly bloomRouting;
+    private clientSequence;
     constructor(cfg: FipsRoutingConfig);
     get coords(): NodeAddr[];
     coordinatesFor(nodeAddrHex: string): NodeAddr[] | undefined;
@@ -42,6 +45,8 @@ export declare class FipsRouting {
     handleLinkMessage(peer: AdjacentPeer, msgType: number, payload: Uint8Array): Promise<void>;
     sendTreeAnnounce(peer: AdjacentPeer): Promise<void>;
     scheduleTreeAnnounce(peer: AdjacentPeer): void;
+    /** Reuse the authenticated heartbeat cadence for bounded capability retries. */
+    refreshClientRole(): Promise<void>;
     replayPendingLookupsFor(peer: AdjacentPeer): Promise<void>;
     ensureFirstContactRoute(target: NodeAddr, targetHex: string, targetPubkey: Uint8Array): Promise<void>;
     private refreshTransitRoute;

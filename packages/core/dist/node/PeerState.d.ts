@@ -19,6 +19,9 @@ export interface AdjacentPeer {
     abandonedInitiatorSessionIdx?: number;
     treeAnnounced?: boolean;
     filterAnnounced?: boolean;
+    clientSupported?: boolean;
+    clientOnly?: boolean;
+    routingRoleSequence?: bigint;
     inboundFilter?: BloomFilter;
     inboundFilterSequence?: bigint;
     outboundFilter?: BloomFilter;

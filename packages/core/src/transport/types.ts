@@ -49,6 +49,8 @@ export interface TransportContext {
     message: LinkNegotiationMessage,
   ) => Promise<void>;
   logger?: Logger;
+  /** Current node admission policy; adapters must recheck after asynchronous preparation. */
+  allowPeer?: (publicKey: Uint8Array) => boolean;
 }
 
 export interface Transport {

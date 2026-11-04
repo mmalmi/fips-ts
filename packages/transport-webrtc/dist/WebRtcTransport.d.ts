@@ -58,6 +58,7 @@ export declare class WebRtcTransport implements Transport {
     private rejectIncomingOffer;
     handleLinkNegotiation(remotePubkeyHex: string, message: LinkNegotiationMessage): Promise<void>;
     private sendWebRtcSignal;
+    private peerAllowed;
     private speculativeAutoConnects;
     private autoConnectCapacityUsed;
     private maxSpeculativeAutoConnects;

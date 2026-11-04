@@ -15,6 +15,7 @@ interface FmpTransportPacketProcessorConfig {
     peersByNodeAddr: Map<string, AdjacentPeer>;
     routing: FipsRouting;
     sessionManager: FspSessionManager;
+    assertPeerAllowed?: (pubkey: Uint8Array) => void;
     emitError: (error: Error, where: string) => void;
     emitPeer: (event: PeerEvent) => void;
     removePeerPath: (peer: AdjacentPeer) => void;

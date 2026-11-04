@@ -4,7 +4,8 @@ import { bytesEqual, fromHex, toHex } from "../codec/hex.js";
 import { FmpLink } from "../fmp/link.js";
 import type { FipsIdentity } from "../identity/index.js";
 import { deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
-import { LinkMessageType } from "../protocol/link.js";
+import { DisconnectReason, LinkMessageType, decodeSessionDatagramPayload } from "../protocol/link.js";
+import { decodeLookupRequest } from "../protocol/discovery.js";
 import {
   noopLogger,
   type Logger,
@@ -32,6 +33,7 @@ import {
 import { FspSessionManager } from "./FspSessionManager.js";
 import { FMP_HANDSHAKE_TIMEOUT_MS, pruneDrainingResponderLinks, sameCompressedIdentity, type AdjacentPeer } from "./PeerState.js";
 import { discoveryPublicKey } from "./routingHelpers.js";
+import { PeerAdmission } from "./PeerAdmission.js";
 
 const defaultRandom: RandomSource = { bytes: (n) => randomBytes(n) };
 const FMP_HANDSHAKE_RESEND_MS = 1_000;
@@ -62,12 +64,23 @@ export class FipsNode {
   private readonly sessionManager: FspSessionManager;
   private readonly packetProcessor: FmpTransportPacketProcessor;
   private started = false;
+  private desiredRunning = false;
+  private hasStarted = false;
+  private needsTransportCleanup = false;
+  private admission: PeerAdmission;
+  private admissionUpdating = false;
+  private admissionUpdate: Promise<void> = Promise.resolve();
+  private startTask?: Promise<void>;
+  private stopTask?: Promise<Error[]>;
+  private readonly pendingSends = new Set<Promise<void>>();
 
   constructor(cfg: FipsNodeConfig) {
     this.identity = cfg.identity;
+    this.admission = new PeerAdmission(cfg.blockedPeerPubkeys);
     this.transports = expandCompanionTransports(cfg.transports);
     this.forwarding = cfg.forwarding ?? false;
-    this.routingMode = cfg.routingMode ?? "tree";
+    if (cfg.strictClient && this.forwarding) throw new Error("strictClient cannot forward traffic");
+    this.routingMode = cfg.strictClient ? "reply_learned" : cfg.routingMode ?? "tree";
     this.defaultRoute = cfg.defaultRoute?.toLowerCase();
     if (this.defaultRoute && !/^(02|03)[0-9a-f]{64}$/.test(this.defaultRoute)) {
       throw new Error("defaultRoute must be a 33-byte compressed pubkey hex");
@@ -86,6 +99,8 @@ export class FipsNode {
     this.routing = new FipsRouting({
       identity: this.identity,
       forwarding: this.forwarding,
+      strictClient: cfg.strictClient,
+      assertNodeAllowed: (nodeAddr) => this.admission.assertNode(nodeAddr),
       routingMode: this.routingMode,
       defaultRoute: this.defaultRoute,
       transports: this.transports,
@@ -109,7 +124,10 @@ export class FipsNode {
       localEpoch: this.startupEpoch,
       logger: this.logger,
       routing: this.routing,
+      strictClient: cfg.strictClient,
       getPeerByNodeAddr: (nodeAddrHex) => this.peersByNodeAddr.get(nodeAddrHex),
+      assertPeerAllowed: (pubkey) => this.admission.assertPeer(pubkey),
+      assertNodeAllowed: (nodeAddr) => this.admission.assertNode(nodeAddr),
       emitDatagram: (event) => this.emit("datagram", event),
       emitEndpointData: (event) => this.emit("endpointData", event),
       handleLinkNegotiation: async (remotePubkeyHex, message) => {
@@ -147,6 +165,7 @@ export class FipsNode {
       peersByNodeAddr: this.peersByNodeAddr,
       routing: this.routing,
       sessionManager: this.sessionManager,
+      assertPeerAllowed: (pubkey) => this.admission.assertPeer(pubkey),
       emitError: (error, where) => this.emit("error", { err: error, where }),
       emitPeer: (event) => this.emit("peer", event),
       removePeerPath: (peer) => {
@@ -168,37 +187,73 @@ export class FipsNode {
   }
 
   async start(): Promise<void> {
+    this.desiredRunning = true;
+    await this.stopTask;
+    if (this.admissionUpdating) await this.admissionUpdate;
+    if (this.desiredRunning) await this.startNode();
+  }
+
+  private startNode(): Promise<void> {
+    if (this.startTask) return this.startTask;
+    const task = this.startTransports();
+    this.startTask = task;
+    void task.finally(() => { if (this.startTask === task) this.startTask = undefined; }).catch(() => {});
+    return task;
+  }
+
+  private async startTransports(): Promise<void> {
     if (this.started) return;
+    if (this.hasStarted) {
+      // Retained services restart with fresh link/session keys. Authenticate a
+      // new epoch so surviving remote sessions cannot mistake this for rekey.
+      const epoch = new DataView(this.startupEpoch.buffer, this.startupEpoch.byteOffset, 8);
+      epoch.setBigUint64(0, epoch.getBigUint64(0, true) + 1n, true);
+      this.sessionManager.resetLocalEpoch();
+    }
+    this.needsTransportCleanup = true;
+    const generation = ++this.discoveryGeneration;
+    const current = () => generation === this.discoveryGeneration;
     const startedTransports: Transport[] = [];
     try {
       for (const t of this.transports) {
+        startedTransports.push(t);
         await t.start({
           localIdentity: this.identity,
-          onPacket: (packet) => this.packetProcessor.process(t, packet),
-          onConnectionState: (e) => this.onTransportConn(t, e),
-          connectTransport: (addr) => this.connect(addr),
-          sendLinkNegotiation: (remotePubkeyHex, message) =>
-            this.sessionManager.sendLinkNegotiation(remotePubkeyHex, message),
+          onPacket: (packet) => { if (current()) this.packetProcessor.process(t, packet); },
+          onConnectionState: (e) => { if (current()) this.onTransportConn(t, e); },
+          allowPeer: (pubkey) => current() && this.admission.allows(pubkey),
+          connectTransport: async (addr) => {
+            if (!current()) throw new Error("FIPS transport was stopped");
+            await this.connect(addr);
+          },
+          sendLinkNegotiation: async (remotePubkeyHex, message) => {
+            if (!current()) throw new Error("FIPS transport was stopped");
+            await this.trackSend(this.sessionManager.sendLinkNegotiation(remotePubkeyHex, message));
+          },
           logger: this.logger,
         });
-        startedTransports.push(t);
+        if (!current() || !this.desiredRunning) throw new Error("FIPS node start cancelled");
       }
     } catch (err) {
+      this.discoveryGeneration++;
+      let closed = true;
       for (const t of startedTransports.reverse()) {
         try {
           await t.stop();
         } catch {
+          closed = false;
           // Preserve the original start failure.
         }
       }
+      this.needsTransportCleanup = !closed;
       throw err;
     }
     this.started = true;
+    this.hasStarted = true;
     this.sessionManager.start();
     this.heartbeatTimer = setInterval(() => {
       void this.sendHeartbeats();
     }, this.heartbeatIntervalMs);
-    const generation = ++this.discoveryGeneration;
     for (const transport of this.transports) {
       if (!transport.discover) continue;
       const task = this.consumeDiscovery(transport, generation);
@@ -208,12 +263,43 @@ export class FipsNode {
   }
 
   async stop(): Promise<void> {
-    if (!this.started) return;
+    this.desiredRunning = false;
+    await this.stopNode();
+    await this.admissionUpdate.catch(() => {});
+  }
+
+  private stopNode(): Promise<Error[]> {
+    if (this.stopTask) return this.stopTask;
+    const task = this.stopTransports();
+    this.stopTask = task;
+    void task.finally(() => { if (this.stopTask === task) this.stopTask = undefined; }).catch(() => {});
+    return task;
+  }
+
+  private async stopTransports(): Promise<Error[]> {
+    const failures: Error[] = [];
+    if (!this.needsTransportCleanup && !this.started && !this.startTask) return failures;
     this.started = false;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = undefined;
     this.discoveryGeneration++;
     this.packetProcessor.clear();
+    this.routing.stop();
+    this.sessionManager.stop();
+    // Authenticate a graceful departure before rotating the startup epoch.
+    // Otherwise a UDP router correctly treats the fresh Msg1 as a possible
+    // replay against a still-live carrier until its restart grace expires.
+    const departures = [...this.peers.values()]
+      .filter(peer => peer.link.state === "established" && this.admission.allows(peer.pubkey))
+      .map(peer => this.sendLinkMessage(peer, LinkMessageType.Disconnect,
+        new Uint8Array([this.desiredRunning ? DisconnectReason.Restart : DisconnectReason.Shutdown])));
+    if (departures.length) {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([Promise.allSettled(departures),
+          new Promise<void>(resolve => { timeout = setTimeout(resolve, 100); })]);
+      } finally { clearTimeout(timeout); }
+    }
     for (const peer of this.peers.values()) {
       peer.outgoingHandshake?.reject(new Error("FIPS node stopped"));
       peer.link.close();
@@ -222,12 +308,11 @@ export class FipsNode {
         draining.link.close();
       }
     }
-    this.routing.stop();
-    this.sessionManager.stop();
     for (const t of this.transports) {
       try {
         await t.stop();
       } catch (err) {
+        failures.push(err instanceof Error ? err : new Error(String(err)));
         this.emit("error", { err: err as Error, where: "transport.stop" });
       }
     }
@@ -235,10 +320,41 @@ export class FipsNode {
     this.discoveryTasks.clear();
     await Promise.allSettled([...this.discoveryConnectTasks]);
     this.discoveryConnectTasks.clear();
+    await Promise.allSettled([...this.pendingPeerConnects.values(), ...this.pendingSends, ...(this.startTask ? [this.startTask] : [])]);
     this.peers.clear();
     this.peersByPubkey.clear();
     this.peersByNodeAddr.clear();
     this.pendingPeerConnects.clear();
+    this.needsTransportCleanup = failures.length > 0;
+    return failures;
+  }
+
+  /**
+   * Revoke immediately, then drain/reset the reader's connections before acknowledging.
+   * Service registrations/listeners survive; identical sets do not reset anything.
+   * stop() during the reset prevents restart. A failed closure rejects the barrier.
+   */
+  setBlockedPeerPubkeys(keys: readonly string[]): Promise<void> {
+    const next = new PeerAdmission(keys);
+    if (this.admission.equals(next)) return this.admissionUpdate;
+    this.admission = next;
+    this.admissionUpdating = true;
+    this.discoveryGeneration++;
+    const update = this.admissionUpdate.catch(() => {}).then(async () => {
+      const failures = await this.stopNode();
+      if (failures.length) throw new AggregateError(failures, `FIPS revocation failed: ${failures.map(e => e.message).join("; ")}`);
+      if (this.desiredRunning) await this.startNode();
+    }).finally(() => {
+      if (this.admissionUpdate === update) this.admissionUpdating = false;
+    });
+    this.admissionUpdate = update;
+    return update;
+  }
+
+  private trackSend(task: Promise<void>): Promise<void> {
+    this.pendingSends.add(task);
+    void task.finally(() => this.pendingSends.delete(task)).catch(() => {});
+    return task;
   }
 
   private async consumeDiscovery(
@@ -284,6 +400,7 @@ export class FipsNode {
    * must be the remote node's 33-byte compressed pubkey in hex.
    */
   async connect(addr: TransportAddress): Promise<void> {
+    if (this.admissionUpdating) throw new Error("FIPS peer policy is updating");
     const transport = this.transports.find((t) => t.type === addr.transport);
     if (!transport) throw new Error(`no transport registered for ${addr.transport}`);
     if (addr.addr.length !== 66) {
@@ -298,6 +415,7 @@ export class FipsNode {
     addr: TransportAddress,
     remotePubkey: Uint8Array,
   ): Promise<void> {
+    this.admission.assertPeer(remotePubkey);
     if (remotePubkey.length !== 33 || (remotePubkey[0] !== 0x02 && remotePubkey[0] !== 0x03)) {
       throw new Error("remote pubkey must be 33-byte compressed secp256k1 key");
     }
@@ -325,8 +443,11 @@ export class FipsNode {
     remotePubkey: Uint8Array,
     key: string,
   ): Promise<void> {
+    const generation = this.discoveryGeneration;
     this.logger.debug("fips connect transport start", addr.transport, addr.addr);
     await transport.connect(addr);
+    this.admission.assertPeer(remotePubkey);
+    if (generation !== this.discoveryGeneration) throw new Error("FIPS connection was revoked");
     this.logger.debug("fips connect transport ready", addr.transport, addr.addr);
     const concurrentlyEstablished = this.peers.get(key);
     if (concurrentlyEstablished?.link.state === "established") return;
@@ -359,6 +480,8 @@ export class FipsNode {
     try {
       const msg1 = link.buildMsg1((n) => this.random.bytes(n));
       const sendMsg1 = async (resend: boolean): Promise<void> => {
+        this.admission.assertPeer(remotePubkey);
+        if (generation !== this.discoveryGeneration) throw new Error("FIPS connection was revoked");
         await transport.send(addr, msg1.packet);
         this.logger.debug(
           resend ? "fips msg1 resent" : "fips msg1 sent",
@@ -405,7 +528,8 @@ export class FipsNode {
     dstPort: number;
     payload: Uint8Array;
   }): Promise<void> {
-    await this.sessionManager.sendDatagram(args);
+    if (this.admissionUpdating) throw new Error("FIPS peer policy is updating");
+    await this.trackSend(this.sessionManager.sendDatagram(args));
   }
 
   /** Send app-owned endpoint bytes to a target identity without service ports. */
@@ -413,7 +537,8 @@ export class FipsNode {
     dst: string; // remote pubkey hex
     payload: Uint8Array;
   }): Promise<void> {
-    await this.sessionManager.sendEndpointData(args);
+    if (this.admissionUpdating) throw new Error("FIPS peer policy is updating");
+    await this.trackSend(this.sessionManager.sendEndpointData(args));
   }
 
   on(event: FipsEventName, cb: (data: unknown) => void): () => void {
@@ -530,11 +655,22 @@ export class FipsNode {
     msgType: number,
     payload: Uint8Array,
   ): Promise<void> {
+    this.admission.assertPeer(peer.pubkey);
+    if (this.admission.hasBlockedPeers && msgType === LinkMessageType.SessionDatagram) {
+      const datagram = decodeSessionDatagramPayload(payload);
+      this.admission.assertNode(datagram.srcAddr);
+      this.admission.assertNode(datagram.destAddr);
+    } else if (this.admission.hasBlockedPeers && msgType === LinkMessageType.LookupRequest) {
+      const request = decodeLookupRequest(payload);
+      this.admission.assertNode(request.target);
+      this.admission.assertNode(request.origin);
+    }
     const frame = peer.link.encryptOutgoing(payload, msgType);
     await peer.transport.send(peer.remoteAddr, frame);
   }
 
   private async sendHeartbeats(): Promise<void> {
+    await this.routing.refreshClientRole();
     const nowMs = Date.now();
     for (const peer of this.peers.values()) {
       pruneDrainingResponderLinks(peer, nowMs);
@@ -543,6 +679,7 @@ export class FipsNode {
       (peer) => peer.link.state === "established",
     );
     await Promise.allSettled(peers.map(async (peer) => {
+      this.admission.assertPeer(peer.pubkey);
       const frame = peer.link.encryptOutgoing(
         new Uint8Array(0),
         LinkMessageType.Heartbeat,

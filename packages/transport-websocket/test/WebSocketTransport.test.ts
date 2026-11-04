@@ -57,7 +57,7 @@ class FakeWebSocket extends EventTarget {
   close(code?: number, reason?: string): void {
     if (this.readyState === FakeWebSocket.CLOSED) return;
     this.readyState = FakeWebSocket.CLOSED;
-    this.dispatchEvent(new CloseEvent("close", { code, reason }));
+    this.dispatchEvent(Object.assign(new Event("close"), { code, reason }));
   }
 }
 
@@ -136,6 +136,39 @@ describe("WebSocket physical record validation", () => {
 });
 
 describe("WebSocketTransport", () => {
+  it.each(["hint", "queued send"])("enforces peer admission at the %s boundary", async boundary => {
+    vi.useFakeTimers();
+    const { transport, context } = await setup({ randomNonce: () => 11n, maxBufferedBytes: 128, sendPollMs: 5 });
+    let allowed = boundary !== "hint";
+    context.allowPeer = () => allowed;
+    try {
+      const socket = FakeWebSocket.instances[0]!;
+      socket.open();
+      const addr = { transport: "websocket", addr: socket.url };
+      const connected = transport.connect(addr);
+      const outcome = connected.then(() => "connected", error => error.message as string);
+      socket.receive(encodeLocalKeyHintResponse(11n, new Uint8Array(32).fill(0x44)).buffer);
+      if (boundary === "hint") {
+        expect(await outcome).toContain("blocked");
+      } else {
+        expect(await outcome).toBe("connected");
+        socket.bufferedAmount = 129;
+        const record = new Uint8Array(69);
+        record[0] = 0x02;
+        record[2] = 65;
+        const sent = transport.send(addr, record).then(() => "sent", error => error.message as string);
+        allowed = false;
+        socket.bufferedAmount = 0;
+        await vi.advanceTimersByTimeAsync(5);
+        expect(await sent).toContain("blocked");
+      }
+      expect(socket.sent).toHaveLength(1); // Only the identity-hint request.
+    } finally {
+      await transport.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects connection attempts after shutdown instead of leaving them pending", async () => {
     const { transport } = await setup();
     await transport.stop();

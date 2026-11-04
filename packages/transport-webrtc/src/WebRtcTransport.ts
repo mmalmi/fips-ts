@@ -242,6 +242,7 @@ export class WebRtcTransport implements Transport {
       const remotePubkeyHex = endpoint.addr.toLowerCase();
       if (remotePubkeyHex.slice(2) !== event.pubkey.toLowerCase()) continue;
       if (remotePubkeyHex === localPubkeyHex) continue;
+      if (!this.peerAllowed(remotePubkeyHex)) continue;
       const peer: DiscoveredPeer = {
         remoteAddr: { transport: this.type, addr: remotePubkeyHex },
         publicKey: fromHex(remotePubkeyHex),
@@ -279,6 +280,7 @@ export class WebRtcTransport implements Transport {
     );
     for (const cached of candidates) {
       const remote = cached.peer.remoteAddr.addr;
+      if (!this.peerAllowed(remote)) continue;
       const autoConnectLimit = this.autoConnectPolicy.connectionLimit(
         this.cfg.maxAutoConnections, reservePreferredSlot, remote);
       if (this.autoConnectCapacityUsed() >= autoConnectLimit) continue;
@@ -318,7 +320,7 @@ export class WebRtcTransport implements Transport {
     const cached = this.advertCache.get(nodeAddrHex);
     // Resolution may race the discovery consumer. Keep any queued reservation
     // until connect() atomically transfers it to pendingAutoConnects.
-    if (cached) return cached;
+    if (cached) return this.peerAllowed(cached.remoteAddr.addr) ? cached : undefined;
     if (!this.ctx || signal?.aborted) return undefined;
 
     return new Promise<DiscoveredPeer | undefined>((resolve) => {
@@ -376,6 +378,7 @@ export class WebRtcTransport implements Transport {
       throw new Error("WebRTC addr must be 33-byte compressed pubkey hex");
     }
     const remotePubkeyHex = this.ownedPeerAddress(addr.addr);
+    if (!this.peerAllowed(remotePubkeyHex)) throw new Error("FIPS peer is blocked");
     // Discovery reservations only cover the queued handoff to FipsNode.
     // Once connect() starts, the concrete pending/connected maps own capacity.
     const isAutoConnect = this.autoConnectPeers.delete(addr.addr);
@@ -465,6 +468,7 @@ export class WebRtcTransport implements Transport {
   }
 
   async send(addr: TransportAddress, packet: Uint8Array): Promise<void> {
+    if (!this.peerAllowed(addr.addr)) throw new Error("FIPS peer is blocked");
     const conn = this.conns.get(this.ownedPeerAddress(addr.addr));
     if (!conn) throw new Error(`no webrtc connection to ${addr.addr}`);
     if (packet.length > this.mtu) {
@@ -501,6 +505,7 @@ export class WebRtcTransport implements Transport {
   }
 
   handleSessionEstablished(remotePubkeyHex: string, restarted = false): void {
+    if (!this.peerAllowed(remotePubkeyHex)) return;
     remotePubkeyHex = this.ownedPeerAddress(remotePubkeyHex);
     if (restarted) {
       retryOffersAfterRestart(remotePubkeyHex, this.pendingDials,
@@ -573,6 +578,7 @@ export class WebRtcTransport implements Transport {
 
   private async handleIncomingSignal(signal: WebRtcSignal, remotePubkeyHex: string): Promise<void> {
     if (!this.ctx) return;
+    if (!this.peerAllowed(remotePubkeyHex)) return;
     remotePubkeyHex = this.ownedPeerAddress(remotePubkeyHex);
     this.logger.debug("webrtc signal received", signal.kind, signal.negotiationId, remotePubkeyHex);
     const localPubkeyHex = toHex(this.ctx.localIdentity.publicKey);
@@ -614,6 +620,7 @@ export class WebRtcTransport implements Transport {
     remotePubkeyHex: string,
     localPubkeyHex: string,
   ): Promise<void> {
+    const context = this.ctx;
     if (this.pendingInbound.has(offer.negotiationId)) return;
     const competingDial = [...this.pendingDials.values()]
       .find((dial) => dial.remotePubkeyHex === remotePubkeyHex);
@@ -621,11 +628,10 @@ export class WebRtcTransport implements Transport {
       await this.rejectIncomingOffer(offer, remotePubkeyHex);
       return;
     }
-    if (
-      !competingDial
-      && this.cfg.allowIncomingPeer
-      && !await this.cfg.allowIncomingPeer(remotePubkeyHex)
-    ) {
+    const admitted = competingDial || !this.cfg.allowIncomingPeer
+      || await this.cfg.allowIncomingPeer(remotePubkeyHex);
+    if (this.ctx !== context || !this.peerAllowed(remotePubkeyHex)) return;
+    if (!admitted) {
       await this.rejectIncomingOffer(offer, remotePubkeyHex);
       return;
     }
@@ -841,10 +847,15 @@ export class WebRtcTransport implements Transport {
   }
 
   private async sendWebRtcSignal(remotePubkeyHex: string, signal: WebRtcSignal): Promise<void> {
+    if (!this.peerAllowed(remotePubkeyHex)) throw new Error("FIPS peer is blocked");
     if (!this.ctx?.sendLinkNegotiation) {
       throw new Error("WebRTC negotiation requires the FIPS link-negotiation service");
     }
     await this.ctx.sendLinkNegotiation(remotePubkeyHex, signal);
+  }
+
+  private peerAllowed(pubkeyHex: string): boolean {
+    return this.ctx?.allowPeer?.(fromHex(pubkeyHex)) !== false;
   }
 
   private speculativeAutoConnects(): number {

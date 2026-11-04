@@ -25,9 +25,29 @@ export declare class FipsNode {
     private readonly sessionManager;
     private readonly packetProcessor;
     private started;
+    private desiredRunning;
+    private hasStarted;
+    private needsTransportCleanup;
+    private admission;
+    private admissionUpdating;
+    private admissionUpdate;
+    private startTask?;
+    private stopTask?;
+    private readonly pendingSends;
     constructor(cfg: FipsNodeConfig);
     start(): Promise<void>;
+    private startNode;
+    private startTransports;
     stop(): Promise<void>;
+    private stopNode;
+    private stopTransports;
+    /**
+     * Revoke immediately, then drain/reset the reader's connections before acknowledging.
+     * Service registrations/listeners survive; identical sets do not reset anything.
+     * stop() during the reset prevents restart. A failed closure rejects the barrier.
+     */
+    setBlockedPeerPubkeys(keys: readonly string[]): Promise<void>;
+    private trackSend;
     private consumeDiscovery;
     private connectDiscoveredPeer;
     registerService(port: number, handler: FipsServiceHandler): () => void;

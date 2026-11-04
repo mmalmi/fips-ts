@@ -44,6 +44,8 @@ export const LinkMessageType = {
   // Link Control (0x50-0x5F)
   Disconnect: 0x50,
   Heartbeat: 0x51,
+  ClientOnly: 0x52,
+  ClientSupport: 0x53,
 } as const;
 
 const LINK_MESSAGE_TYPE_BYTES = new Set<number>([
@@ -56,6 +58,8 @@ const LINK_MESSAGE_TYPE_BYTES = new Set<number>([
   LinkMessageType.LookupResponse,
   LinkMessageType.Disconnect,
   LinkMessageType.Heartbeat,
+  LinkMessageType.ClientOnly,
+  LinkMessageType.ClientSupport,
 ]);
 
 export function linkMessageTypeFromByte(b: number): number | undefined {

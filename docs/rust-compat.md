@@ -12,7 +12,7 @@ Reference: `mmalmi/fips` (Rust), `~/src/fips`.
 4-byte common prefix:
 
 ```
-byte 0 : (ver << 4) | phase     // ver=1, phase ∈ {0,1,2}
+byte 0 : (ver << 4) | phase     // ver=0, phase ∈ {0,1,2}
 byte 1 : flags                  // 0 during handshake
 byte 2-3 : payload_len (u16 LE)
 ```
@@ -103,8 +103,8 @@ are at `fixtures/rust-vectors/ethernet-frames.json`.
 These behaviors are codified in `packages/core/src/noise/handshake.ts` and
 covered by the live interop tests in `packages/core/test/interop/`.
 
-Handshake-payload sizes (must be exactly 8 bytes — currently zeros; Rust
-carries a u64 epoch here):
+Handshake-payload sizes (the epoch payload is exactly 8 opaque bytes, shared
+across a node's FMP/FSP handshakes and changed when that node restarts):
 
 - IK msg1: 106 bytes = 33 (e) + 49 (enc_s) + 24 (enc_payload+tag)
 - IK msg2: 57 bytes  = 33 (e) + 24 (enc_payload+tag)
@@ -116,6 +116,35 @@ Deterministic vectors are at `fixtures/rust-vectors/noise-handshakes.json`
 (regenerate with `REGENERATE_VECTORS=1 pnpm -C packages/core test:unit`).
 Once Rust ships an equivalent exporter, the two JSON files should match
 byte-for-byte modulo the epoch field.
+
+## Strict clients
+
+`strictClient` uses the existing empty ClientSupport (`0x53`) message and
+ClientOnly (`0x52`, u64-LE sequence) declaration. It never exports tree or
+Bloom announcements and limits lookup/FSP coordinates to their endpoints.
+Multi-hop delivery requires ReplyLearned transit; a Tree-only or legacy peer
+never causes a fallback to topology publication. Default router behavior and
+wire formats remain unchanged.
+
+A policy reset preserves services, sends an authenticated Disconnect to
+permitted adjacent peers, closes the old carriers, and starts a new epoch.
+The disconnect flush is bounded to 100 ms. If it is lost, an open UDP carrier
+can remain subject to Rust's normal restart replay guard until its idle grace
+expires; the library does not bypass that safeguard.
+
+The optional `test/interop/strict-client-router.test.ts` runs two strict JS
+endpoints through two actual Rust ReplyLearned routers, including a policy
+reset and a changed UDP source port. Set `FIPS_COMPAT_ROUTERS` to a JSON array
+of `{ "version": "label", "path": "path-to-prebuilt-fixture", "sha256": "verified-sha256" }`.
+Each binary must expose the Rust `compat_router_process` test and its
+`FIPS_COMPAT_ROUTER_CONFIG`, `FIPS_COMPAT_ROUTER_READY`, and
+`FIPS_COMPAT_ROUTER_STOP` environment contract. The test verifies each binary's
+hash and uses only loopback sockets and synthetic identities; it never builds
+or downloads a native fixture. Run it with:
+
+```sh
+pnpm --filter @fips/core exec vitest run test/interop/strict-client-router.test.ts
+```
 
 ## Nostr
 

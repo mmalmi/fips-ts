@@ -235,6 +235,8 @@ export class WebSocketTransport {
             if (toHex(hint.pubkey) === toHex(this.ctx.localIdentity.xOnlyPubkey)) {
                 throw new Error("WebSocket seed returned the local FIPS identity");
             }
+            if (this.ctx?.allowPeer?.(hint.pubkey) === false)
+                throw new Error("FIPS peer is blocked");
             if (state.keyHintTimer)
                 clearTimeout(state.keyHintTimer);
             state.keyHintTimer = undefined;
@@ -273,6 +275,10 @@ export class WebSocketTransport {
             return;
         const socket = state.socket;
         while (state.queue.length > 0) {
+            if (state.remoteXOnly && this.ctx?.allowPeer?.(state.remoteXOnly) === false) {
+                this.rejectQueue(state, new Error("FIPS peer is blocked"));
+                return;
+            }
             const next = state.queue[0];
             if (socket.bufferedAmount + next.data.length > this.maxBufferedBytes) {
                 state.sendTimer = setTimeout(() => {

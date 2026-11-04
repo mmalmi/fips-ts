@@ -28,6 +28,10 @@ export interface FipsNodeConfig {
   identity: FipsIdentity;
   transports: Transport[];
   forwarding?: boolean;
+  /** Never publish topology or fall back to a router role. Incompatible with forwarding. */
+  strictClient?: boolean;
+  /** Block x-only or compressed hex identities on every carrier and end-to-end session. */
+  blockedPeerPubkeys?: readonly string[];
   /** Matches Rust fips-core's `node.routing.mode`. Defaults to `tree`. */
   routingMode?: "tree" | "reply_learned";
   /** Explicit next-hop peer pubkey for destinations without a direct link. */

@@ -38,6 +38,8 @@ export interface TransportContext {
     /** Carry link negotiation through the existing FSP DataPacket service. */
     sendLinkNegotiation?: (remotePubkeyHex: string, message: LinkNegotiationMessage) => Promise<void>;
     logger?: Logger;
+    /** Current node admission policy; adapters must recheck after asynchronous preparation. */
+    allowPeer?: (publicKey: Uint8Array) => boolean;
 }
 export interface Transport {
     readonly type: string;

@@ -15,6 +15,7 @@ import type { AdjacentPeer } from "./PeerState.js";
 interface BloomRoutingConfig {
   identity: FipsIdentity;
   forwarding: boolean;
+  strictClient?: boolean;
   logger: Logger;
   getPeers: () => Iterable<AdjacentPeer>;
   isTreePeer: (nodeAddr: NodeAddr) => boolean;
@@ -45,6 +46,7 @@ export class BloomRouting {
   }
 
   async sendAll(excludedPeer?: AdjacentPeer): Promise<void> {
+    if (this.cfg.strictClient) return;
     const peers = [...this.cfg.getPeers()].filter(
       (peer) => peer !== excludedPeer && peer.link.state === "established",
     );
@@ -75,7 +77,7 @@ export class BloomRouting {
   }
 
   private async send(peer: AdjacentPeer): Promise<void> {
-    if (peer.link.state !== "established") return;
+    if (this.cfg.strictClient || peer.link.state !== "established") return;
     const filter = this.outgoingFilterFor(peer);
     if (peer.outboundFilter && sameFilter(peer.outboundFilter, filter)) return;
 
@@ -106,6 +108,10 @@ export class BloomRouting {
     filter.insertBytes(this.cfg.identity.nodeAddr);
     if (!this.cfg.forwarding) return filter;
     for (const peer of this.cfg.getPeers()) {
+      if (peer !== excludedPeer && peer.link.state === "established" && peer.clientOnly) {
+        filter.insertBytes(deriveNodeAddr(peer.pubkey));
+        continue;
+      }
       if (
         peer === excludedPeer
         || peer.link.state !== "established"

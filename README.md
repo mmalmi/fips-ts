@@ -85,6 +85,26 @@ That mode mirrors Rust FIPS reverse-path learning: authenticated session traffic
 and successful lookup replies reinforce expiring, weighted next-hop routes.
 `defaultRoute` remains available for fixed test and point-to-point topologies.
 
+For endpoints that must not publish their private topology, opt in to
+`strictClient: true`. It requires forwarding to be disabled, publishes neither TreeAnnounce
+nor Bloom filters, negotiates the existing ClientSupport/ClientOnly role,
+and sends only the intended endpoint coordinates in lookups and FSP frames.
+It selects `reply_learned` routing locally; multi-hop transit must also support
+ReplyLearned routing. A legacy or Tree-only route never triggers a fallback
+to topology publication. Ordinary nodes keep their existing routing behavior.
+Intended sender and recipient identities remain in routing envelopes; applications
+must distinguish explicit communication from idle peer discovery.
+
+An anonymous reader can set `blockedPeerPubkeys` before starting and call
+`await node.setBlockedPeerPubkeys(keys)` when its own/sibling identities change.
+Keys may be x-only or compressed hex. The deny set changes synchronously;
+the returned promise acknowledges cancellation and closure of old connections
+before permitted peers reconnect. The same node, service registrations and
+listeners remain usable. Identical sets do nothing, closure failures reject,
+and stopping the node during an update prevents it from restarting. Admission
+applies to authenticated identities on every carrier, including URL-based
+WebSocket bootstrap, and to routed end-to-end sessions.
+
 See [`docs/architecture.md`](docs/architecture.md), [`docs/rust-compat.md`](docs/rust-compat.md), [`docs/signal-protocol.md`](docs/signal-protocol.md), [`docs/hashtree-integration.md`](docs/hashtree-integration.md).
 
 ## License
