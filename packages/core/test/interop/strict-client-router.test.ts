@@ -1,53 +1,20 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createSocket, type Socket } from "node:dgram";
+import { createSocket } from "node:dgram";
 import { once } from "node:events";
 import { createReadStream, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { FipsNode, identityFromSecretKey, npubToHex, toHex, type FipsIdentity, type Transport, type TransportAddress, type TransportContext } from "../../src/index.js";
+import { FipsNode, identityFromSecretKey, npubToHex, toHex, type FipsIdentity } from "../../src/index.js";
+import { LoopbackUdp } from "./loopbackUdp.js";
 
 // Explicit, prebuilt fixtures only: this test never invokes Cargo or downloads binaries.
 // Each path must be paired with its independently verified SHA-256.
 const fixtures: Array<{ version: string; path: string; sha256: string }> = JSON.parse(process.env.FIPS_COMPAT_ROUTERS ?? "[]");
 const cases = fixtures.map(fixture => [fixture.version, fixture] as const);
 const enabled = fixtures.length ? it : it.skip;
-
-class LoopbackUdp implements Transport {
-  readonly type = "udp-fixture";
-  readonly mtu = 1400;
-  readonly packets = { sent: 0, received: 0, ignored: 0 };
-  private socket?: Socket;
-  constructor(readonly key: string, readonly port: number) {}
-  async start(context: TransportContext) {
-    const socket = createSocket("udp4");
-    this.socket = socket;
-    socket.on("message", (data, remote) => {
-      if (this.socket !== socket || remote.address !== "127.0.0.1" || remote.port !== this.port) { this.packets.ignored++; return; }
-      this.packets.received++;
-      context.onPacket({ transportType: this.type, remoteAddr: { transport: this.type, addr: this.key },
-        data: new Uint8Array(data), receivedAtMs: Date.now() });
-    });
-    socket.bind(0, "127.0.0.1");
-    await once(socket, "listening");
-  }
-  async stop() {
-    const socket = this.socket;
-    this.socket = undefined;
-    if (socket) await new Promise<void>(resolve => socket.close(() => resolve()));
-  }
-  async connect(address: TransportAddress) {
-    if (address.addr !== this.key || !this.socket) throw new Error("unknown fixture peer");
-  }
-  async send(address: TransportAddress, packet: Uint8Array) {
-    await this.connect(address);
-    this.packets.sent++;
-    await new Promise<void>((resolve, reject) => this.socket!.send(packet, this.port, "127.0.0.1",
-      error => error ? reject(error) : resolve()));
-  }
-}
 
 async function startRouter(fixture: typeof fixtures[number], identity: FipsIdentity,
   peer?: { npub: string; port: number }) {

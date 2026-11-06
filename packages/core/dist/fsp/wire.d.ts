@@ -34,6 +34,8 @@ export declare const FSP_MSG_DATA = 16;
 export declare const FSP_MSG_RECEIVER_REPORT = 18;
 export declare const FSP_MSG_COORDS_WARMUP = 20;
 export declare const FSP_MSG_ENDPOINT_DATA = 21;
+export declare const FSP_MSG_TRAVERSAL_OFFER = 22;
+export declare const FSP_MSG_TRAVERSAL_ANSWER = 23;
 export interface FspCommonPrefix {
     version: number;
     phase: number;

@@ -1,0 +1,46 @@
+import { toHex } from "../codec/hex.js";
+
+const SIGNAL_TTL_MS = 120_000;
+const CLOCK_SKEW_MS = 60_000;
+const decoder = new TextDecoder("utf-8", { fatal: true });
+const encoder = new TextEncoder();
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const timestamp = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+const identifier = (value: unknown): value is string => typeof value === "string" && /^[!-~]{1,128}$/.test(value);
+const address = (value: unknown): boolean => record(value)
+  && typeof value.protocol === "string" && typeof value.ip === "string"
+  && Number.isInteger(value.port) && (value.port as number) >= 0 && (value.port as number) <= 65535;
+
+/** Called only for an admitted, authenticated session destination. */
+export function unsupportedTraversalAnswer(
+  body: Uint8Array,
+  now: number,
+  actualSenderNpub: string,
+  localNpub: string,
+  random: (length: number) => Uint8Array,
+): Uint8Array | undefined {
+  if (body.length > 4096 || !timestamp(now) || !timestamp(now + SIGNAL_TTL_MS)) return;
+  let offer: unknown;
+  try { offer = JSON.parse(decoder.decode(body)); } catch { return; }
+  if (!record(offer) || offer.type !== "offer"
+    || !identifier(offer.sessionId) || !identifier(offer.nonce)
+    || !timestamp(offer.issuedAt) || !timestamp(offer.expiresAt) || offer.expiresAt <= offer.issuedAt
+    || offer.senderNpub !== actualSenderNpub || offer.recipientNpub !== localNpub
+    || !Array.isArray(offer.localAddresses) || !offer.localAddresses.every(address)
+    || (offer.reflexiveAddress != null && !address(offer.reflexiveAddress))
+    || (offer.stunServer != null && typeof offer.stunServer !== "string")) return;
+
+  // Match native freshness: the sender can shorten, but cannot extend, our TTL.
+  // JS rejects timestamps outside its exact integer range instead of rounding u64.
+  const expiry = Math.min(offer.expiresAt, offer.issuedAt + SIGNAL_TTL_MS);
+  if (offer.issuedAt - now > CLOCK_SKEW_MS || expiry + CLOCK_SKEW_MS <= now
+    || now - offer.issuedAt > SIGNAL_TTL_MS + CLOCK_SKEW_MS) return;
+
+  return encoder.encode(JSON.stringify({
+    type: "answer", sessionId: offer.sessionId, issuedAt: now, expiresAt: now + SIGNAL_TTL_MS,
+    nonce: `${now}-${toHex(random(8))}`, senderNpub: localNpub, recipientNpub: actualSenderNpub,
+    inReplyTo: offer.nonce, accepted: false, reflexiveAddress: null, localAddresses: [],
+    stunServer: null, punch: null, reason: "traversal-unsupported", offerReceivedAt: now,
+  }));
+}

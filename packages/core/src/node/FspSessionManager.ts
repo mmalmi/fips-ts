@@ -10,6 +10,7 @@ import {
 } from "../fsp/directTransport.js";
 import { FspSession } from "../fsp/session.js";
 import { FspReceiverReports } from "../fsp/receiverReports.js";
+import { unsupportedTraversalAnswer } from "../fsp/unsupportedTraversal.js";
 import {
   decodeFspEstablished,
   encodeDataPacket,
@@ -19,10 +20,13 @@ import {
   FSP_MSG_ENDPOINT_DATA,
   FSP_MSG_RECEIVER_REPORT,
   FSP_MSG_COORDS_WARMUP,
+  FSP_MSG_TRAVERSAL_OFFER,
+  FSP_MSG_TRAVERSAL_ANSWER,
   FSP_PHASE_ESTABLISHED,
   peekFspPhase,
 } from "../fsp/wire.js";
 import type { FipsIdentity } from "../identity/index.js";
+import { encodeNpub } from "../identity/nip19.js";
 import {
   compareNodeAddr,
   deriveNodeAddr,
@@ -350,6 +354,15 @@ export class FspSessionManager {
       session.receiverReports ??= new FspReceiverReports();
       session.receiverReports.record(received, performance.now(), receiveFsp === session.fsp);
     });
+    if (result.msgType === FSP_MSG_TRAVERSAL_OFFER && result.payload && receiveFsp.remotePubkey) {
+      this.cfg.assertPeerAllowed?.(receiveFsp.remotePubkey);
+      const answer = unsupportedTraversalAnswer(
+        result.payload, Date.now(), encodeNpub(receiveFsp.remotePubkey.subarray(1)),
+        encodeNpub(this.cfg.identity.xOnlyPubkey), length => this.cfg.random.bytes(length),
+      );
+      if (answer) await this.sendSessionMessage(session, FSP_MSG_TRAVERSAL_ANSWER, answer);
+      return;
+    }
     const srcHex = session.remotePubkeyHex ?? srcNodeHex;
     if (result.msgType === FSP_MSG_DATA && result.data) {
       await this.deliverDatagram(srcHex, result.data);

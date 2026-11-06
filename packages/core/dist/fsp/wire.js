@@ -34,6 +34,8 @@ export const FSP_MSG_DATA = 0x10; // DataPacket: src_port + dst_port + payload
 export const FSP_MSG_RECEIVER_REPORT = 0x12;
 export const FSP_MSG_COORDS_WARMUP = 0x14;
 export const FSP_MSG_ENDPOINT_DATA = 0x15; // App endpoint payload without service ports
+export const FSP_MSG_TRAVERSAL_OFFER = 0x16;
+export const FSP_MSG_TRAVERSAL_ANSWER = 0x17;
 export function encodeFspCommonPrefix(p) {
     if (p.version < 0 || p.version > 0xf)
         throw new RangeError("version 4-bit");
