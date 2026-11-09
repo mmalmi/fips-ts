@@ -19,6 +19,7 @@ export declare class WebRtcTransport implements Transport {
     private readonly pendingAutoConnects;
     private readonly knownSessionIds;
     private readonly seenSessionIds;
+    private readonly signalCache;
     private readonly advertCache;
     private readonly peersWithTraffic;
     private readonly advertWaiters;
@@ -48,6 +49,7 @@ export declare class WebRtcTransport implements Transport {
     handleSessionEstablished(remotePubkeyHex: string, restarted?: boolean): void;
     private startInitiatorHandshake;
     private handleIncomingSignal;
+    private processIncomingOffer;
     private handleIncomingOffer;
     private handleInboundConnectionState;
     private scheduleAutoReconnect;

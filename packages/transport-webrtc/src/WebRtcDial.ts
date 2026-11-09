@@ -7,6 +7,8 @@ export interface PendingDial {
   phase: string;
   rejectedOfferId?: string;
   retryOfferAfterRestart?: boolean;
+  offerRetryTimer?: ReturnType<typeof setTimeout>;
+  offerRetryDelayMs?: number;
   pc: RTCPeerConnection;
   dataChannel: RTCDataChannel;
   resolve: () => void;
@@ -24,6 +26,7 @@ export function isRetryOfRejectedOffer(dial: PendingDial, negotiationId: string)
 export async function sendPendingOffer(
   dial: PendingDial, pending: ReadonlyMap<string, PendingDial>, send: SendSignal, logger: Logger,
 ): Promise<void> {
+  cancelOfferRetry(dial);
   const signal = createWebRtcSignal(dial.sessionId, "offer", { sdp: dial.pc.localDescription!.sdp });
   dial.phase = "sending-offer";
   do {
@@ -34,6 +37,35 @@ export async function sendPendingOffer(
   // A fast answer can arrive before the signaling write has settled.
   if (dial.phase === "sending-offer") dial.phase = "awaiting-answer";
   logger.debug("webrtc offer sent", dial.remotePubkeyHex, dial.sessionId);
+  scheduleOfferRetry(dial, pending, send, logger);
+}
+
+export function cancelOfferRetry(dial: PendingDial): void {
+  if (dial.offerRetryTimer) clearTimeout(dial.offerRetryTimer);
+  dial.offerRetryTimer = undefined;
+}
+
+function scheduleOfferRetry(
+  dial: PendingDial, pending: ReadonlyMap<string, PendingDial>, send: SendSignal, logger: Logger,
+): void {
+  cancelOfferRetry(dial);
+  if (pending.get(dial.sessionId) !== dial || dial.phase !== "awaiting-answer") return;
+  // FSP datagrams can be lost at a transit while the remote browser reconnects.
+  // Retry the same negotiation, bounded by its existing dial deadline. There
+  // is never a retry in flight alongside another offer send.
+  const delay = dial.offerRetryDelayMs ?? 1_000;
+  dial.offerRetryDelayMs = Math.min(delay * 2, 8_000);
+  dial.offerRetryTimer = setTimeout(() => {
+    dial.offerRetryTimer = undefined;
+    if (pending.get(dial.sessionId) !== dial || dial.phase !== "awaiting-answer") return;
+    void sendPendingOffer(dial, pending, send, logger).catch(error => {
+      if (pending.get(dial.sessionId) === dial && dial.phase === "sending-offer") {
+        dial.phase = "awaiting-answer";
+      }
+      logger.debug("WebRTC offer retry failed", error);
+      scheduleOfferRetry(dial, pending, send, logger);
+    });
+  }, delay);
 }
 
 export function retryOffersAfterRestart(
@@ -53,6 +85,7 @@ export function retryOffersAfterRestart(
           dial.phase = "awaiting-answer";
         }
         logger.debug("recovered WebRTC offer failed", error);
+        scheduleOfferRetry(dial, pending, send, logger);
       });
     }
   }

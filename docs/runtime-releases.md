@@ -6,7 +6,42 @@ package's core archive URL in the same release cohort. The workspace overrides
 resolve core locally during qualification; the published packages retain their
 versioned public core URL.
 
-## Qualified environment
+## Runtime 60 qualification
+
+The runtime-v0.0.60 cohort contains core 0.0.55, browser 0.0.20,
+Ethernet 0.0.37, Memory 0.0.15, WebRTC 0.0.59 and WebSocket 0.0.13.
+Its WebRTC change retries an unanswered offer within the existing dial deadline
+and handles identical authenticated offers without abandoning a live answer.
+The retry and response caches have bounded lifetimes, sizes and replay rates.
+
+Qualify this cohort on macOS ARM64 with Node.js 22.23.4, pnpm 9.15.4,
+TypeScript 5.9.3 and Vitest 3.2.7. The Node executable SHA-256 is
+`2cc28a1880d0774616959f2210ee739bffa6ac695c887e8988a496a21271f6c0`.
+Authenticate the pnpm distribution against the root `packageManager` SHA-512
+before extracting or executing it. Reuse the locked dependency tree without
+installing dependencies or changing the lockfile.
+
+Run the WebRTC unit suite with one worker and no file parallelism, then build
+the changed package with the locked compiler:
+
+```sh
+node node_modules/vitest/vitest.mjs run --root packages/transport-webrtc --maxWorkers=1 --minWorkers=1 --no-file-parallelism --pool=threads
+node node_modules/typescript/bin/tsc -b packages/transport-webrtc
+```
+
+Retain and verify unchanged generated files from the preceding commit for the
+other five packages. Pack and inspect all six archives as described below.
+This macOS qualification does not establish byte equivalence with the prior
+Linux build. Serial commands require fresh capacity admission and bounded
+deadlines; recorded resource observations are not universal peak guarantees.
+
+The new reload tests inject a temporary seed-forwarding gap in memory. They
+cover both peer roles, a successfully written but dropped offer, and retry
+delivery after the gap. These tests do not replace consumer browser acceptance
+against the published cohort. Reuse the previously accepted core traversal and
+native/JS loopback proofs because their executable inputs are unchanged.
+
+## Runtime 59 qualified environment
 
 The runtime-v0.0.59 package qualification used Linux x86-64, Node.js 22.23.4,
 pnpm 9.15.4, TypeScript 5.9.3 and Vitest 3.2.7. The preinstalled Node executable

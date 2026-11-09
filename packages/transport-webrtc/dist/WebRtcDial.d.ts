@@ -6,6 +6,8 @@ export interface PendingDial {
     phase: string;
     rejectedOfferId?: string;
     retryOfferAfterRestart?: boolean;
+    offerRetryTimer?: ReturnType<typeof setTimeout>;
+    offerRetryDelayMs?: number;
     pc: RTCPeerConnection;
     dataChannel: RTCDataChannel;
     resolve: () => void;
@@ -15,6 +17,7 @@ export interface PendingDial {
 type SendSignal = (remote: string, signal: WebRtcSignal) => Promise<void>;
 export declare function isRetryOfRejectedOffer(dial: PendingDial, negotiationId: string): boolean;
 export declare function sendPendingOffer(dial: PendingDial, pending: ReadonlyMap<string, PendingDial>, send: SendSignal, logger: Logger): Promise<void>;
+export declare function cancelOfferRetry(dial: PendingDial): void;
 export declare function retryOffersAfterRestart(remote: string, pending: ReadonlyMap<string, PendingDial>, send: SendSignal, logger: Logger): void;
 export {};
 //# sourceMappingURL=WebRtcDial.d.ts.map

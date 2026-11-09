@@ -289,7 +289,8 @@ describe('WebRTC simultaneous negotiation ownership', () => {
     const first = incomingOffer('first-crossed-offer')
     await transport.handleLinkNegotiation(remote.addr, first)
     expect(sent.map(signal => signal.kind)).toEqual(['offer', 'reject'])
-    await expect(transport.handleLinkNegotiation(remote.addr, first)).rejects.toThrow()
+    await transport.handleLinkNegotiation(remote.addr, first)
+    expect(sent.map(signal => signal.kind)).toEqual(['offer', 'reject'])
     expect(FakePeerConnection.instances).toHaveLength(1)
 
     const replacement = await incomingWins(transport, 'fresh-peer-retry')
@@ -660,5 +661,207 @@ describe('WebRTC negotiation resource cleanup', () => {
     expect(pc.connectionState).toBe('closed')
     expect(pc.channel.readyState).toBe('closed')
     expect(states).not.toContain('connected')
+  })
+})
+
+
+describe('WebRTC unanswered negotiation retries', () => {
+  it.each(['carrier failure', 'no route to peer'])('reprocesses the identical offer after an initial answer %s', async failure => {
+    let fail = true
+    const { transport, sent } = await fixture(undefined, 2, 1, {}, async signal => {
+      if (signal.kind === 'answer' && fail) throw new Error(failure)
+    })
+    const offer = incomingOffer('failed-answer')
+    const failed = transport.handleLinkNegotiation(remote.addr, offer).catch(error => error.message)
+    await vi.advanceTimersByTimeAsync(failure.startsWith('no route') ? 7_000 : 0)
+    expect(await failed).toBe(failure)
+    const attempts = sent.length
+    expect(FakePeerConnection.instances).toHaveLength(2)
+    expect(FakePeerConnection.instances[1]!.connectionState).toBe('closed')
+    fail = false
+    await transport.handleLinkNegotiation(remote.addr, offer)
+    expect(sent).toHaveLength(attempts)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await transport.handleLinkNegotiation(remote.addr, offer)
+    expect(sent).toHaveLength(attempts + 1)
+    expect(sent.at(-1)!.kind).toBe('answer')
+    expect(FakePeerConnection.instances).toHaveLength(3)
+    expect(FakePeerConnection.instances[2]!.connectionState).toBe('new')
+  })
+
+  it('retries a failed initial rejection at most once per second', async () => {
+    let fail = true
+    const { transport, sent } = await fixture(undefined, 22, 1, {}, async signal => {
+      if (signal.kind === 'reject' && fail) throw new Error('rejection write failed')
+    })
+    const offer = incomingOffer('failed-rejection')
+    await expect(transport.handleLinkNegotiation(remote.addr, offer)).rejects.toThrow('rejection write failed')
+    fail = false
+    await transport.handleLinkNegotiation(remote.addr, offer)
+    expect(sent.map(signal => signal.kind)).toEqual(['reject'])
+    await vi.advanceTimersByTimeAsync(1_000)
+    await transport.handleLinkNegotiation(remote.addr, offer)
+    await transport.handleLinkNegotiation(remote.addr, offer)
+    expect(sent.map(signal => signal.kind)).toEqual(['reject', 'reject'])
+    expect(FakePeerConnection.instances).toHaveLength(1)
+  })
+
+  it('keeps a live answer when refused offers saturate the replay cache', async () => {
+    const { transport, sent } = await fixture(undefined, 2, 1, { allowIncomingPeer: async () => false })
+    // The competing dial admits the first offer; subsequent offers are refused.
+    await incomingWins(transport)
+    for (let index = 0; index < 64; index++) {
+      await transport.handleLinkNegotiation(remote.addr, incomingOffer(`refused-${index}`))
+    }
+    expect(sent.filter(signal => signal.kind === 'reject')).toHaveLength(64)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await transport.handleLinkNegotiation(remote.addr, incomingOffer('winning-incoming-offer'))
+    expect(sent.filter(signal => signal.kind === 'answer')).toHaveLength(2)
+    expect(FakePeerConnection.instances).toHaveLength(2)
+    expect(Reflect.get(Reflect.get(transport, 'signalCache'), 'entries').size).toBe(64)
+  })
+
+  it('fails closed before admission when all 64 cache records are in flight', async () => {
+    const gate = deferred<boolean>()
+    const admit = vi.fn(() => gate.promise)
+    const { transport, sent } = await fixture(undefined, 2, 1, { allowIncomingPeer: admit })
+    await transport.close(remote)
+    const pending = Array.from({ length: 64 }, (_, index) =>
+      transport.handleLinkNegotiation(remote.addr, incomingOffer(`pending-${index}`)))
+    await flush()
+    expect(admit).toHaveBeenCalledTimes(64)
+    await transport.handleLinkNegotiation(remote.addr, incomingOffer('pending-0'))
+    await expect(transport.handleLinkNegotiation(remote.addr, incomingOffer('overflow')))
+      .rejects.toThrow('replay cache full')
+    expect(admit).toHaveBeenCalledTimes(64)
+    expect(sent).toEqual([])
+    expect(FakePeerConnection.instances).toHaveLength(1)
+    gate.resolve(false)
+    await Promise.all(pending)
+    await transport.handleLinkNegotiation(remote.addr, incomingOffer('overflow'))
+    expect(admit).toHaveBeenCalledTimes(65)
+    expect(sent).toHaveLength(65)
+    expect(Reflect.get(Reflect.get(transport, 'signalCache'), 'entries').size).toBe(64)
+  })
+
+  it('does not overlap cached response writes or revive retries after stop', async () => {
+    const gate = deferred<void>()
+    let answers = 0
+    const { transport, sent } = await fixture(undefined, 2, 1, {}, async signal => {
+      if (signal.kind === 'answer' && ++answers === 2) await gate.promise
+    })
+    await incomingWins(transport)
+    const offer = incomingOffer('winning-incoming-offer')
+    await vi.advanceTimersByTimeAsync(1_000)
+    const pending = transport.handleLinkNegotiation(remote.addr, offer)
+    await flush()
+    await vi.advanceTimersByTimeAsync(2_000)
+    await transport.handleLinkNegotiation(remote.addr, offer)
+    expect(answers).toBe(2)
+    await transport.stop()
+    gate.resolve()
+    await pending
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(sent).toHaveLength(2)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(Reflect.get(Reflect.get(transport, 'signalCache'), 'entries').size).toBe(0)
+  })
+
+  it('does not replay a cached answer after its PC is closed', async () => {
+    const { transport, sent } = await fixture()
+    const pc = await incomingWins(transport)
+    await transport.close(remote)
+    expect(pc.connectionState).toBe('closed')
+    await vi.advanceTimersByTimeAsync(1_000)
+    await transport.handleLinkNegotiation(remote.addr, incomingOffer('winning-incoming-offer'))
+    expect(sent.map(signal => signal.kind)).toEqual(['answer'])
+    expect(FakePeerConnection.instances).toHaveLength(2)
+  })
+
+  it.each(['answer', 'stop'])('does not reschedule an in-flight offer retry after %s', async outcome => {
+    const gate = deferred<void>()
+    let offers = 0
+    const { transport, sent } = await fixture(undefined, 2, 1, {}, async signal => {
+      if (signal.kind === 'offer' && ++offers === 2) await gate.promise
+    })
+    FakePeerConnection.instances[0]!.finishGathering()
+    await flush()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(offers).toBe(2)
+    if (outcome === 'answer') {
+      await transport.handleLinkNegotiation(remote.addr,
+        { ...sent[0]!, kind: 'answer', payload: { sdp: 'answer-sdp' } })
+    } else await transport.stop()
+    gate.resolve()
+    await flush()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(offers).toBe(2)
+    await transport.stop()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('bounds offer retries by the unchanged dial deadline and stops every retry timer', async () => {
+    const { transport, sent, result } = await fixture()
+    FakePeerConnection.instances[0]!.finishGathering()
+    await flush()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(await result).toContain('WebRTC connect timeout')
+    expect(sent.map(signal => signal.kind)).toEqual(Array(6).fill('offer'))
+    expect(new Set(sent.map(signal => signal.negotiationId)).size).toBe(1)
+    expect(new Set(sent.map(signal => signal.payload.sdp)).size).toBe(1)
+    await transport.stop()
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(sent).toHaveLength(6)
+  })
+
+  it.each(['connected', 'stop'])('cancels retries on %s and ignores identical duplicate answers', async outcome => {
+    const { transport, sent, result } = await fixture()
+    const pc = FakePeerConnection.instances[0]!
+    pc.finishGathering()
+    await flush()
+    if (outcome === 'connected') {
+      const answer = { ...sent[0]!, kind: 'answer' as const, payload: { sdp: 'answer-sdp' } }
+      const apply = vi.spyOn(pc, 'setRemoteDescription')
+      const stranger = await identityFromSecretKey(new Uint8Array(32).fill(3))
+      await expect(transport.handleLinkNegotiation(toHex(stranger.publicKey), answer))
+        .rejects.toThrow('identity mismatch')
+      await transport.handleLinkNegotiation(remote.addr, answer)
+      await transport.handleLinkNegotiation(remote.addr, answer)
+      pc.connectChannel()
+      await flush()
+      expect(await result).toBe('connected')
+      await transport.handleLinkNegotiation(remote.addr, answer)
+      expect(apply).toHaveBeenCalledTimes(1)
+    } else {
+      await transport.stop()
+      expect(await result).toBe('transport stopped')
+    }
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(sent).toHaveLength(1)
+    await transport.stop()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('replays a lost answer without allocating a second incoming PC or accepting changed SDP', async () => {
+    const { transport, sent, states } = await fixture()
+    await incomingWins(transport)
+    const offer = incomingOffer('winning-incoming-offer')
+    await vi.advanceTimersByTimeAsync(1_000)
+    await transport.handleLinkNegotiation(remote.addr, offer)
+    await transport.handleLinkNegotiation(remote.addr, offer)
+    expect(sent.map(signal => signal.kind)).toEqual(['answer', 'answer'])
+    expect(FakePeerConnection.instances).toHaveLength(2)
+    expect(states).toEqual(['connected'])
+    await expect(transport.handleLinkNegotiation(remote.addr,
+      { ...offer, payload: { sdp: 'different-sdp' } })).rejects.toThrow('duplicate signal')
+    const stranger = await identityFromSecretKey(new Uint8Array(32).fill(3))
+    await expect(transport.handleLinkNegotiation(toHex(stranger.publicKey), offer))
+      .rejects.toThrow('duplicate signal')
+    await vi.advanceTimersByTimeAsync(60_001)
+    await expect(transport.handleLinkNegotiation(remote.addr, incomingOffer('winning-incoming-offer')))
+      .rejects.toThrow('duplicate signal')
+    await transport.stop()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

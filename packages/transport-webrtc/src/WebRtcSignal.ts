@@ -118,3 +118,60 @@ function validateSignalSession(
     throw new SignalValidationError("duplicate signal in replay window");
   }
 }
+
+
+export interface CachedSignal {
+  remote: string;
+  sdp: string;
+  expiresAtMs: number;
+  inFlight: boolean;
+  retryable: boolean;
+  lastAttemptAtMs: number;
+  response?: WebRtcSignal;
+  responseIsLive?: () => boolean;
+}
+
+/** Bounded idempotency for authenticated retransmissions of the same SDP. */
+export class WebRtcSignalCache {
+  private readonly entries = new Map<string, CachedSignal>();
+
+  duplicate(signal: WebRtcSignal, remote: string): CachedSignal | undefined {
+    this.prune();
+    const cached = this.entries.get(`${signal.negotiationId}:${signal.kind}`);
+    return cached?.remote === remote && cached.sdp === signal.payload?.sdp ? cached : undefined;
+  }
+
+  remember(signal: WebRtcSignal, remote: string): CachedSignal | undefined {
+    if (signal.kind !== "offer" && signal.kind !== "answer") return;
+    this.prune();
+    if (this.entries.size >= 64) {
+      const evictable = [...this.entries].find(([, value]) =>
+        !value.inFlight && !value.responseIsLive?.());
+      // Refused offers must not evict a response still needed by a live PC.
+      if (!evictable) return;
+      this.entries.delete(evictable[0]);
+    }
+    const cached: CachedSignal = {
+      remote, sdp: signal.payload.sdp!, expiresAtMs: Math.min(signal.expiresAtMs, Date.now() + 60_000),
+      inFlight: signal.kind === "offer", retryable: false, lastAttemptAtMs: Date.now(),
+    };
+    this.entries.set(`${signal.negotiationId}:${signal.kind}`, cached);
+    return cached;
+  }
+
+  rememberResponse(cached: CachedSignal, response: WebRtcSignal, isLive?: () => boolean): void {
+    // A stopped generation or expired entry cannot replace a newer record.
+    if (this.entries.get(`${response.negotiationId}:offer`) !== cached) return;
+    cached.response = response;
+    cached.responseIsLive = isLive;
+    cached.retryable = false;
+  }
+
+  clear(): void { this.entries.clear(); }
+
+  private prune(): void {
+    for (const [key, value] of this.entries) {
+      if (value.expiresAtMs < Date.now()) this.entries.delete(key);
+    }
+  }
+}

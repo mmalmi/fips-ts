@@ -1,7 +1,8 @@
 import { expect, it, vi } from 'vitest'
 import {
-  FipsNode, FSP_MSG_KEEPALIVE, identityFromSecretKey, nodeAddrToHex, toHex,
-  type FipsIdentity, type FspSession, type Transport, type TransportAddress, type TransportContext,
+  FipsNode, FSP_MSG_KEEPALIVE, FSP_PHASE_ESTABLISHED, identityFromSecretKey, nodeAddrToHex, toHex,
+  type FipsIdentity, type FspSession, type LinkNegotiationMessage, type SessionDatagram,
+  type Transport, type TransportAddress, type TransportContext,
 } from '@fips/core'
 import { WebRtcTransport, type NostrEvent, type NostrFilter, type NostrRelayClient } from '../src/index.js'
 import { PairedPeerConnection } from './WebRtcSessionFixture.js'
@@ -70,7 +71,9 @@ it.each([
   { restarted: 1, resolutionDelay: 5, departingOrigin: false },
   { restarted: 0, resolutionDelay: 0, departingOrigin: true },
   { restarted: 1, resolutionDelay: 0, departingOrigin: true },
-])('reconnects sorted identity $restarted after reload (identity lookup delay $resolutionDelay ms, departing origin $departingOrigin)', async ({ restarted, resolutionDelay, departingOrigin }) => {
+  { restarted: 0, resolutionDelay: 0, departingOrigin: false, seedReconnectDelay: 2_000 },
+  { restarted: 1, resolutionDelay: 0, departingOrigin: false, seedReconnectDelay: 2_000 },
+])('reconnects sorted identity $restarted after reload (identity lookup delay $resolutionDelay ms, departing origin $departingOrigin, seed gap $seedReconnectDelay)', async ({ restarted, resolutionDelay, departingOrigin, seedReconnectDelay = 0 }) => {
   vi.useFakeTimers()
   PairedPeerConnection.instances = []
   const identities = await Promise.all([1, 2, 3].map(async scalar => {
@@ -86,12 +89,41 @@ it.each([
   const active: FipsNode[] = []
   const errors: unknown[] = []
   const recoveryPhases: string[] = []
+  let gapArmed = false
+  let gapUntil: number | undefined
+  const offerWrites: { from: string; to: string; signal: LinkNegotiationMessage; at: number; succeeded: boolean }[] = []
+  const offerReads: { from: string; to: string; signal: LinkNegotiationMessage; at: number }[] = []
+  const seedDrops: { from: string; to: string; at: number }[] = []
   const makePeer = (identity: FipsIdentity) => {
     const transport = new WebRtcTransport({
       rtcPeerConnection: PairedPeerConnection as unknown as typeof RTCPeerConnection,
       relays: [relay.url], relayClients: [relay as unknown as NostrRelayClient],
       autoConnect: true, advertiseOnNostr: true, acceptConnections: true, stunServers: [],
     })
+    if (seedReconnectDelay) {
+      const start = transport.start.bind(transport)
+      vi.spyOn(transport, 'start').mockImplementation(context => start({
+        ...context,
+        sendLinkNegotiation: async (to, signal) => {
+          if (!gapArmed || signal.kind !== 'offer') {
+            await context.sendLinkNegotiation!(to, signal)
+            return
+          }
+          gapUntil ??= Date.now() + seedReconnectDelay
+          const write = { from: toHex(identity.publicKey), to, signal, at: Date.now(), succeeded: false }
+          offerWrites.push(write)
+          await context.sendLinkNegotiation!(to, signal)
+          write.succeeded = true
+        },
+      }))
+      const receive = transport.handleLinkNegotiation.bind(transport)
+      vi.spyOn(transport, 'handleLinkNegotiation').mockImplementation(async (from, signal) => {
+        if (gapArmed && signal.kind === 'offer') {
+          offerReads.push({ from, to: toHex(identity.publicKey), signal, at: Date.now() })
+        }
+        await receive(from, signal)
+      })
+    }
     const node = new FipsNode({ identity, transports: [new SeedCarrier(network), transport],
       forwarding: !departingOrigin, routingMode: 'reply_learned' })
     node.on('error', event => errors.push(event))
@@ -110,6 +142,27 @@ it.each([
   const seed = new FipsNode({ identity: seedIdentity, transports: [new SeedCarrier(network)],
     forwarding: true, routingMode: 'reply_learned' })
   active.push(seed)
+  const seedErrors: unknown[] = []
+  seed.on('error', event => seedErrors.push(event))
+  if (seedReconnectDelay) {
+    const routing = Reflect.get(seed, 'routing')
+    const forward = routing.sendSessionDatagram.bind(routing)
+    const peerNodes = new Set(identities.map(identity => nodeAddrToHex(identity.nodeAddr)))
+    // Inject a missing seed forwarding edge for two seconds in either reload
+    // role. Handshake frames still pass, so an FSP write can succeed while its
+    // encrypted offer is lost at the transit, independent of who restarted.
+    routing.sendSessionDatagram = async (datagram: SessionDatagram, previousHop?: unknown) => {
+      const from = nodeAddrToHex(datagram.srcAddr)
+      const to = nodeAddrToHex(datagram.destAddr)
+      if (previousHop && gapUntil !== undefined && Date.now() < gapUntil
+        && peerNodes.has(from) && peerNodes.has(to)
+        && (datagram.payload[0]! & 0x0f) === FSP_PHASE_ESTABLISHED) {
+        seedDrops.push({ from, to, at: Date.now() })
+        throw new Error(`no route to ${to}`)
+      }
+      await forward(datagram, previousHop)
+    }
+  }
   const origin = originIdentity ? makePeer(originIdentity) : undefined
   const peers = identities.map(makePeer)
   const connectSeed = (node: FipsNode) => node.connect({ transport: 'websocket', addr: toHex(seedIdentity.publicKey) })
@@ -147,6 +200,7 @@ it.each([
         return result
       })
     }
+    gapArmed = seedReconnectDelay > 0
     await peers[restarted]!.node.start()
     await connectSeed(peers[restarted]!.node)
     if (origin) {
@@ -167,8 +221,32 @@ it.each([
     }
     expect(peers.every(peer => hasRtc(peer.node)), 'both peers must reconnect without application traffic').toBe(true)
     expect(Date.now() - start).toBeLessThan(10_000)
+    if (seedReconnectDelay) {
+      const first = offerWrites[0]!
+      expect(first, 'a recovery offer must actually be written').toBeDefined()
+      expect(first.succeeded).toBe(true)
+      const sender = identities.find(identity => toHex(identity.publicKey).slice(2) === first.from.slice(2))!
+      const target = identities.find(identity => toHex(identity.publicKey).slice(2) === first.to.slice(2))!
+      expect(seedDrops.some(drop => drop.from === nodeAddrToHex(sender.nodeAddr)
+        && drop.to === nodeAddrToHex(target.nodeAddr) && drop.at >= first.at)).toBe(true)
+      expect(seedErrors.some(event => String((event as { err: Error }).err).includes('no route to'))).toBe(true)
+      expect(offerReads.filter(read => read.signal.negotiationId === first.signal.negotiationId
+        && read.at < gapUntil!)).toEqual([])
+      expect(offerWrites.some(write => write !== first && write.succeeded && write.at >= gapUntil!
+        && write.signal.negotiationId === first.signal.negotiationId
+        && JSON.stringify(write.signal.payload) === JSON.stringify(first.signal.payload))).toBe(true)
+      expect(offerReads.some(read => read.at >= gapUntil!
+        && read.signal.negotiationId === first.signal.negotiationId
+        && JSON.stringify(read.signal.payload) === JSON.stringify(first.signal.payload))).toBe(true)
+    }
     expect(oldKeys.state).toBe('closed')
-    if (restarted === 1 && !origin) expect(recoveryPhases).toContain(resolutionDelay ? 'awaiting-answer' : 'sending-offer')
+    if (restarted === 1 && !origin) {
+      if (seedReconnectDelay) {
+        expect(recoveryPhases.some(phase => ['sending-offer', 'awaiting-answer'].includes(phase))).toBe(true)
+      } else {
+        expect(recoveryPhases).toContain(resolutionDelay ? 'awaiting-answer' : 'sending-offer')
+      }
+    }
     expect(session(peers[survivor]!.node, identities[restarted]!)!.fsp).not.toBe(oldKeys)
     await send(0, 20)
     await send(1, 21)
