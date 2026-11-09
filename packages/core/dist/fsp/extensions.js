@@ -1,5 +1,11 @@
 import { LINK_NEGOTIATION_SERVICE_PORT } from "../linkNegotiation.js";
 import { decodeExtensionCapabilities, encodeExtensionCapabilities, FSP_EXTENSION_DIRECT, hasExtensionMagic, } from "../protocol/extensions.js";
+/** Exact capabilities are control traffic, even when they contain unknown bits. */
+export function decodeFspExtensionCapabilities(data) {
+    return data.srcPort === LINK_NEGOTIATION_SERVICE_PORT
+        && data.dstPort === LINK_NEGOTIATION_SERVICE_PORT
+        ? decodeExtensionCapabilities(data.payload) : undefined;
+}
 /** Capabilities belong to the authenticated process, not a single Noise key epoch. */
 export class FspExtensions {
     requested = false;
@@ -26,8 +32,7 @@ export class FspExtensions {
             return false;
         // Port 257 also carries JSON WebRTC signaling. Only object-shaped JSON goes
         // to that decoder; truncated/corrupted binary extensions must never do so.
-        const message = data.srcPort === LINK_NEGOTIATION_SERVICE_PORT
-            ? decodeExtensionCapabilities(data.payload) : undefined;
+        const message = decodeFspExtensionCapabilities(data);
         if (!message)
             return true;
         if (message.kind === 1) {

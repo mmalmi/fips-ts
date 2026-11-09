@@ -2,7 +2,7 @@ import { bytesEqual, fromHex, toHex } from "../codec/hex.js";
 import { decodeLinkNegotiationMessage, encodeLinkNegotiationMessage, LINK_NEGOTIATION_SERVICE_PORT, } from "../linkNegotiation.js";
 import { segmentDirectFspTransportRecord, } from "../fsp/directTransport.js";
 import { FspSession } from "../fsp/session.js";
-import { FspExtensions } from "../fsp/extensions.js";
+import { decodeFspExtensionCapabilities, FspExtensions } from "../fsp/extensions.js";
 import { FspReceiverReports } from "../fsp/receiverReports.js";
 import { unsupportedTraversalAnswer } from "../fsp/unsupportedTraversal.js";
 import { decodeFspEstablished, encodeDataPacket, FSP_FLAG_DIRECT_TRANSPORT, FSP_FLAG_K, FSP_MSG_DATA, FSP_MSG_ENDPOINT_DATA, FSP_MSG_RECEIVER_REPORT, FSP_MSG_COORDS_WARMUP, FSP_MSG_TRAVERSAL_OFFER, FSP_MSG_TRAVERSAL_ANSWER, FSP_PHASE_ESTABLISHED, peekFspPhase, } from "../fsp/wire.js";
@@ -84,37 +84,41 @@ export class FspSessionManager {
     }
     async sendDatagram(args) {
         const session = await this.ensureSession(args.dst);
-        await this.sendSessionMessage(session, FSP_MSG_DATA, encodeDataPacket({
+        const data = {
             srcPort: args.srcPort ?? 0,
             dstPort: args.dstPort,
             payload: args.payload,
-        }));
+        };
+        await this.sendSessionMessage(session, FSP_MSG_DATA, encodeDataPacket(data), { routeNeutral: !!decodeFspExtensionCapabilities(data) });
     }
     async sendEndpointData(args) {
         const session = await this.ensureSession(args.dst);
         await this.sendSessionMessage(session, FSP_MSG_ENDPOINT_DATA, args.payload);
     }
-    async sendSessionMessage(session, msgType, payload, forceWrapped = false) {
+    async sendSessionMessage(session, msgType, payload, options = {}) {
         this.cfg.assertNodeAllowed?.(session.remoteNodeAddr);
-        const directPeer = forceWrapped ? undefined : this.directPeerForSession(session);
+        const directPeer = options.forceWrapped ? undefined : this.directPeerForSession(session);
         if (directPeer) {
-            session.routeWarmup = undefined;
+            if (!options.routeNeutral)
+                session.routeWarmup = undefined;
             await this.sendDirectFsp(directPeer, session.fsp.encryptMessage(msgType, payload, FSP_FLAG_DIRECT_TRANSPORT | (session.currentKBit ? FSP_FLAG_K : 0)));
             return;
         }
         await this.cfg.routing.sendFspToward(session.remoteNodeAddr, (nextHop) => {
             // Resolve the actual route before encrypting, including any key cutover while waiting.
             const flags = session.currentKBit ? FSP_FLAG_K : 0;
-            if (session.routeWarmup?.peer !== nextHop)
-                session.routeWarmup = { peer: nextHop, remaining: 5 };
             const frames = [];
-            const destCoords = this.cfg.routing.coordinatesFor(nodeAddrToHex(session.remoteNodeAddr));
-            if (session.routeWarmup.remaining > 0 && destCoords
-                && !bytesEqual(deriveNodeAddr(nextHop.pubkey), session.remoteNodeAddr)) {
-                frames.push(session.fsp.encryptMessage(FSP_MSG_COORDS_WARMUP, new Uint8Array(), flags, {
-                    srcCoords: this.cfg.routing.coords, destCoords,
-                }));
-                session.routeWarmup.remaining--;
+            if (!options.routeNeutral) {
+                if (session.routeWarmup?.peer !== nextHop)
+                    session.routeWarmup = { peer: nextHop, remaining: 5 };
+                const destCoords = this.cfg.routing.coordinatesFor(nodeAddrToHex(session.remoteNodeAddr));
+                if (session.routeWarmup.remaining > 0 && destCoords
+                    && !bytesEqual(deriveNodeAddr(nextHop.pubkey), session.remoteNodeAddr)) {
+                    frames.push(session.fsp.encryptMessage(FSP_MSG_COORDS_WARMUP, new Uint8Array(), flags, {
+                        srcCoords: this.cfg.routing.coords, destCoords,
+                    }));
+                    session.routeWarmup.remaining--;
+                }
             }
             frames.push(session.fsp.encryptMessage(msgType, payload, flags));
             return frames;
@@ -275,13 +279,27 @@ export class FspSessionManager {
                     + ` currentK=${Number(session.currentKBit)}`);
             }
         }
-        const result = receiveFsp.decryptIncoming(fspFrame, (received) => {
+        let authenticated = false;
+        let result;
+        try {
+            result = receiveFsp.decryptIncoming(fspFrame, (received) => {
+                authenticated = true;
+                if (promotePending)
+                    this.promotePendingSession(session, receiveFsp, receivedKBit, srcNodeHex);
+                session.receiverReports ??= new FspReceiverReports();
+                session.receiverReports.record(received, performance.now(), receiveFsp === session.fsp);
+            });
+        }
+        catch (error) {
+            // Preserve prior authenticated-malformed accounting; AEAD/replay failures
+            // never reach the callback and must never reinforce a route.
+            if (authenticated)
+                this.cfg.routing.learnReverseRoute(srcNodeHex, peer);
+            throw error;
+        }
+        if (result.msgType !== FSP_MSG_DATA || !result.data || !decodeFspExtensionCapabilities(result.data)) {
             this.cfg.routing.learnReverseRoute(srcNodeHex, peer);
-            if (promotePending)
-                this.promotePendingSession(session, receiveFsp, receivedKBit, srcNodeHex);
-            session.receiverReports ??= new FspReceiverReports();
-            session.receiverReports.record(received, performance.now(), receiveFsp === session.fsp);
-        });
+        }
         if (result.msgType === FSP_MSG_TRAVERSAL_OFFER && result.payload && receiveFsp.remotePubkey) {
             this.cfg.assertPeerAllowed?.(receiveFsp.remotePubkey);
             const answer = unsupportedTraversalAnswer(result.payload, Date.now(), encodeNpub(receiveFsp.remotePubkey.subarray(1)), encodeNpub(this.cfg.identity.xOnlyPubkey), length => this.cfg.random.bytes(length));
@@ -656,7 +674,7 @@ export class FspSessionManager {
             srcPort: LINK_NEGOTIATION_SERVICE_PORT,
             dstPort: LINK_NEGOTIATION_SERVICE_PORT,
             payload,
-        }), !session.fsp.remoteSupportsDirectFspTransport);
+        }), { forceWrapped: !session.fsp.remoteSupportsDirectFspTransport, routeNeutral: true });
     }
     async sendDirectFsp(peer, fspFrame) {
         const pathMtu = Math.min(peer.transport.mtu, FSP_DEFAULT_PATH_MTU);

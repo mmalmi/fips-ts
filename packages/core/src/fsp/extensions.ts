@@ -7,6 +7,14 @@ import {
 } from "../protocol/extensions.js";
 
 type SendExtension = (payload: Uint8Array) => Promise<void>;
+type ExtensionDatagram = { srcPort: number; dstPort: number; payload: Uint8Array };
+
+/** Exact capabilities are control traffic, even when they contain unknown bits. */
+export function decodeFspExtensionCapabilities(data: ExtensionDatagram) {
+  return data.srcPort === LINK_NEGOTIATION_SERVICE_PORT
+    && data.dstPort === LINK_NEGOTIATION_SERVICE_PORT
+    ? decodeExtensionCapabilities(data.payload) : undefined;
+}
 
 /** Capabilities belong to the authenticated process, not a single Noise key epoch. */
 export class FspExtensions {
@@ -31,7 +39,7 @@ export class FspExtensions {
   }
 
   async receive(
-    data: { srcPort: number; dstPort: number; payload: Uint8Array },
+    data: ExtensionDatagram,
     send: SendExtension,
   ): Promise<boolean> {
     if (data.dstPort !== LINK_NEGOTIATION_SERVICE_PORT) return false;
@@ -39,8 +47,7 @@ export class FspExtensions {
 
     // Port 257 also carries JSON WebRTC signaling. Only object-shaped JSON goes
     // to that decoder; truncated/corrupted binary extensions must never do so.
-    const message = data.srcPort === LINK_NEGOTIATION_SERVICE_PORT
-      ? decodeExtensionCapabilities(data.payload) : undefined;
+    const message = decodeFspExtensionCapabilities(data);
     if (!message) return true;
     if (message.kind === 1) {
       if (!this.responded) this.responseRequired = true;

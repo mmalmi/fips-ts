@@ -21,6 +21,9 @@ Bit 0 advertises direct FSP transport. The first request follows successful
 Msg3 transmission; the first response uses the standard wrapper before direct
 transport is enabled. Existing JSON WebRTC signaling on port 257 remains
 separate. No phase-4 confirmation is introduced.
+Recognized capability controls do not reinforce learned routes or consume
+coordinate-warmup state. Authentication, replay checks, key-epoch proof and
+receiver-byte accounting still apply.
 
 Link capabilities use message type `0xe0` and the same envelope, with bit 1
 advertising client-role support. Kind 3 carries an eight-byte little-endian
