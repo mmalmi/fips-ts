@@ -24,6 +24,7 @@ export declare const LinkMessageType: {
     readonly Heartbeat: 81;
     readonly ClientOnly: 82;
     readonly ClientSupport: 83;
+    readonly Extension: 224;
 };
 export declare function linkMessageTypeFromByte(b: number): number | undefined;
 export declare const DisconnectReason: {

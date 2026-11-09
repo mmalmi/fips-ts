@@ -325,6 +325,11 @@ export class FmpTransportPacketProcessor {
                 return;
             }
             this.removeRestartedPeerPaths(peer.pubkeyHex, peer.link, transport, restartedHandshake);
+            // A fresh process must negotiate again; same-epoch carrier rekeys retain it.
+            peer.clientSupported = peer.clientOnly = undefined;
+            peer.routingRoleSequence = undefined;
+            peer.extensionNamespace = peer.extensionCapabilities = undefined;
+            peer.extensionRequestSent = peer.legacySupportProbes = undefined;
             this.cfg.peers.set(transportAddressKey(peer.remoteAddr), peer);
             this.cfg.logger.info("FMP peer restart detected", peer.pubkeyHex);
         }
@@ -462,8 +467,6 @@ export class FmpTransportPacketProcessor {
             this.pendingResponders.take(peer);
             // Announce again so the new initiator can confirm this authenticated carrier.
             peer.treeAnnounced = peer.filterAnnounced = false;
-            peer.clientSupported = peer.clientOnly = undefined;
-            peer.routingRoleSequence = undefined;
             peer.outboundFilter = undefined;
             if (previous.state === "established") {
                 this.drainAuthenticatedLink(peer, previous);

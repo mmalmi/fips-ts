@@ -27,6 +27,10 @@ export interface AdjacentPeer {
   clientSupported?: boolean;
   clientOnly?: boolean;
   routingRoleSequence?: bigint;
+  extensionNamespace?: "legacy" | "namespaced";
+  extensionCapabilities?: number;
+  extensionRequestSent?: boolean;
+  legacySupportProbes?: number;
   inboundFilter?: BloomFilter;
   inboundFilterSequence?: bigint;
   outboundFilter?: BloomFilter;

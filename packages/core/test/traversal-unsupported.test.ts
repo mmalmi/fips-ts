@@ -44,7 +44,19 @@ async function fixture() {
   const initiator = new FspSession({ identity: sender, remotePubkey: local.publicKey, role: "initiator" });
   const receive = (packet: Uint8Array) => manager.handleFromPeer(peer, sender.nodeAddr, packet);
   await receive(initiator.buildSessionSetup(() => new Uint8Array(), sender.nodeAddr, local.nodeAddr));
+  expect(replies).toHaveLength(1);
   await receive(initiator.handleSessionAck(replies.shift()!, () => new Uint8Array()));
+  // Account for the single authenticated startup control before exercising
+  // traversal silence. Do not filter subsequent output from the reply queue.
+  expect(replies).toHaveLength(1);
+  expect(initiator.decryptIncoming(replies.shift()!)).toEqual({
+    msgType: 0x10,
+    data: {
+      srcPort: 257, dstPort: 257,
+      payload: Uint8Array.of(70, 73, 80, 83, 45, 69, 88, 84, 1, 1, 1, 0),
+    },
+  });
+  expect(replies).toEqual([]);
   const offer = {
     type: "offer", sessionId: "session", issuedAt: NOW, expiresAt: NOW + 120_000,
     nonce: "offer-nonce", senderNpub: encodeNpub(sender.xOnlyPubkey),
@@ -168,6 +180,7 @@ describe("unsupported session traversal", () => {
       const impostor = new FspSession({ identity: f.sender, remotePubkey: f.local.publicKey, role: "initiator" });
       await f.receiveFrom(impostor.buildSessionSetup(() => new Uint8Array(),
         f.relay.nodeAddr, f.local.nodeAddr), f.relay.nodeAddr);
+      expect(f.replies).toHaveLength(1);
       const msg3 = impostor.handleSessionAck(f.replies.shift()!, () => new Uint8Array());
       await expect(f.receiveFrom(msg3, f.relay.nodeAddr)).rejects.toThrow(/authenticated key.*source/);
       await f.receiveFrom(impostor.encryptMessage(0x16, encode(f.offer)), f.relay.nodeAddr);

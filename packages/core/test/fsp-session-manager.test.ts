@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { toHex } from "../src/codec/hex.js";
 import {
+  decodeFspEstablished,
   FSP_FLAG_DIRECT_TRANSPORT,
+  FSP_MSG_DATA,
   FSP_PHASE_ESTABLISHED,
   peekFspPhase,
 } from "../src/fsp/wire.js";
@@ -262,8 +264,18 @@ describe("FspSessionManager", () => {
       await manager.handleFromPeer(peer, remote.nodeAddr, msg3);
       await vi.advanceTimersByTimeAsync(0);
       expect(outgoingDone).toBe(true);
-      const encrypted = sent.find(frame => peekFspPhase(frame) === FSP_PHASE_ESTABLISHED)!;
-      expect(initiator.decryptIncoming(encrypted).data?.payload).toEqual(payload);
+      expect(sent.map(peekFspPhase)).toEqual([2, FSP_PHASE_ESTABLISHED, FSP_PHASE_ESTABLISHED]);
+      expect(decodeFspEstablished(sent[1]!)).toMatchObject({ flags: 0, counter: 0n });
+      const control = initiator.decryptIncoming(sent[1]!);
+      expect(control.msgType).toBe(FSP_MSG_DATA);
+      expect(control.data).toEqual({
+        srcPort: 257, dstPort: 257,
+        payload: Uint8Array.of(70, 73, 80, 83, 45, 69, 88, 84, 1, 1, 1, 0),
+      });
+      expect(decodeFspEstablished(sent[2]!)).toMatchObject({ flags: 0, counter: 1n });
+      const application = initiator.decryptIncoming(sent[2]!);
+      expect(application.msgType).toBe(FSP_MSG_DATA);
+      expect(application.data).toEqual({ srcPort: 0, dstPort: 4_242, payload });
     } finally {
       releaseRoute();
       await vi.advanceTimersByTimeAsync(15_000);

@@ -233,12 +233,12 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
     );
   });
 
-  it("negotiates direct FSP transport in routed session handshakes", async () => {
+  it("keeps routed session handshake flags zero and uses baseline encrypted framing", async () => {
     const {
+      decodeFspEstablished,
       decodeSessionAck,
       decodeSessionSetup,
       FspSession,
-      SESSION_FLAG_DIRECT_FSP_TRANSPORT,
     } = await import("../src/index.js");
     const a = await identityFromSecretKey(new Uint8Array(32).fill(0x28));
     const b = await identityFromSecretKey(new Uint8Array(32).fill(0x82));
@@ -250,14 +250,20 @@ describe("Session transport (Rust noise/tests.rs integration)", () => {
     const resp = new FspSession({ identity: b, role: "responder" });
 
     const setup = init.buildSessionSetup(() => new Uint8Array(0), a.nodeAddr, b.nodeAddr);
-    expect(decodeSessionSetup(setup).flags).toBe(SESSION_FLAG_DIRECT_FSP_TRANSPORT);
+    expect(decodeSessionSetup(setup).flags).toBe(0);
     const ack = resp.handleSessionSetup(setup, () => new Uint8Array(0), b.nodeAddr);
-    expect(decodeSessionAck(ack).flags).toBe(SESSION_FLAG_DIRECT_FSP_TRANSPORT);
+    expect(decodeSessionAck(ack).flags).toBe(0);
     const msg3 = init.handleSessionAck(ack, () => new Uint8Array(0));
     resp.handleSessionMsg3(msg3);
 
-    expect(init.remoteSupportsDirectFspTransport).toBe(true);
-    expect(resp.remoteSupportsDirectFspTransport).toBe(true);
+    expect(init.remoteSupportsDirectFspTransport).toBe(false);
+    expect(resp.remoteSupportsDirectFspTransport).toBe(false);
+    const fromInitiator = init.encryptEndpointData(Uint8Array.of(1, 2, 3));
+    const fromResponder = resp.encryptEndpointData(Uint8Array.of(4, 5, 6));
+    expect(decodeFspEstablished(fromInitiator)).toMatchObject({ flags: 0, counter: 0n });
+    expect(decodeFspEstablished(fromResponder)).toMatchObject({ flags: 0, counter: 0n });
+    expect(resp.decryptIncoming(fromInitiator).endpointData).toEqual(Uint8Array.of(1, 2, 3));
+    expect(init.decryptIncoming(fromResponder).endpointData).toEqual(Uint8Array.of(4, 5, 6));
   });
 
   it("falls back when a routed session peer does not advertise direct FSP transport", async () => {

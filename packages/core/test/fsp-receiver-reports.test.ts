@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FspReceiverReports } from "../src/fsp/receiverReports.js";
 import { FspSession } from "../src/fsp/session.js";
-import { FSP_MSG_DATA, FSP_MSG_RECEIVER_REPORT } from "../src/fsp/wire.js";
+import { decodeFspEstablished, FSP_MSG_DATA, FSP_MSG_RECEIVER_REPORT } from "../src/fsp/wire.js";
 import { identityFromSecretKey } from "../src/identity/index.js";
 import { FspSessionManager } from "../src/node/FspSessionManager.js";
 import type { FipsRouting } from "../src/node/FipsRouting.js";
@@ -105,6 +105,17 @@ describe("FSP receiver reports", () => {
     try {
       await receive(initiator.buildSessionSetup(() => new Uint8Array(), initiatorIdentity.nodeAddr, responderIdentity.nodeAddr));
       await receive(initiator.handleSessionAck(replies.shift()!, () => new Uint8Array()));
+      // Establishment emits exactly one standard-wrapped capability request.
+      // Account for it explicitly before measuring receiver-report silence.
+      expect(replies).toHaveLength(1);
+      const initialFrame = replies.shift()!;
+      expect(decodeFspEstablished(initialFrame)).toMatchObject({ flags: 0, counter: 0n });
+      const initial = initiator.decryptIncoming(initialFrame);
+      expect(initial.msgType).toBe(FSP_MSG_DATA);
+      expect(initial.data).toEqual({
+        srcPort: 257, dstPort: 257,
+        payload: Uint8Array.of(70, 73, 80, 83, 45, 69, 88, 84, 1, 1, 1, 0),
+      });
       manager.start();
       const record = initiator.encryptEndpointData(new Uint8Array(10));
       const forged = new Uint8Array(record);
@@ -120,7 +131,9 @@ describe("FSP receiver reports", () => {
       expect(replies).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
       expect(replies.length).toBe(1);
-      const report = initiator.decryptIncoming(replies.shift()!);
+      const reportFrame = replies.shift()!;
+      expect(decodeFspEstablished(reportFrame)).toMatchObject({ flags: 0, counter: 1n });
+      const report = initiator.decryptIncoming(reportFrame);
       expect(report.msgType).toBe(FSP_MSG_RECEIVER_REPORT);
       const view = new DataView(report.payload!.buffer, report.payload!.byteOffset);
       expect(view.getBigUint64(2, true)).toBe(2n);

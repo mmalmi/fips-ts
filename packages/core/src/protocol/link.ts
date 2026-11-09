@@ -8,6 +8,7 @@
  */
 
 import { BinaryReader, BinaryWriter } from "../codec/binary.js";
+import { EXTENSION_LINK_MESSAGE_TYPE } from "./extensions.js";
 
 export const HandshakeMessageType = {
   NoiseIKMsg1: 0x01,
@@ -44,8 +45,11 @@ export const LinkMessageType = {
   // Link Control (0x50-0x5F)
   Disconnect: 0x50,
   Heartbeat: 0x51,
+  // Legacy private hints: require an authenticated empty ClientSupport first.
   ClientOnly: 0x52,
   ClientSupport: 0x53,
+
+  Extension: EXTENSION_LINK_MESSAGE_TYPE,
 } as const;
 
 const LINK_MESSAGE_TYPE_BYTES = new Set<number>([
@@ -60,6 +64,7 @@ const LINK_MESSAGE_TYPE_BYTES = new Set<number>([
   LinkMessageType.Heartbeat,
   LinkMessageType.ClientOnly,
   LinkMessageType.ClientSupport,
+  LinkMessageType.Extension,
 ]);
 
 export function linkMessageTypeFromByte(b: number): number | undefined {

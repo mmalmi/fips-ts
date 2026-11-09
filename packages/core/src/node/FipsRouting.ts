@@ -19,6 +19,12 @@ import {
   type SessionDatagram,
 } from "../protocol/link.js";
 import { decodeSessionAck, decodeSessionSetup } from "../protocol/session.js";
+import {
+  decodeLinkExtension,
+  encodeExtensionCapabilities,
+  encodeExtensionClientOnly,
+  FMP_EXTENSION_CLIENT_ROLE,
+} from "../protocol/extensions.js";
 import { decodeFspEstablished, FSP_FLAG_CP } from "../fsp/wire.js";
 import { FMP_AEAD_TAG_LEN, FMP_ESTABLISHED_HEADER_LEN } from "../fmp/wire.js";
 import {
@@ -112,6 +118,7 @@ const REPLY_LEARNED_ROUTE_TTL_SECONDS = 300;
 const MAX_REPLY_LEARNED_ROUTES_PER_DESTINATION = 4;
 const MAX_REPLY_LEARNED_LOOKUP_PEERS = 16;
 const FSP_DEFAULT_PATH_MTU = 1_200;
+const MAX_LEGACY_SUPPORT_PROBES = 3;
 // SessionDatagram already includes the message type; FMP adds its timestamp,
 // established header and authentication tag around the forwarding envelope.
 const ROUTED_FRAME_OVERHEAD = SESSION_DATAGRAM_HEADER_SIZE
@@ -168,6 +175,8 @@ export class FipsRouting {
     for (const peer of this.cfg.getPeers()) {
       peer.clientSupported = peer.clientOnly = undefined;
       peer.routingRoleSequence = undefined;
+      peer.extensionNamespace = peer.extensionCapabilities = undefined;
+      peer.extensionRequestSent = peer.legacySupportProbes = undefined;
     }
   }
 
@@ -183,27 +192,48 @@ export class FipsRouting {
     msgType: number,
     payload: Uint8Array,
   ): Promise<void> {
+    if (msgType === LinkMessageType.Extension) {
+      const message = decodeLinkExtension(payload);
+      if (!message) return;
+      if (message.kind === 3) {
+        if (peer.extensionNamespace === "namespaced"
+          && ((peer.extensionCapabilities ?? 0) & FMP_EXTENSION_CLIENT_ROLE)) {
+          await this.handleClientRole(peer, message.sequence);
+        }
+        return;
+      }
+      const hadSupport = peer.extensionNamespace === "namespaced"
+        && !!((peer.extensionCapabilities ?? 0) & FMP_EXTENSION_CLIENT_ROLE);
+      peer.extensionNamespace = "namespaced";
+      peer.extensionCapabilities = (peer.extensionCapabilities ?? 0)
+        | (message.capabilities & FMP_EXTENSION_CLIENT_ROLE);
+      peer.clientSupported = !!(peer.extensionCapabilities & FMP_EXTENSION_CLIENT_ROLE);
+      if (message.kind === 1) {
+        await this.cfg.sendLinkMessage(peer, LinkMessageType.Extension,
+          encodeExtensionCapabilities(2, FMP_EXTENSION_CLIENT_ROLE));
+      }
+      if (this.cfg.strictClient && peer.clientSupported && !hadSupport) {
+        await this.sendTreeAnnounce(peer);
+      }
+      return;
+    }
     if (msgType === LinkMessageType.ClientSupport) {
-      if (payload.length !== 0 || peer.clientSupported) return;
+      // Upstream uses this byte for PathAck; only its empty legacy shape opts in.
+      if (payload.length !== 0 || peer.extensionNamespace) return;
+      peer.extensionNamespace = "legacy";
       peer.clientSupported = true;
       if (this.cfg.strictClient) await this.sendTreeAnnounce(peer);
       else await this.cfg.sendLinkMessage(peer, LinkMessageType.ClientSupport, new Uint8Array());
       return;
     }
     if (msgType === LinkMessageType.ClientOnly) {
-      if (payload.length !== 8) return;
+      if (peer.extensionNamespace !== "legacy" || payload.length !== 8) return;
       const sequence = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getBigUint64(0, true);
-      const last = peer.routingRoleSequence;
-      if (last !== undefined && (sequence < last || (sequence === last && !peer.clientOnly))) return;
-      peer.routingRoleSequence = sequence;
-      peer.clientSupported = true;
-      if (!peer.clientOnly) {
-        peer.clientOnly = true;
-        this.removePeer(deriveNodeAddr(peer.pubkey));
-        await this.bloomRouting.sendAll();
-      }
+      await this.handleClientRole(peer, sequence);
       return;
     }
+    // 0x54 is upstream path traffic; JS has no legacy listener implementation.
+    if (msgType === 0x54) return;
     if (msgType === LinkMessageType.TreeAnnounce) {
       await this.handleTreeAnnounce(peer, payload);
       return;
@@ -271,20 +301,45 @@ export class FipsRouting {
     await this.sendSessionDatagram({ ...datagram, ttl: datagram.ttl - 1 }, peer);
   }
 
-  async sendTreeAnnounce(peer: AdjacentPeer): Promise<void> {
+  async sendTreeAnnounce(peer: AdjacentPeer, allowLegacyProbe = false): Promise<void> {
     if (peer.link.state !== "established") return;
+    if (!peer.extensionRequestSent && peer.extensionNamespace !== "namespaced") {
+      peer.extensionRequestSent = true;
+      await this.cfg.sendLinkMessage(peer, LinkMessageType.Extension,
+        encodeExtensionCapabilities(1, FMP_EXTENSION_CLIENT_ROLE));
+      if (this.cfg.strictClient) return;
+    }
     if (this.cfg.strictClient) {
-      if (!peer.clientSupported) {
-        await this.cfg.sendLinkMessage(peer, LinkMessageType.ClientSupport, new Uint8Array());
-      } else {
+      if (peer.extensionNamespace === "namespaced") {
+        if ((peer.extensionCapabilities ?? 0) & FMP_EXTENSION_CLIENT_ROLE) {
+          await this.cfg.sendLinkMessage(peer, LinkMessageType.Extension,
+            encodeExtensionClientOnly(++this.clientSequence));
+        }
+      } else if (peer.extensionNamespace === "legacy") {
         const payload = new Uint8Array(8);
         new DataView(payload.buffer).setBigUint64(0, ++this.clientSequence, true);
         await this.cfg.sendLinkMessage(peer, LinkMessageType.ClientOnly, payload);
+      } else if (allowLegacyProbe && (peer.legacySupportProbes ?? 0) < MAX_LEGACY_SUPPORT_PROBES) {
+        // Only the existing heartbeat/role cadence retries this old-peer probe.
+        peer.legacySupportProbes = (peer.legacySupportProbes ?? 0) + 1;
+        await this.cfg.sendLinkMessage(peer, LinkMessageType.ClientSupport, new Uint8Array());
       }
       return;
     }
     const encoded = encodeTreeAnnounce(this.treeState.announce());
     await this.cfg.sendLinkMessage(peer, LinkMessageType.TreeAnnounce, encoded.subarray(1));
+  }
+
+  private async handleClientRole(peer: AdjacentPeer, sequence: bigint): Promise<void> {
+    const last = peer.routingRoleSequence;
+    if (last !== undefined && (sequence < last || (sequence === last && !peer.clientOnly))) return;
+    peer.routingRoleSequence = sequence;
+    peer.clientSupported = true;
+    if (!peer.clientOnly) {
+      peer.clientOnly = true;
+      this.removePeer(deriveNodeAddr(peer.pubkey));
+      await this.bloomRouting.sendAll();
+    }
   }
 
   scheduleTreeAnnounce(peer: AdjacentPeer): void {
@@ -304,7 +359,7 @@ export class FipsRouting {
 
   /** Reuse the authenticated heartbeat cadence for bounded capability retries. */
   async refreshClientRole(): Promise<void> {
-    if (this.cfg.strictClient) await this.sendTreeAnnounceToAll();
+    if (this.cfg.strictClient) await this.sendTreeAnnounceToAll(true);
   }
 
   async replayPendingLookupsFor(peer: AdjacentPeer): Promise<void> {
@@ -455,11 +510,11 @@ export class FipsRouting {
     );
   }
 
-  private async sendTreeAnnounceToAll(): Promise<void> {
+  private async sendTreeAnnounceToAll(allowLegacyProbe = false): Promise<void> {
     const peers = [...this.cfg.getPeers()].filter(
       (peer) => peer.link.state === "established",
     );
-    await Promise.allSettled(peers.map((peer) => this.sendTreeAnnounce(peer)));
+    await Promise.allSettled(peers.map((peer) => this.sendTreeAnnounce(peer, allowLegacyProbe)));
   }
 
   private async handleTreeAnnounce(peer: AdjacentPeer, payload: Uint8Array): Promise<void> {

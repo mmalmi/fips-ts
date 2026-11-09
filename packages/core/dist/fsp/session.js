@@ -27,6 +27,7 @@ export class FspSession {
     receivedSessionAck;
     sentSessionMsg3;
     establishedMsg3;
+    pendingRemoteDirectFspTransport = false;
     remoteDirectFspTransport = false;
     txCounter = 0n;
     sessionStartMs = 0;
@@ -85,7 +86,7 @@ export class FspSession {
         return encodeSessionSetup({
             srcCoords: this.strictClient ? [this.identity.nodeAddr] : normalizeCoords(srcCoords),
             destCoords: this.strictClient ? [deriveNodeAddr(this.remotePubkey)] : normalizeCoords(destCoords),
-            flags: SESSION_FLAG_DIRECT_FSP_TRANSPORT,
+            flags: 0,
             handshakePayload: noiseMsg,
         });
     }
@@ -124,7 +125,8 @@ export class FspSession {
         const payload = this.hs.readMessage(setup.handshakePayload);
         if (payload.length !== 0)
             throw new Error("XK msg1 inner payload must be empty");
-        this.remoteDirectFspTransport =
+        // XK Msg1 does not yet authenticate the initiator's static identity.
+        this.pendingRemoteDirectFspTransport =
             (setup.flags & SESSION_FLAG_DIRECT_FSP_TRANSPORT) !== 0;
         const noiseMsg = this.hs.writeMessage(this.localEpoch);
         if (noiseMsg.length !== NOISE_XK_MSG2_LEN) {
@@ -133,7 +135,7 @@ export class FspSession {
         const reply = encodeSessionAck({
             srcCoords: this.strictClient ? [this.identity.nodeAddr] : normalizeCoords(localCoords),
             destCoords: this.strictClient ? (remoteNodeAddr ? [remoteNodeAddr] : setup.srcCoords.slice(0, 1)) : setup.srcCoords,
-            flags: SESSION_FLAG_DIRECT_FSP_TRANSPORT,
+            flags: 0,
             handshakePayload: noiseMsg,
         });
         this.state = "handshaking";
@@ -243,6 +245,7 @@ export class FspSession {
         if (!rs)
             throw new Error("XK responder did not capture remote static");
         this.remotePubkey = rs;
+        this.remoteDirectFspTransport = this.pendingRemoteDirectFspTransport;
         this.establishedMsg3 = new Uint8Array(packet);
         this.finalize();
     }

@@ -15,7 +15,7 @@ class WirePeer implements Transport {
   readonly frames: Array<{ msgType: number; payload: Uint8Array }> = [];
   context?: TransportContext;
   private link: FmpLink;
-  constructor(readonly identity: FipsIdentity, readonly modern: boolean) {
+  constructor(readonly identity: FipsIdentity, readonly modern: boolean | "namespaced") {
     this.link = this.newLink();
   }
   private newLink() {
@@ -32,8 +32,12 @@ class WirePeer implements Transport {
     }
     const frame = this.link.decryptIncoming(packet);
     this.frames.push(frame);
-    if (this.modern && frame.msgType === 0x53) {
+    if (this.modern === true && frame.msgType === 0x53) {
       queueMicrotask(() => this.announce(0x53, new Uint8Array()));
+    }
+    if (this.modern === "namespaced" && frame.msgType === 0xe0 && frame.payload[9] === 1) {
+      const response = new Uint8Array([...new TextEncoder().encode("FIPS-EXT"), 1, 2, 2, 0]);
+      queueMicrotask(() => this.announce(0xe0, response));
     }
   }
   announce(type: number, payload: Uint8Array) {
@@ -56,7 +60,7 @@ async function identities() {
 }
 
 describe("strict clients on authenticated wire", () => {
-  it.each([false, true])("never publishes ancestry to a modern=%s peer, including after restart", async modern => {
+  it.each([false, true, "namespaced"] as const)("never publishes ancestry to a modern=%s peer, including after restart", async modern => {
     const [contact, own, seed, anonymous] = await identities();
     for (const identity of [own, anonymous]) {
       const transport = new WirePeer(seed, modern);
@@ -73,11 +77,22 @@ describe("strict clients on authenticated wire", () => {
         transport.announce(0x10, encodeTreeAnnounce(inherited.announce()).subarray(1));
         await vi.waitFor(() => expect((node as any).routing.treeState.coords).toContainEqual(privateAncestor.nodeAddr));
         expect(transport.frames.filter(f => f.msgType === 0x10 || f.msgType === 0x20)).toEqual([]);
-        await vi.waitFor(() => expect(transport.frames.some(f => f.msgType === 0x53)).toBe(true));
-        if (modern) await vi.waitFor(() => expect(transport.frames.some(f => f.msgType === 0x52)).toBe(true));
-        else await vi.waitFor(() => expect(transport.frames.filter(f => f.msgType === 0x53).length).toBeGreaterThan(1));
+        if (modern === "namespaced") {
+          await vi.waitFor(() => expect(transport.frames.some(f => f.msgType === 0xe0 && f.payload[9] === 3)).toBe(true));
+          expect(transport.frames.some(f => f.msgType === 0x53)).toBe(false);
+          for (const frame of transport.frames.filter(f => f.msgType === 0xe0 && f.payload[9] === 3)) {
+            expect(frame.payload).toHaveLength(18);
+          }
+        } else {
+          await vi.waitFor(() => expect(transport.frames.some(f => f.msgType === 0x53)).toBe(true));
+          if (modern) await vi.waitFor(() => expect(transport.frames.some(f => f.msgType === 0x52)).toBe(true));
+          else await vi.waitFor(() => expect(transport.frames.filter(f => f.msgType === 0x53).length).toBeGreaterThan(1));
+        }
+        const firstCapability = transport.frames.find(f => [0xe0, 0x52, 0x53].includes(f.msgType));
+        expect(firstCapability?.msgType).toBe(0xe0);
+        expect(firstCapability?.payload).toEqual(new Uint8Array([...new TextEncoder().encode("FIPS-EXT"), 1, 1, 2, 0]));
         expect(transport.frames.filter(f => f.msgType === 0x10 || f.msgType === 0x20)).toEqual([]);
-        expect(transport.frames.some(f => f.msgType === 0x52)).toBe(modern);
+        expect(transport.frames.some(f => f.msgType === 0x52)).toBe(modern === true);
         for (const frame of transport.frames.filter(f => f.msgType === 0x52)) expect(frame.payload).toHaveLength(8);
         await node.stop();
       }

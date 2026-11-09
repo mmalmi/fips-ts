@@ -64,6 +64,8 @@ export declare class FspSessionManager {
     private rejectSessionSetup;
     private prunePreviousFsp;
     private directPeerForSession;
+    private requestExtensions;
+    private sendExtension;
     private sendDirectFsp;
 }
 export {};

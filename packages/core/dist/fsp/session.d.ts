@@ -31,6 +31,7 @@ export declare class FspSession {
     private receivedSessionAck?;
     private sentSessionMsg3?;
     private establishedMsg3?;
+    private pendingRemoteDirectFspTransport;
     private remoteDirectFspTransport;
     private txCounter;
     private sessionStartMs;

@@ -6,6 +6,51 @@ package's core archive URL in the same release cohort. The workspace overrides
 resolve core locally during qualification; the published packages retain their
 versioned public core URL.
 
+## Runtime 61 qualification
+
+The runtime-v0.0.61 cohort contains core 0.0.56, browser 0.0.21,
+Ethernet 0.0.38, Memory 0.0.16, WebRTC 0.0.60 and WebSocket 0.0.14.
+It moves private capabilities out of reserved session flags and colliding link
+message types. SessionSetup and SessionAck body flags are zero. Authenticated
+legacy direct-transport advertisements remain supported.
+
+Session capabilities use established encrypted DataPacket messages with both
+ports set to 257. Their exact 12-byte payload is `FIPS-EXT`, version 1,
+kind 1 (request) or 2 (response), and a little-endian 16-bit capability mask.
+Bit 0 advertises direct FSP transport. The first request follows successful
+Msg3 transmission; the first response uses the standard wrapper before direct
+transport is enabled. Existing JSON WebRTC signaling on port 257 remains
+separate. No phase-4 confirmation is introduced.
+
+Link capabilities use message type `0xe0` and the same envelope, with bit 1
+advertising client-role support. Kind 3 carries an eight-byte little-endian
+sequence after the envelope header and requires prior capability negotiation.
+JS ignores listener advertisements. A strict client starts with the namespace
+and may send at most three legacy empty `0x53` probes at the existing heartbeat
+cadence when unanswered. Legacy role messages require positive legacy support;
+namespaced peers never fall back to legacy hints. Capabilities and role sequence
+watermarks survive same-process rekey and reset after authenticated restart.
+
+Use the pinned macOS ARM64 tools listed for runtime 60. Run the changed core
+suite with one worker, explicitly separating opt-in native interoperability:
+
+```sh
+node node_modules/vitest/vitest.mjs run --root packages/core --exclude '**/interop/**' --maxWorkers=1 --minWorkers=1 --no-file-parallelism --pool=threads
+node node_modules/typescript/bin/tsc --noEmit -p packages/core/tsconfig.json
+node node_modules/typescript/bin/tsc -b packages/core --force
+```
+
+Compile core once for packaging, retain the other five packages' unchanged
+generated outputs, and inspect all six archives and packed imports. Qualify
+both handshake roles against the pinned unmodified upstream peer, the corrected
+native peer, and the retained legacy migration fixture where applicable.
+Use source- and executable-bound prebuilt fixtures; do not silently build or
+download them from tests. These changed handshake paths require new mixed-peer
+evidence; earlier runtime proofs retain only their original scope. Publication
+still requires the source, history and public-byte gates below. This correction
+does not enable application multipath defaults or establish browser, device,
+privacy or idle-traffic acceptance.
+
 ## Runtime 60 qualification
 
 The runtime-v0.0.60 cohort contains core 0.0.55, browser 0.0.20,

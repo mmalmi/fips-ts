@@ -43,7 +43,8 @@ export declare class FipsRouting {
     stop(): void;
     removePeer(peerNodeAddr: NodeAddr): void;
     handleLinkMessage(peer: AdjacentPeer, msgType: number, payload: Uint8Array): Promise<void>;
-    sendTreeAnnounce(peer: AdjacentPeer): Promise<void>;
+    sendTreeAnnounce(peer: AdjacentPeer, allowLegacyProbe?: boolean): Promise<void>;
+    private handleClientRole;
     scheduleTreeAnnounce(peer: AdjacentPeer): void;
     /** Reuse the authenticated heartbeat cadence for bounded capability retries. */
     refreshClientRole(): Promise<void>;
