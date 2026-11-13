@@ -48,6 +48,7 @@ import type {
 
 import { BloomRouting } from "./BloomRouting.js";
 import { LearnedRouteTable } from "./LearnedRouteTable.js";
+import { LookupBackoff, LookupForwardDeferrals, LookupForwardLimiter } from "./LookupLimits.js";
 import { OriginLookupRegistry, type PendingOriginLookup } from "./OriginLookupRegistry.js";
 import type { AdjacentPeer } from "./PeerState.js";
 import {
@@ -131,6 +132,9 @@ export class FipsRouting {
   private readonly originLookups = new OriginLookupRegistry(MAX_PENDING_ORIGIN_LOOKUPS);
   private readonly learnedRoutes = new LearnedRouteTable();
   private readonly coordCache = new Map<string, NodeAddr[]>();
+  private readonly lookupBackoff = new LookupBackoff();
+  private readonly lookupForwardLimiter = new LookupForwardLimiter();
+  private readonly deferredLookupForwards = new LookupForwardDeferrals();
   private readonly bloomRouting: BloomRouting;
   private clientSequence = 0n;
 
@@ -167,6 +171,8 @@ export class FipsRouting {
       pending.abort.abort();
     }
     this.originLookups.stop();
+    this.deferredLookupForwards.clear();
+    this.lookupBackoff.resetAll();
     this.pendingRouteResolutions.clear();
     this.lookupReversePaths.clear();
     this.learnedRoutes.clear();
@@ -183,6 +189,7 @@ export class FipsRouting {
   removePeer(peerNodeAddr: NodeAddr): void {
     const wasTreePeer = this.treeState.isTreePeer(peerNodeAddr);
     const parentChanged = this.treeState.removePeer(peerNodeAddr);
+    if (parentChanged) this.resetLookupBackoff();
     if (parentChanged) void this.sendTreeAnnounceToAll();
     if (parentChanged || wasTreePeer) void this.bloomRouting.sendAll();
   }
@@ -357,6 +364,16 @@ export class FipsRouting {
     }, 0);
   }
 
+  /** Topology changed (new authenticated peer or tree coordinates): unreachable targets may now resolve. */
+  resetLookupBackoff(): void {
+    this.lookupBackoff.resetAll();
+  }
+
+  /** An authenticated session proves this node reachable; drop its lookup backoff. */
+  noteSessionEstablished(nodeAddrHex: string): void {
+    this.lookupBackoff.recordSuccess(nodeAddrHex);
+  }
+
   /** Reuse the authenticated heartbeat cadence for bounded capability retries. */
   async refreshClientRole(): Promise<void> {
     if (this.cfg.strictClient) await this.sendTreeAnnounceToAll(true);
@@ -402,6 +419,8 @@ export class FipsRouting {
       await existing.promise;
       return;
     }
+    this.assertLookupAllowed(targetHex);
+    const hadLookupPeers = this.originLookupPeers().length > 0;
     const pending = this.originLookups.create({
       targetHex,
       targetPubkey,
@@ -419,9 +438,22 @@ export class FipsRouting {
     const retrying = this.retryOriginLookup(pending, request);
     try {
       await pending.promise;
+    } catch (error) {
+      if (pending.timedOut) this.lookupBackoff.recordFailure(targetHex, Date.now(), !hadLookupPeers);
+      throw error;
     } finally {
       await retrying;
     }
+  }
+
+  /** Post-failure suppression keeps an offline target from triggering a fresh network-wide lookup. */
+  private assertLookupAllowed(targetHex: string, excludedPeer?: AdjacentPeer, minMtu = 0): void {
+    if (!this.lookupBackoff.isSuppressed(targetHex, Date.now())) return;
+    // A failure that never reached any peer earns one retry once a peer exists.
+    if (this.originLookupPeers(excludedPeer, minMtu).length > 0
+      && this.lookupBackoff.retryDelayedWithRoute(targetHex)) return;
+    this.cfg.logger.debug("lookup suppressed by backoff", targetHex, this.lookupBackoff.failureCount(targetHex));
+    throw new Error(`no route to ${targetHex} (lookup backoff)`);
   }
 
   private async refreshTransitRoute(
@@ -439,6 +471,7 @@ export class FipsRouting {
     if (this.originLookupPeers(previousHop, minMtu).length === 0) {
       throw new Error(`no route to ${targetHex}`);
     }
+    this.assertLookupAllowed(targetHex, previousHop, minMtu);
     const pending = this.originLookups.create({
       targetHex,
       minMtu,
@@ -456,6 +489,9 @@ export class FipsRouting {
     try {
       await pending.promise;
       return pending.nextHop;
+    } catch (error) {
+      if (pending.timedOut) this.lookupBackoff.recordFailure(targetHex, Date.now());
+      throw error;
     } finally {
       await retrying;
     }
@@ -541,6 +577,7 @@ export class FipsRouting {
       "root",
       nodeAddrToHex(announce.ancestry.at(-1)!.nodeAddr),
     );
+    if (changed) this.resetLookupBackoff();
     if (changed) await this.sendTreeAnnounceToAll();
     if (changed || wasClient || wasTreePeer !== isTreePeer) await this.bloomRouting.sendAll();
   }
@@ -574,6 +611,7 @@ export class FipsRouting {
   private async handleLookupRequest(
     sourcePeer: AdjacentPeer,
     request: LookupRequest,
+    allowDeferral = true,
   ): Promise<void> {
     const targetHex = nodeAddrToHex(request.target);
     if (frameCapacity(sourcePeer) < request.minMtu) return;
@@ -608,25 +646,18 @@ export class FipsRouting {
     if (existingReverse) existingReverse.peer = sourcePeer;
 
     const directOrLearned = this.nextHopFor(targetHex, sourcePeer, request.minMtu);
-    const fallbackPeers = !directOrLearned
-      ? [...this.cfg.getPeers()]
-        .filter((peer) =>
-          peer !== sourcePeer
-          && peer.link.state === "established"
-          && (
-            this.treeState.isTreePeer(deriveNodeAddr(peer.pubkey))
-            || this.cfg.routingMode === "reply_learned"
-          )
-          && nodeAddrToHex(deriveNodeAddr(peer.pubkey)) !== nodeAddrToHex(request.origin)
-          && frameCapacity(peer) >= request.minMtu
-        )
-        .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS)
-      : [];
+    const fallbackPeers = directOrLearned ? [] : this.lookupFallbackPeers(sourcePeer, request);
     const nextHops = (directOrLearned ? [directOrLearned] : fallbackPeers)
       .filter((nextHop) => !existingReverse?.forwardedNextHops.has(peerNodeKey(nextHop)));
     const canResolveDirectly = this.canResolveLookupDirectly(directOrLearned, fallbackPeers.length > 0);
     if (nextHops.length === 0 && !canResolveDirectly) {
       this.cfg.logger.debug("lookup request not forwarded", targetHex, "no-next-hop");
+      return;
+    }
+    // Fresh request IDs for one target are forwarded at most once per slot.
+    if (!this.lookupForwardLimiter.admit(peerNodeKey(sourcePeer), targetHex, Date.now())) {
+      if (allowDeferral && !existingReverse) this.deferLookupForward(sourcePeer, request, targetHex);
+      this.cfg.logger.debug("lookup request not forwarded", targetHex, "rate-limited");
       return;
     }
     const reverse = existingReverse ?? {
@@ -647,7 +678,15 @@ export class FipsRouting {
         sourcePeer,
       );
     }
-    if (nextHops.length === 0) return;
+    if (nextHops.length > 0) await this.sendLookupToNextHops(reverse, reverseKey, nextHops, targetHex);
+  }
+
+  private async sendLookupToNextHops(
+    reverse: LookupReversePath,
+    reverseKey: string,
+    nextHops: AdjacentPeer[],
+    targetHex: string,
+  ): Promise<void> {
     for (const nextHop of nextHops) reverse.forwardedNextHops.add(peerNodeKey(nextHop));
     const encoded = encodeLookupRequestPayload(reverse.request);
     const results = await Promise.allSettled(
@@ -666,6 +705,36 @@ export class FipsRouting {
       throw new Error(`failed to forward lookup request for ${targetHex}`);
     }
     this.cfg.logger.debug("lookup request forwarded", targetHex, nextHops.length);
+  }
+
+  private lookupFallbackPeers(sourcePeer: AdjacentPeer, request: LookupRequest): AdjacentPeer[] {
+    const originHex = nodeAddrToHex(request.origin);
+    return [...this.cfg.getPeers()]
+      .filter((peer) =>
+        peer !== sourcePeer
+        && peer.link.state === "established"
+        && (
+          this.treeState.isTreePeer(deriveNodeAddr(peer.pubkey))
+          || this.cfg.routingMode === "reply_learned"
+        )
+        && nodeAddrToHex(deriveNodeAddr(peer.pubkey)) !== originHex
+        && frameCapacity(peer) >= request.minMtu
+      )
+      .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS);
+  }
+
+  /** Hold one rate-limited request per target until that target's next forwarding slot. */
+  private deferLookupForward(sourcePeer: AdjacentPeer, request: LookupRequest, targetHex: string): void {
+    const ingressKey = peerNodeKey(sourcePeer);
+    const nowMs = Date.now();
+    const dueMs = this.lookupForwardLimiter.nextSlotMs(ingressKey, targetHex, nowMs);
+    if (dueMs === undefined) return;
+    this.deferredLookupForwards.defer(targetHex, ingressKey, dueMs - nowMs, () => {
+      if (!this.cfg.isStarted() || sourcePeer.link.state !== "established") return;
+      void this.handleLookupRequest(sourcePeer, request, false).catch((error) => {
+        this.cfg.emitError(error as Error, "forward deferred LookupRequest");
+      });
+    });
   }
 
   private async resolveAndForwardLookup(
@@ -767,6 +836,7 @@ export class FipsRouting {
     }
     this.cacheCoordinates(response.target, response.targetCoords);
     this.learnReverseRoute(pending.targetHex, sourcePeer, Math.min(response.pathMtu, frameCapacity(sourcePeer)));
+    this.lookupBackoff.recordSuccess(pending.targetHex);
     this.originLookups.complete(pending, peerNodeKey(sourcePeer));
     this.cfg.logger.debug("lookup response accepted", pending.targetHex);
     return true;

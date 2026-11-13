@@ -58,6 +58,11 @@ export class WebRtcAdvertCache {
     return cloneDiscoveredPeer(peer);
   }
 
+  /** created_at of the advert currently held for this node, if any. */
+  createdAtSeconds(nodeAddrHex: string): number | undefined {
+    return this.entries.get(nodeAddrHex)?.createdAtSeconds;
+  }
+
   get(nodeAddrHex: string, nowMs = Date.now()): DiscoveredPeer | undefined {
     const cached = this.entries.get(nodeAddrHex);
     if (!cached) return undefined;

@@ -4,6 +4,8 @@ export interface PendingOriginLookup {
     targetPubkey?: Uint8Array;
     minMtu: number;
     nextHop?: string;
+    /** Set when the logical deadline expired without an authenticated reply. */
+    timedOut?: boolean;
     promise: Promise<void>;
 }
 export declare class OriginLookupRegistry {

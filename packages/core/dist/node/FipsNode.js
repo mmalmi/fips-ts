@@ -111,6 +111,9 @@ export class FipsNode {
             },
             emitSession: (event) => {
                 if (event.state === "established") {
+                    const sessionNodeHex = sessionEventNodeHex(event.remotePubkey);
+                    if (sessionNodeHex)
+                        this.routing.noteSessionEstablished(sessionNodeHex);
                     for (const transport of this.transports) {
                         try {
                             if (event.restarted)
@@ -200,6 +203,8 @@ export class FipsNode {
                     onConnectionState: (e) => { if (current())
                         this.onTransportConn(t, e); },
                     allowPeer: (pubkey) => current() && this.admission.allows(pubkey),
+                    isLinked: () => current()
+                        && [...this.peers.values()].some((peer) => peer.link.state === "established"),
                     connectTransport: async (addr) => {
                         if (!current())
                             throw new Error("FIPS transport was stopped");
@@ -631,6 +636,11 @@ export class FipsNode {
             }
         }));
     }
+}
+function sessionEventNodeHex(remote) {
+    if (/^(02|03)[0-9a-fA-F]{64}$/.test(remote))
+        return nodeAddrToHex(deriveNodeAddr(fromHex(remote)));
+    return /^[0-9a-fA-F]{32}$/.test(remote) ? remote.toLowerCase() : undefined;
 }
 function readU32Le(bytes) {
     return new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);

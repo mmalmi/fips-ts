@@ -75,6 +75,7 @@ export class OriginLookupRegistry {
             reject,
         };
         pending.timer = setTimeout(() => {
+            pending.timedOut = true;
             this.fail(pending, new Error(`no route to ${args.targetHex}`));
         }, args.timeoutMs);
         this.byTarget.set(args.targetHex, pending);

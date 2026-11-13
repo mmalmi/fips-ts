@@ -4,6 +4,8 @@ export interface PendingOriginLookup {
   targetPubkey?: Uint8Array;
   minMtu: number;
   nextHop?: string;
+  /** Set when the logical deadline expired without an authenticated reply. */
+  timedOut?: boolean;
   promise: Promise<void>;
 }
 
@@ -96,6 +98,7 @@ export class OriginLookupRegistry {
       reject,
     };
     pending.timer = setTimeout(() => {
+      pending.timedOut = true;
       this.fail(pending, new Error(`no route to ${args.targetHex}`));
     }, args.timeoutMs);
     this.byTarget.set(args.targetHex, pending);

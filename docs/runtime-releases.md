@@ -6,6 +6,31 @@ package's core archive URL in the same release cohort. The workspace overrides
 resolve core locally during qualification; the published packages retain their
 versioned public core URL.
 
+## Unreleased: bounded lookups for offline peers
+
+Core ports native FIPS's discovery limits. After a first-contact or transit
+lookup times out, fresh lookups for that target are suppressed for 30 s,
+doubling to 300 s. A successful lookup or session clears that target, and a new
+authenticated peer or changed tree coordinates clear all of them. A lookup that
+had no peer to ask may retry once a peer exists. Transit nodes forward lookups
+for one target at most every 2 s, with a 256-request, 32-per-second budget per
+ingress peer. They hold one limited request per target for its next slot.
+`TransportContext.isLinked` reports whether any authenticated link is up.
+
+WebRTC auto-connect keeps its 30 s failure cooldown, but five consecutive
+failures toward one peer extend it to 30 minutes. A newer advert from that
+peer, a connected carrier, or recovered session signaling resets the streak.
+Failures while the node has no working link do not count. Preferred peers keep
+their 1 s retry. Adverts older than half their lifetime plus five minutes have
+missed a refresh, so they are dialed after fresh ones. Wire formats are
+unchanged.
+
+In a 16-node, degree-8 in-memory mesh, one unanswered lookup for an offline
+target fell from 791 to 357 forwarded requests. Dialing one dead advert for an
+hour fell from 81,473 requests (10.6 MB) to 1,722 (0.22 MB); the mesh's
+heartbeats were about 3.4 MB per hour. Native interoperability, browser, device
+and live idle-traffic acceptance are not yet established for this change.
+
 ## Runtime 61 qualification
 
 The runtime-v0.0.61 cohort contains core 0.0.56, browser 0.0.21,

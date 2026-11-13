@@ -385,6 +385,8 @@ export class FmpTransportPacketProcessor {
         }
     }
     replayPendingLookupsAfterEstablishment(peer, establishmentReply) {
+        // A new authenticated peer is a topology change: retry suppressed lookups.
+        this.cfg.routing.resetLookupBackoff();
         const replay = () => {
             void this.cfg.routing.replayPendingLookupsFor(peer).catch((error) => {
                 this.cfg.emitError(error, "replay pending lookups");

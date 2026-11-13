@@ -13,6 +13,8 @@ export declare class WebRtcAdvertCache {
     clear(): void;
     values(): IterableIterator<CachedWebRtcAdvert>;
     store(nodeAddrHex: string, peer: DiscoveredPeer, event: NostrEvent, nowMs?: number): DiscoveredPeer | undefined;
+    /** created_at of the advert currently held for this node, if any. */
+    createdAtSeconds(nodeAddrHex: string): number | undefined;
     get(nodeAddrHex: string, nowMs?: number): DiscoveredPeer | undefined;
     prune(nowMs: number): void;
     private evict;

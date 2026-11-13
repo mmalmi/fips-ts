@@ -36,6 +36,8 @@ export declare class WebRtcTransport implements Transport {
     start(ctx: TransportContext): Promise<void>;
     stop(): Promise<void>;
     private handleAdvert;
+    /** A live peer republished its advert: lift any failure backoff toward it. */
+    private handleAdvertRefresh;
     private fillAutoConnectSlots;
     private publishLocalAdvert;
     resolve(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined>;

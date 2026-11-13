@@ -38,6 +38,10 @@ export class WebRtcAdvertCache {
         });
         return cloneDiscoveredPeer(peer);
     }
+    /** created_at of the advert currently held for this node, if any. */
+    createdAtSeconds(nodeAddrHex) {
+        return this.entries.get(nodeAddrHex)?.createdAtSeconds;
+    }
     get(nodeAddrHex, nowMs = Date.now()) {
         const cached = this.entries.get(nodeAddrHex);
         if (!cached)

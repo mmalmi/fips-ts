@@ -33,6 +33,9 @@ export declare class FipsRouting {
     private readonly originLookups;
     private readonly learnedRoutes;
     private readonly coordCache;
+    private readonly lookupBackoff;
+    private readonly lookupForwardLimiter;
+    private readonly deferredLookupForwards;
     private readonly bloomRouting;
     private clientSequence;
     constructor(cfg: FipsRoutingConfig);
@@ -46,10 +49,16 @@ export declare class FipsRouting {
     sendTreeAnnounce(peer: AdjacentPeer, allowLegacyProbe?: boolean): Promise<void>;
     private handleClientRole;
     scheduleTreeAnnounce(peer: AdjacentPeer): void;
+    /** Topology changed (new authenticated peer or tree coordinates): unreachable targets may now resolve. */
+    resetLookupBackoff(): void;
+    /** An authenticated session proves this node reachable; drop its lookup backoff. */
+    noteSessionEstablished(nodeAddrHex: string): void;
     /** Reuse the authenticated heartbeat cadence for bounded capability retries. */
     refreshClientRole(): Promise<void>;
     replayPendingLookupsFor(peer: AdjacentPeer): Promise<void>;
     ensureFirstContactRoute(target: NodeAddr, targetHex: string, targetPubkey: Uint8Array): Promise<void>;
+    /** Post-failure suppression keeps an offline target from triggering a fresh network-wide lookup. */
+    private assertLookupAllowed;
     private refreshTransitRoute;
     sendFspToward(remoteNodeAddr: NodeAddr, fspFrame: OutboundSessionDatagram["payload"]): Promise<void>;
     sendFspReplyToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array, previousHop: AdjacentPeer): Promise<void>;
@@ -60,6 +69,10 @@ export declare class FipsRouting {
     private cacheSessionCoordinates;
     private cacheCoordinates;
     private handleLookupRequest;
+    private sendLookupToNextHops;
+    private lookupFallbackPeers;
+    /** Hold one rate-limited request per target until that target's next forwarding slot. */
+    private deferLookupForward;
     private resolveAndForwardLookup;
     private canResolveLookupDirectly;
     private forwardLookupResponse;

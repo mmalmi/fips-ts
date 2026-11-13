@@ -254,8 +254,12 @@ export class WebRtcTransport implements Transport {
         meta: { source: "nostr-advert", relayUrl: sourceRelayUrl },
       };
       const nodeAddrHex = nodeAddrToHex(deriveNodeAddr(peer.publicKey!));
+      const previousCreatedAt = this.advertCache.createdAtSeconds(nodeAddrHex);
       const cached = this.advertCache.store(nodeAddrHex, peer, event);
       if (!cached) continue;
+      if (previousCreatedAt !== undefined && event.created_at > previousCreatedAt) {
+        this.handleAdvertRefresh(remotePubkeyHex);
+      }
       const requested = this.resolveAdvertWaiters(nodeAddrHex, cached);
       if (this.cfg.autoConnect && !requested && !this.autoConnectFillTimer) {
         this.autoConnectFillTimer = setTimeout(() => {
@@ -264,6 +268,14 @@ export class WebRtcTransport implements Transport {
         }, AUTO_CONNECT_SETTLE_MS);
       }
     }
+  }
+
+  /** A live peer republished its advert: lift any failure backoff toward it. */
+  private handleAdvertRefresh(remotePubkeyHex: string): void {
+    if (!this.autoConnectPolicy.advertRefreshed(remotePubkeyHex)) return;
+    clearTimeout(this.autoReconnectTimers.get(remotePubkeyHex));
+    this.autoReconnectTimers.delete(remotePubkeyHex);
+    this.logger.debug("webrtc auto-connect backoff cleared by newer advert", remotePubkeyHex);
   }
 
   private fillAutoConnectSlots(localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : ""): void {
@@ -277,6 +289,7 @@ export class WebRtcTransport implements Transport {
     const candidates = this.autoConnectPolicy.sort(
       partition.outbound,
       this.autoConnectAttempts,
+      now,
     );
     const reservePreferredSlot = this.autoConnectPolicy.shouldReserveSlot(
       candidates.map((cached) => cached.peer.remoteAddr.addr),
@@ -566,6 +579,7 @@ export class WebRtcTransport implements Transport {
         this.ctx?.onConnectionState?.({ remoteAddr: addr, state });
         if (state === "connected") {
           if (conn) this.conns.set(dial.remotePubkeyHex, conn);
+          this.autoConnectPolicy.recordSuccess(dial.remotePubkeyHex);
           if (this.pendingDials.delete(dial.sessionId)) {
             clearTimeout(dial.timer);
             cancelOfferRetry(dial);
@@ -805,6 +819,7 @@ export class WebRtcTransport implements Transport {
     const existing = this.conns.get(remotePubkeyHex);
     if (state === "connected") {
       this.conns.set(remotePubkeyHex, conn);
+      this.autoConnectPolicy.recordSuccess(remotePubkeyHex);
       this.clearPendingInbound(negotiationId);
       // Switch carriers only when ready. Retiring the old PC is not a
       // peer disconnect: its authenticated FMP/FSP state remains valid.
@@ -889,7 +904,9 @@ export class WebRtcTransport implements Transport {
   private handleAutoConnectFailure(remotePubkeyHex: string, awaitingSessionRecovery = false): void {
     if (!this.cfg.autoConnect || this.stopping) return;
     this.autoConnectPeers.delete(remotePubkeyHex);
-    this.autoConnectPolicy.recordFailure(remotePubkeyHex, awaitingSessionRecovery);
+    // While this node has no working link, failures say nothing about the peer.
+    const attributable = this.ctx?.isLinked?.() ?? true;
+    this.autoConnectPolicy.recordFailure(remotePubkeyHex, awaitingSessionRecovery, attributable);
     this.scheduleAutoReconnect(remotePubkeyHex);
     this.fillAutoConnectSlots();
   }

@@ -51,6 +51,8 @@ export interface TransportContext {
   logger?: Logger;
   /** Current node admission policy; adapters must recheck after asynchronous preparation. */
   allowPeer?: (publicKey: Uint8Array) => boolean;
+  /** Whether any authenticated adjacent link is up; tells local isolation from a dead remote. */
+  isLinked?: () => boolean;
 }
 
 export interface Transport {

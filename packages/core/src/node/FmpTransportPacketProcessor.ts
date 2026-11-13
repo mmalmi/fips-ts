@@ -531,6 +531,8 @@ export class FmpTransportPacketProcessor {
     peer: AdjacentPeer,
     establishmentReply?: Promise<void>,
   ): void {
+    // A new authenticated peer is a topology change: retry suppressed lookups.
+    this.cfg.routing.resetLookupBackoff();
     const replay = () => {
       void this.cfg.routing.replayPendingLookupsFor(peer).catch((error) => {
         this.cfg.emitError(error as Error, "replay pending lookups");
