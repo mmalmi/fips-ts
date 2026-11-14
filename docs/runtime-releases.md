@@ -6,7 +6,12 @@ package's core archive URL in the same release cohort. The workspace overrides
 resolve core locally during qualification; the published packages retain their
 versioned public core URL.
 
-## Unreleased: bounded lookups for offline peers
+## Runtime 62 qualification
+
+The runtime-v0.0.62 cohort contains core 0.0.57, browser 0.0.22,
+Ethernet 0.0.39, Memory 0.0.17, WebRTC 0.0.61 and WebSocket 0.0.15.
+It bounds discovery traffic toward offline peers and lets applications update
+preferred WebRTC peers at run time.
 
 Core ports native FIPS's discovery limits. After a first-contact or transit
 lookup times out, fresh lookups for that target are suppressed for 30 s,
@@ -35,8 +40,23 @@ auto-reconnect peers they back off, here from 1 s doubling to 30 s.
 In a 16-node, degree-8 in-memory mesh, one unanswered lookup for an offline
 target fell from 791 to 357 forwarded requests. Dialing one dead advert for an
 hour fell from 81,473 requests (10.6 MB) to 1,722 (0.22 MB); the mesh's
-heartbeats were about 3.4 MB per hour. Native interoperability, browser, device
-and live idle-traffic acceptance are not yet established for this change.
+heartbeats were about 3.4 MB per hour.
+
+Qualify on macOS ARM64 with the runtime 60 toolchain: Node.js 22.23.4 (the same
+executable SHA-256), the authenticated pnpm 9.15.4 distribution, TypeScript
+5.9.3, Vitest 3.2.7 and the unchanged lockfile. Run the core suite without
+interop, the core typecheck, and the WebRTC, WebSocket, Memory and Ethernet
+suites with one worker and no file parallelism. Compile core with `--force` and
+the other five packages with `tsc -b`; the committed `dist` files must be
+reproduced unchanged. Pack and inspect all six archives as described below.
+
+The opt-in Rust bridge interop suite, built from `interop/rust-bridge` against
+the local native checkout, accepts Rust-signed lookup replies at the TypeScript
+origin. Its Rust-initiated routed-session case fails identically on runtime 61
+source: the bridge still expects direct FSP transport in SessionAck flags,
+which runtime 61 moved to capability negotiation. The traversal and
+native-router fixtures were not supplied and are recorded as skipped. Browser,
+device, public-network and live idle-traffic acceptance remain with consumers.
 
 ## Runtime 61 qualification
 
