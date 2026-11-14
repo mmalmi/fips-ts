@@ -216,6 +216,22 @@ export class WebRtcTransport {
             }
         }
     }
+    /**
+     * Replace the identities auto-connect dials first (for example the
+     * application's own devices). Newly preferred peers are dialed at once.
+     */
+    setPreferredAutoConnectPeers(peers) {
+        const added = new Set(this.autoConnectPolicy.setPreferredPeers(peers));
+        if (added.size === 0)
+            return;
+        for (const [remote, timer] of this.autoReconnectTimers) {
+            if (!added.has(remote.slice(2).toLowerCase()))
+                continue;
+            clearTimeout(timer);
+            this.autoReconnectTimers.delete(remote);
+        }
+        this.fillAutoConnectSlots();
+    }
     /** A live peer republished its advert: lift any failure backoff toward it. */
     handleAdvertRefresh(remotePubkeyHex) {
         if (!this.autoConnectPolicy.advertRefreshed(remotePubkeyHex))
@@ -241,7 +257,9 @@ export class WebRtcTransport {
             const autoConnectLimit = this.autoConnectPolicy.connectionLimit(this.cfg.maxAutoConnections, reservePreferredSlot, remote);
             if (this.autoConnectCapacityUsed() >= autoConnectLimit)
                 continue;
-            if (this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects())
+            // Preferred peers sort first and may exceed the speculative bound.
+            if (!this.autoConnectPolicy.isPreferred(remote)
+                && this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects())
                 return;
             const ownedRemote = this.ownedPeerAddress(remote);
             if (this.conns.has(ownedRemote) || this.pendingConnects.has(ownedRemote) || this.autoConnectPeers.has(remote)

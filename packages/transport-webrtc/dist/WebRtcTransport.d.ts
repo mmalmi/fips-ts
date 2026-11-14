@@ -36,6 +36,11 @@ export declare class WebRtcTransport implements Transport {
     start(ctx: TransportContext): Promise<void>;
     stop(): Promise<void>;
     private handleAdvert;
+    /**
+     * Replace the identities auto-connect dials first (for example the
+     * application's own devices). Newly preferred peers are dialed at once.
+     */
+    setPreferredAutoConnectPeers(peers: readonly string[]): void;
     /** A live peer republished its advert: lift any failure backoff toward it. */
     private handleAdvertRefresh;
     private fillAutoConnectSlots;

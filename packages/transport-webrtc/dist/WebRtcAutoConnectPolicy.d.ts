@@ -8,7 +8,13 @@ export declare class WebRtcAutoConnectPolicy {
     private readonly preferredRanks;
     private readonly cooldowns;
     private readonly failureStreaks;
-    constructor(preferredPeers: string[]);
+    constructor(preferredPeers: readonly string[]);
+    /**
+     * Replace the preferred identities (compressed or x-only hex; either parity
+     * matches). Returns the x-only keys that became preferred, whose earlier
+     * failure cooldowns no longer apply.
+     */
+    setPreferredPeers(peers: readonly string[]): string[];
     partitionByInitiator<T extends AutoConnectCandidate>(candidates: T[], localXOnlyPubkey: string, acceptsConnections: boolean): {
         outbound: T[];
         inbound: T[];

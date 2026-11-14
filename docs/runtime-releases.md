@@ -21,9 +21,16 @@ WebRTC auto-connect keeps its 30 s failure cooldown, but five consecutive
 failures toward one peer extend it to 30 minutes. A newer advert from that
 peer, a connected carrier, or recovered session signaling resets the streak.
 Failures while the node has no working link do not count. Preferred peers keep
-their 1 s retry. Adverts older than half their lifetime plus five minutes have
+their prompt retry. Adverts older than half their lifetime plus five minutes have
 missed a refresh, so they are dialed after fresh ones. Wire formats are
 unchanged.
+
+Preferred peers, such as an application's own devices, can be replaced at run
+time with `WebRtcTransport.setPreferredAutoConnectPeers`. They match by x-only
+identity, so either key parity works, and a newly preferred peer is dialed at
+once even during an earlier cooldown. They are dialed first, may exceed the
+speculative dial bound, and never get the 30 minute wait; like native
+auto-reconnect peers they back off, here from 1 s doubling to 30 s.
 
 In a 16-node, degree-8 in-memory mesh, one unanswered lookup for an offline
 target fell from 791 to 357 forwarded requests. Dialing one dead advert for an

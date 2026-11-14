@@ -62,6 +62,8 @@ const nowSeconds = () => Math.floor(Date.now() / 1_000);
 async function harness(options: {
   isLinked?: () => boolean;
   maxConnections?: number;
+  preferred?: string[];
+  connectTimeoutMs?: number;
   sendLinkNegotiation?: TransportContext["sendLinkNegotiation"];
 } = {}) {
   vi.useFakeTimers();
@@ -71,7 +73,8 @@ async function harness(options: {
   const transport = new WebRtcTransport({
     relays: [relay.url], relayClients: [relay as unknown as NostrRelayClient],
     rtcPeerConnection: SignalOnlyPeerConnection as unknown as typeof RTCPeerConnection,
-    autoConnect: true, connectTimeoutMs: 100, maxConnections: options.maxConnections,
+    autoConnect: true, connectTimeoutMs: options.connectTimeoutMs ?? 100, maxConnections: options.maxConnections,
+    preferredAutoConnectPeers: options.preferred,
   });
   await transport.start({
     localIdentity: local, onPacket: () => undefined, sendLinkNegotiation: sendOffer,
@@ -154,6 +157,83 @@ describe("WebRTC auto-connect redial backoff", () => {
       relay.emit(advertEvent(fresh!, nowSeconds(), nowSeconds() + 10 * 60));
       await vi.advanceTimersByTimeAsync(1_000);
       expect(dialed[0]).toBe(toHex(fresh!.publicKey));
+    } finally { await stop(); }
+  });
+});
+
+describe("WebRTC preferred peers (own devices)", () => {
+  const xOnly = (identity: FipsIdentity) => toHex(identity.xOnlyPubkey);
+  const opposite = (compressed: string) => `${compressed.startsWith("02") ? "03" : "02"}${compressed.slice(2)}`;
+
+  it("dials a peer made preferred at runtime at once, even during its 30 minute wait", async () => {
+    const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x22));
+    const { transport, relay, sendOffer, stop } = await harness();
+    try {
+      relay.emit(advertEvent(remote, nowSeconds(), nowSeconds() + 3_600));
+      await vi.advanceTimersByTimeAsync(4 * 30_000 + 10_000);
+      expect(sendOffer).toHaveBeenCalledTimes(5);
+      transport.setPreferredAutoConnectPeers([xOnly(remote)]);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(sendOffer).toHaveBeenCalledTimes(6);
+      transport.setPreferredAutoConnectPeers([xOnly(remote)]); // unchanged: no extra dial
+      await vi.advanceTimersByTimeAsync(100);
+      expect(sendOffer).toHaveBeenCalledTimes(6);
+    } finally { await stop(); }
+  });
+
+  it("backs a failing preferred peer off from 1 s to 30 s, never to the 30 minute wait", async () => {
+    const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x22));
+    const { relay, sendOffer, stop } = await harness({ preferred: [toHex(remote.publicKey)] });
+    try {
+      relay.emit(advertEvent(remote, nowSeconds(), nowSeconds() + 3_600));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sendOffer).toHaveBeenCalledTimes(1);
+      // Retries after 1, 2, 4, 8 and 16 s, then every 30 s.
+      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 4_000 + 8_000 + 16_000 + 500);
+      expect(sendOffer).toHaveBeenCalledTimes(6);
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(sendOffer).toHaveBeenCalledTimes(6);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sendOffer).toHaveBeenCalledTimes(7);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(sendOffer).toHaveBeenCalledTimes(27);
+    } finally { await stop(); }
+  });
+
+  it("matches preferred peers by identity, whichever key parity was given", async () => {
+    const [other, own] = await Promise.all([0x23, 0x24].map((fill) => identityFromSecretKey(new Uint8Array(32).fill(fill))));
+    const dialed: string[] = [];
+    const { relay, stop } = await harness({
+      maxConnections: 2,
+      preferred: [opposite(toHex(own!.publicKey))],
+      sendLinkNegotiation: async (remote) => { dialed.push(remote); await new Promise<void>(() => {}); },
+    });
+    try {
+      relay.emit(advertEvent(other!, nowSeconds(), nowSeconds() + 3_600));
+      relay.emit(advertEvent(own!, nowSeconds() - 60, nowSeconds() + 600));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(dialed[0]).toBe(toHex(own!.publicKey));
+    } finally { await stop(); }
+  });
+
+  it("dials a preferred peer while speculative dials to strangers fill their slots", async () => {
+    const strangers = await Promise.all([0x31, 0x32, 0x33, 0x34, 0x35]
+      .map((fill) => identityFromSecretKey(new Uint8Array(32).fill(fill))));
+    const own = await identityFromSecretKey(new Uint8Array(32).fill(0x36));
+    const dialed: string[] = [];
+    const { transport, relay, stop } = await harness({
+      maxConnections: 8, connectTimeoutMs: 60_000,
+      sendLinkNegotiation: async (remote) => { dialed.push(remote); await new Promise<void>(() => {}); },
+    });
+    try {
+      for (const stranger of strangers) relay.emit(advertEvent(stranger, nowSeconds(), nowSeconds() + 3_600));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(dialed).toHaveLength(4);
+      relay.emit(advertEvent(own, nowSeconds(), nowSeconds() + 3_600));
+      transport.setPreferredAutoConnectPeers([toHex(own.publicKey)]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(dialed).toContain(toHex(own.publicKey));
+      expect(dialed).toHaveLength(5);
     } finally { await stop(); }
   });
 });
