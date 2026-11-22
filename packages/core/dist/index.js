@@ -1,6 +1,6 @@
 export { BinaryReader, BinaryWriter, bytesEqual, concatBytes, fromHex, toHex, } from "./codec/index.js";
 export { COMPRESSED_PUBKEY_LENGTH, NODE_ADDR_LENGTH, X_ONLY_PUBKEY_LENGTH, compareNodeAddr, deriveNodeAddr, nodeAddrFromHex, nodeAddrFromSlice, nodeAddrToHex, } from "./nodeaddr/index.js";
-export { compressedPubkeyFromXOnly, ecdh, exportIdentity, generateIdentity, identityFromSecretKey, importIdentity, signSchnorr, verifySchnorr, } from "./identity/index.js";
+export { compressedPubkeyFromXOnly, ecdh, exportIdentity, generateIdentity, identityFromSecretKey, importIdentity, peerIdFromPubkey, signSchnorr, verifySchnorr, } from "./identity/index.js";
 export { encodeNpub, decodeNpub, encodeNsec, decodeNsec, npubFromHex, npubToHex, NpubError, } from "./identity/nip19.js";
 export { authChallengeDigest, generateAuthChallenge, signChallenge, verifyChallenge, } from "./identity/auth.js";
 export { PeerIdentity } from "./identity/peer.js";

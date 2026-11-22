@@ -5,6 +5,7 @@ import { peekFspPhase } from "../src/fsp/wire.js";
 import { identityFromSecretKey } from "../src/identity/index.js";
 import { FspSessionManager } from "../src/node/FspSessionManager.js";
 import type { FipsRouting } from "../src/node/FipsRouting.js";
+import type { SessionEvent } from "../src/node/types.js";
 import type { AdjacentPeer } from "../src/node/PeerState.js";
 
 afterEach(() => vi.useRealTimers());
@@ -20,6 +21,7 @@ async function pair(drop: (from: number, phase: number, count: number) => boolea
   } as AdjacentPeer));
   const frames: { from: number; phase: number; frame: Uint8Array }[] = [];
   const delivered: number[][][] = [[], []];
+  const sessions: SessionEvent[][] = [[], []];
   const managers: FspSessionManager[] = [];
   for (const [from, identity] of identities.entries()) {
     const to = 1 - from;
@@ -42,13 +44,13 @@ async function pair(drop: (from: number, phase: number, count: number) => boolea
       } as unknown as FipsRouting,
       getPeerByNodeAddr: () => undefined,
       emitDatagram: () => {}, emitEndpointData: () => {},
-      handleLinkNegotiation: async () => {}, emitSession: () => {},
+      handleLinkNegotiation: async () => {}, emitSession: event => { sessions[from].push(event); },
     });
     manager.registerService(4_242, ({ payload }) => { delivered[from]!.push([...payload]); });
     managers.push(manager);
   }
   return {
-    frames, delivered, managers,
+    frames, delivered, managers, sessions,
     send: (from: number) => managers[from]!.sendDatagram({
       dst: toHex(identities[1 - from]!.publicKey), dstPort: 4_242,
       payload: new Uint8Array([from + 1]),
@@ -101,5 +103,21 @@ it("replays the same Setup to recover a lost Ack without replacing authenticated
   } finally {
     network.managers.forEach(manager => manager.stop());
     await outcome;
+  }
+});
+
+it("never reports the dial target as an authenticated peer when setup times out", async () => {
+  vi.useFakeTimers();
+  const network = await pair(() => true);
+  const sending = network.send(0).catch(error => error);
+  try {
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await sending).toBeInstanceOf(Error);
+    expect(network.sessions[0].map(event => event.state)).toEqual(["establishing", "closed"]);
+    for (const event of network.sessions[0]) expect(event).not.toHaveProperty("peerId");
+    expect(network.sessions[1]).toEqual([]);
+  } finally {
+    network.managers.forEach(manager => manager.stop());
+    await sending;
   }
 });

@@ -1,3 +1,5 @@
+import { peerIdFromPubkey } from "../identity/index.js";
+import type { PeerEvent } from "./types.js";
 import type { FmpLink } from "../fmp/link.js";
 import type { BloomFilter } from "../bloom/index.js";
 import type { Transport, TransportAddress } from "../transport/types.js";
@@ -38,6 +40,15 @@ export interface AdjacentPeer {
     resolve: () => void;
     reject: (err: Error) => void;
     confirmCarrier?: () => void;
+  };
+}
+
+export function peerEvent(peer: AdjacentPeer, state: PeerEvent["state"]): PeerEvent {
+  return {
+    peerId: peerIdFromPubkey(peer.pubkeyHex),
+    remotePubkey: peer.pubkeyHex,
+    remoteAddr: peer.remoteAddr,
+    state,
   };
 }
 

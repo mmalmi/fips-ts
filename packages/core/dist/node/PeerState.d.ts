@@ -1,3 +1,4 @@
+import type { PeerEvent } from "./types.js";
 import type { FmpLink } from "../fmp/link.js";
 import type { BloomFilter } from "../bloom/index.js";
 import type { Transport, TransportAddress } from "../transport/types.js";
@@ -35,5 +36,6 @@ export interface AdjacentPeer {
         confirmCarrier?: () => void;
     };
 }
+export declare function peerEvent(peer: AdjacentPeer, state: PeerEvent["state"]): PeerEvent;
 export declare function pruneDrainingResponderLinks(peer: AdjacentPeer, nowMs: number): void;
 //# sourceMappingURL=PeerState.d.ts.map

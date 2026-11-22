@@ -95,6 +95,16 @@ to topology publication. Ordinary nodes keep their existing routing behavior.
 Intended sender and recipient identities remain in routing envelopes; applications
 must distinguish explicit communication from idle peer discovery.
 
+Use `peerId` to match a peer to a Nostr public key. Peer, datagram and
+endpoint-data events and registered service handlers expose the authenticated
+remote key as 64 lowercase hex digits. Session events expose it once the
+handshake authenticates the peer. A pending session can carry only a routing
+address. For example, `node.on("peer", ({ peerId }) => ...)` identifies the
+same device across WebRTC and WebSocket, even when their compressed keys have
+different prefixes. Use `remotePubkey`, `src`, or a service handler's `reply`
+when sending. To compare a configured public key with an event's `peerId`,
+convert it with `peerIdFromPubkey(hex)`.
+
 An anonymous reader can set `blockedPeerPubkeys` before starting and call
 `await node.setBlockedPeerPubkeys(keys)` when its own/sibling identities change.
 Keys may be x-only or compressed hex. The deny set changes synchronously;

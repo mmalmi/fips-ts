@@ -1,3 +1,4 @@
+import { peerIdFromPubkey } from "../identity/index.js";
 import { bytesEqual } from "../codec/hex.js";
 export const FMP_HANDSHAKE_TIMEOUT_MS = 15_000;
 export const MAX_PENDING_FMP_RESPONDERS = 64;
@@ -6,6 +7,14 @@ export function sameCompressedIdentity(a, b) {
     return a.length === 33 && b.length === 33
         && (a[0] === 2 || a[0] === 3) && (b[0] === 2 || b[0] === 3)
         && bytesEqual(a.subarray(1), b.subarray(1));
+}
+export function peerEvent(peer, state) {
+    return {
+        peerId: peerIdFromPubkey(peer.pubkeyHex),
+        remotePubkey: peer.pubkeyHex,
+        remoteAddr: peer.remoteAddr,
+        state,
+    };
 }
 export function pruneDrainingResponderLinks(peer, nowMs) {
     if (!peer.drainingResponderLinks)

@@ -5,7 +5,7 @@ import { isDirectFspEstablished } from "../fsp/wire.js";
 import { compareNodeAddr, deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
 import { decodeFmpEstablished, decodeFmpMsg2, FMP_INNER_KEEPALIVE, FMP_PHASE_ESTABLISHED, FMP_PHASE_MSG1, FMP_PHASE_MSG2, peekFmpPhase, } from "../fmp/wire.js";
 import { transportAddressKey, } from "../transport/types.js";
-import { pruneDrainingResponderLinks, sameCompressedIdentity } from "./PeerState.js";
+import { peerEvent, pruneDrainingResponderLinks, sameCompressedIdentity } from "./PeerState.js";
 import { PendingFmpResponders } from "./PendingFmpResponders.js";
 import { receiveFmpLinkPacket } from "./FmpLinkReports.js";
 const FMP_REPLACED_LINK_DRAIN_MS = 10_000;
@@ -137,11 +137,7 @@ export class FmpTransportPacketProcessor {
             replacedHandshake.resolve();
         }
         if (!wasEstablished) {
-            this.cfg.emitPeer({
-                remotePubkey: peer.pubkeyHex,
-                remoteAddr: peer.remoteAddr,
-                state: "connected",
-            });
+            this.cfg.emitPeer(peerEvent(peer, "connected"));
             this.replayPendingLookupsAfterEstablishment(peer, replySent);
         }
     }
@@ -356,11 +352,7 @@ export class FmpTransportPacketProcessor {
                 return;
             this.retireDisplacedMsg2Peer(remoteAddr, peer);
             this.rememberPeer(peer);
-            this.cfg.emitPeer({
-                remotePubkey: peer.pubkeyHex,
-                remoteAddr: peer.remoteAddr,
-                state: "connected",
-            });
+            this.cfg.emitPeer(peerEvent(peer, "connected"));
             handshake.resolve();
             peer.outgoingHandshake = undefined;
             this.cfg.routing.scheduleTreeAnnounce(peer);
@@ -476,11 +468,7 @@ export class FmpTransportPacketProcessor {
             else {
                 previous.close();
                 this.rememberPeer(peer);
-                this.cfg.emitPeer({
-                    remotePubkey: peer.pubkeyHex,
-                    remoteAddr: peer.remoteAddr,
-                    state: "connected",
-                });
+                this.cfg.emitPeer(peerEvent(peer, "connected"));
                 this.replayPendingLookupsAfterEstablishment(peer);
             }
             this.cfg.logger.debug("promoted authenticated responder link", remoteAddr.transport, remoteAddr.addr, receiverIdx);
@@ -628,11 +616,7 @@ export class FmpTransportPacketProcessor {
                 candidate.outgoingHandshake = undefined;
             }
             if (wasConnected) {
-                this.cfg.emitPeer({
-                    remotePubkey: candidate.pubkeyHex,
-                    remoteAddr: candidate.remoteAddr,
-                    state: "disconnected",
-                });
+                this.cfg.emitPeer(peerEvent(candidate, "disconnected"));
             }
         }
         this.cfg.peersByPubkey.delete(remotePubkeyHex);

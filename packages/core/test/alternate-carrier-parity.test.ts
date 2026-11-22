@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { FipsNode, fromHex, identityFromSecretKey, toHex } from '../src/index.js'
-import type { FipsIdentity, Transport, TransportAddress, TransportContext } from '../src/index.js'
+import { FipsNode, fromHex, identityFromSecretKey, peerIdFromPubkey, toHex } from '../src/index.js'
+import type { FipsIdentity, PeerEvent, SessionEvent, Transport, TransportAddress, TransportContext } from '../src/index.js'
 import type { FspSession } from '../src/fsp/session.js'
 import type { AdjacentPeer } from '../src/node/PeerState.js'
 
@@ -61,6 +61,10 @@ async function fixture(parity: 'odd' | 'even', unrelatedWebSocket = false) {
   const [localRtc, remoteRtc] = pair('webrtc', localIdentity, remoteIdentity, true)
   const local = new FipsNode({ identity: localIdentity, transports: [localWs, localRtc] })
   const remote = new FipsNode({ identity: remoteIdentity, transports: unrelatedWebSocket ? [remoteRtc] : [remoteWs, remoteRtc] })
+  const peers: PeerEvent[] = [], localSessions: SessionEvent[] = [], remoteSessions: SessionEvent[] = []
+  local.on('peer', event => peers.push(event))
+  local.on('session', event => localSessions.push(event))
+  remote.on('session', event => remoteSessions.push(event))
   nodes.push(local, remote)
   const wsNode = unrelatedWebSocket ? new FipsNode({ identity: wsIdentity, transports: [remoteWs] }) : remote
   if (unrelatedWebSocket) nodes.push(wsNode)
@@ -81,7 +85,7 @@ async function fixture(parity: 'odd' | 'even', unrelatedWebSocket = false) {
   await settle()
   expect(receivedRemote.at(-1)).toBe(2)
   return { local, remote, localWs, localRtc, remoteRtc, receivedLocal, receivedRemote,
-    destination, localIdentity, remoteIdentity }
+    destination, localIdentity, remoteIdentity, peers, localSessions, remoteSessions }
 }
 
 afterEach(async () => {
@@ -113,6 +117,41 @@ describe('FIPS alternate carrier identity', () => {
     expect(f.receivedRemote.at(-1)).toBe(3)
     expect(f.receivedLocal.at(-1)).toBe(4)
     expect(f.localWs.packets).toBeGreaterThan(before)
+  })
+
+  it('reports the same Nostr identity across authenticated links, sessions and application data', async () => {
+    const f = await fixture('odd')
+    const peerId = toHex(f.remoteIdentity.xOnlyPubkey)
+    expect(f.peers.filter(p => p.state === 'connected').map(p => [p.peerId, p.remotePubkey])).toEqual([
+      [peerId, `03${peerId}`], [peerId, `02${peerId}`],
+    ])
+    const localId = toHex(f.localIdentity.xOnlyPubkey)
+    for (const [events, expected] of [[f.localSessions, peerId], [f.remoteSessions, localId]] as const) {
+      expect(events.find(e => e.state === 'establishing')).not.toHaveProperty('peerId')
+      expect(events.find(e => e.state === 'established')?.peerId).toBe(expected)
+    }
+    expect(f.remoteSessions.find(e => e.state === 'establishing')?.remotePubkey).toBe(toHex(f.localIdentity.nodeAddr))
+
+    const sources: string[][] = []
+    f.local.on('datagram', e => { sources.push([e.peerId, e.src]) })
+    f.local.registerService(8345, ctx => { sources.push([ctx.peerId, ctx.src]) })
+    f.local.on('endpointData', e => { sources.push([e.peerId, e.src]) })
+    await f.remote.sendDatagram({ dst: toHex(f.localIdentity.publicKey), dstPort: 8345, payload: new Uint8Array([1]) })
+    await f.remote.sendEndpointData({ dst: toHex(f.localIdentity.publicKey), payload: new Uint8Array([2]) })
+    await settle()
+    expect(sources).toEqual(Array(3).fill([peerId, f.destination]))
+    f.localRtc.disconnect()
+    f.localWs.disconnect()
+    expect(f.peers.filter(p => p.state === 'disconnected').map(p => p.peerId)).toEqual([peerId, peerId])
+    expect(f.localSessions.find(e => e.state === 'closed')?.peerId).toBe(peerId)
+  })
+
+  it('converts full public keys and rejects routing addresses and malformed prefixes', () => {
+    const x = 'a1'.repeat(32)
+    expect([x, `02${x}`, `03${x.toUpperCase()}`].map(peerIdFromPubkey)).toEqual([x, x, x])
+    for (const invalid of [x.slice(32), `04${x}`, `02${x.slice(2)}zz`, x + '00']) {
+      expect(() => peerIdFromPubkey(invalid)).toThrow()
+    }
   })
 
   it('does not treat a different authenticated WS identity as the lost RTC peer', async () => {

@@ -1,4 +1,4 @@
-import type { FipsNode } from "@fips/core";
+import { type FipsNode, peerIdFromPubkey } from "@fips/core";
 import { WebRtcTransport, type WebRtcTransportConfig } from "@fips/transport-webrtc";
 import { WebSocketTransport } from "@fips/transport-websocket";
 
@@ -20,19 +20,15 @@ export function waitForPeerState(
   state: "connected" | "disconnected",
   transport = "webrtc",
 ): Promise<void> {
+  const expectedId = remotePubkey === undefined ? undefined : peerIdFromPubkey(remotePubkey);
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       off();
       reject(new Error(`${transport} peer ${remotePubkey ?? "any"} did not become ${state}`));
     }, 20_000);
-    const off = node.on("peer", (event) => {
-      const peer = event as {
-        remotePubkey: string;
-        remoteAddr: { transport: string };
-        state: string;
-      };
+    const off = node.on("peer", (peer) => {
       if (
-        (remotePubkey !== undefined && peer.remotePubkey !== remotePubkey)
+        (expectedId !== undefined && peer.peerId !== expectedId)
         || peer.remoteAddr.transport !== transport
         || peer.state !== state
       ) return;

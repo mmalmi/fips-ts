@@ -6,6 +6,25 @@ package's core archive URL in the same release cohort. The workspace overrides
 resolve core locally during qualification; the published packages retain their
 versioned public core URL.
 
+## Runtime 63 qualification
+
+The runtime-v0.0.63 cohort contains core 0.0.58, browser 0.0.23,
+Ethernet 0.0.40, Memory 0.0.18, WebRTC 0.0.62 and WebSocket 0.0.16.
+
+Peer events, authenticated session events, received datagrams, endpoint data
+and service handlers expose the remote Nostr public key as `peerId`, a
+lowercase, 64-character x-only hex string. Use it for identity comparisons
+and authorization. Keep using the compressed `remotePubkey` or `src` for
+addresses passed to FIPS send APIs. A session that has yet to authenticate
+its remote peer has no `peerId`. When the last usable carrier closes, FIPS
+now closes its session even when the carrier and session keys use opposite
+compressed prefixes.
+
+Follow the runtime 62 toolchain, compilation and archive checks below. Verify
+that both compressed key parities yield the same public `peerId` and that an
+unauthenticated session does not acquire one from a routing address. The
+change is local to the TypeScript API and preserves the FIPS wire format.
+
 ## Runtime 62 qualification
 
 The runtime-v0.0.62 cohort contains core 0.0.57, browser 0.0.22,

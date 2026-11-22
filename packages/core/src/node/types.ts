@@ -2,6 +2,8 @@ import type { FipsIdentity } from "../identity/index.js";
 import type { Logger, Transport, TransportAddress } from "../transport/types.js";
 
 export interface ServiceContext {
+  /** Authenticated remote Nostr public key (64 lowercase hex digits). */
+  peerId: string;
   src: string;       // remote pubkey hex
   srcPort: number;
   dstPort: number;
@@ -44,15 +46,28 @@ export interface FipsNodeConfig {
   heartbeatIntervalMs?: number;
 }
 
-export type FipsEventName = "peer" | "route" | "session" | "datagram" | "endpointData" | "error";
+export interface FipsEventMap {
+  peer: PeerEvent;
+  route: unknown;
+  session: SessionEvent;
+  datagram: DatagramEvent;
+  endpointData: EndpointDataEvent;
+  error: ErrorEvent;
+}
+
+export type FipsEventName = keyof FipsEventMap;
 
 export interface PeerEvent {
+  /** Authenticated remote Nostr public key (64 lowercase hex digits). */
+  peerId: string;
   remotePubkey: string;
   remoteAddr: TransportAddress;
   state: "connected" | "disconnected";
 }
 
 export interface DatagramEvent {
+  /** Authenticated remote Nostr public key (64 lowercase hex digits). */
+  peerId: string;
   src: string;       // remote pubkey hex
   dst: string;       // local pubkey hex
   srcPort: number;
@@ -61,12 +76,16 @@ export interface DatagramEvent {
 }
 
 export interface EndpointDataEvent {
+  /** Authenticated remote Nostr public key (64 lowercase hex digits). */
+  peerId: string;
   src: string;       // remote pubkey hex
   dst: string;       // local pubkey hex
   payload: Uint8Array;
 }
 
 export interface SessionEvent {
+  /** Authenticated remote Nostr public key. Absent until the handshake proves the peer's identity. */
+  peerId?: string;
   remotePubkey: string;
   state: "establishing" | "established" | "closed";
   /** A fresh authenticated process epoch replaced the previous endpoint keys. */

@@ -20,6 +20,7 @@ import type {
   EndpointDataEvent,
   ErrorEvent,
   FipsEventName,
+  FipsEventMap,
   FipsNodeConfig,
   FipsServiceHandler,
   PeerEvent,
@@ -31,7 +32,7 @@ import {
   FmpTransportPacketProcessor,
 } from "./FmpTransportPacketProcessor.js";
 import { FspSessionManager } from "./FspSessionManager.js";
-import { FMP_HANDSHAKE_TIMEOUT_MS, pruneDrainingResponderLinks, sameCompressedIdentity, type AdjacentPeer } from "./PeerState.js";
+import { peerEvent, FMP_HANDSHAKE_TIMEOUT_MS, pruneDrainingResponderLinks, sameCompressedIdentity, type AdjacentPeer } from "./PeerState.js";
 import { discoveryPublicKey } from "./routingHelpers.js";
 import { PeerAdmission } from "./PeerAdmission.js";
 
@@ -545,14 +546,15 @@ export class FipsNode {
     await this.trackSend(this.sessionManager.sendEndpointData(args));
   }
 
-  on(event: FipsEventName, cb: (data: unknown) => void): () => void {
+  on<K extends FipsEventName>(event: K, cb: (data: FipsEventMap[K]) => void): () => void {
     let set = this.listeners.get(event);
     if (!set) {
       set = new Set();
       this.listeners.set(event, set);
     }
-    set.add(cb);
-    return () => set!.delete(cb);
+    const listener = cb as (data: unknown) => void;
+    set.add(listener);
+    return () => set!.delete(listener);
   }
 
   private emit(event: "peer", data: PeerEvent): void;
@@ -589,11 +591,7 @@ export class FipsNode {
         }
         this.removePeerPath(key, peer, true);
         if (wasConnected) {
-          this.emit("peer", {
-            remotePubkey: peer.pubkeyHex,
-            remoteAddr: peer.remoteAddr,
-            state: "disconnected",
-          });
+          this.emit("peer", peerEvent(peer, "disconnected"));
         }
       }
     }

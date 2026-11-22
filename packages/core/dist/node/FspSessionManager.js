@@ -68,8 +68,11 @@ export class FspSessionManager {
         this.sessions.clear();
     }
     closePeerSessions(remotePubkeyHex) {
+        if (!remotePubkeyHex)
+            return; // A pending carrier may not know its peer yet.
+        const remoteKey = fromHex(remotePubkeyHex);
         for (const [nodeHex, session] of this.sessions) {
-            if (session.remotePubkeyHex !== remotePubkeyHex)
+            if (!session.remotePubkey || !sameCompressedIdentity(session.remotePubkey, remoteKey))
                 continue;
             if (session.setupPromise) {
                 this.rejectSessionSetup(session, nodeHex, new Error("remote FIPS peer restarted"));
@@ -79,7 +82,11 @@ export class FspSessionManager {
             session.pendingResponderFsp?.close();
             session.previousFsp?.fsp.close();
             this.sessions.delete(nodeHex);
-            this.cfg.emitSession({ remotePubkey: remotePubkeyHex, state: "closed" });
+            this.cfg.emitSession({
+                remotePubkey: session.remotePubkeyHex ?? remotePubkeyHex,
+                state: "closed",
+                ...(session.fsp.peerId && { peerId: session.fsp.peerId }),
+            });
         }
     }
     async sendDatagram(args) {
@@ -200,7 +207,7 @@ export class FspSessionManager {
                 return;
             if (!wasEstablished) {
                 const eventPubkey = session.remotePubkeyHex ?? srcNodeHex;
-                this.cfg.emitSession({ remotePubkey: eventPubkey, state: "established" });
+                this.cfg.emitSession({ remotePubkey: eventPubkey, peerId: handshakeFsp.peerId, state: "established" });
                 this.resolveSessionSetup(session);
                 // Optional capability I/O must not keep the authenticated setup deadline alive.
                 void this.requestExtensions(session);
@@ -307,15 +314,19 @@ export class FspSessionManager {
                 await this.sendSessionMessage(session, FSP_MSG_TRAVERSAL_ANSWER, answer);
             return;
         }
+        const peerId = receiveFsp.peerId;
+        if (!peerId)
+            throw new Error("established FSP session has no authenticated peer ID");
         const srcHex = session.remotePubkeyHex ?? srcNodeHex;
         if (result.msgType === FSP_MSG_DATA && result.data) {
             session.extensions ??= new FspExtensions();
             if (await session.extensions.receive(result.data, payload => this.sendExtension(session, payload)))
                 return;
-            await this.deliverDatagram(srcHex, result.data);
+            await this.deliverDatagram(srcHex, peerId, result.data);
         }
         if (result.msgType === FSP_MSG_ENDPOINT_DATA && result.endpointData) {
             this.cfg.emitEndpointData({
+                peerId,
                 src: srcHex,
                 dst: toHex(this.cfg.identity.publicKey),
                 payload: result.endpointData,
@@ -343,7 +354,7 @@ export class FspSessionManager {
         }
         this.cfg.logger.debug("promoted authenticated FSP rekey epoch", srcNodeHex, receivedKBit);
     }
-    async deliverDatagram(srcHex, datagram) {
+    async deliverDatagram(srcHex, peerId, datagram) {
         if (datagram.dstPort === LINK_NEGOTIATION_SERVICE_PORT) {
             await this.cfg.handleLinkNegotiation(srcHex, decodeLinkNegotiationMessage(datagram.payload));
             return;
@@ -358,6 +369,7 @@ export class FspSessionManager {
             });
         };
         this.cfg.emitDatagram({
+            peerId,
             src: srcHex,
             dst: toHex(this.cfg.identity.publicKey),
             srcPort: datagram.srcPort,
@@ -366,6 +378,7 @@ export class FspSessionManager {
         });
         if (handler) {
             await handler({
+                peerId,
                 src: srcHex,
                 srcPort: datagram.srcPort,
                 dstPort: datagram.dstPort,
@@ -469,6 +482,7 @@ export class FspSessionManager {
         this.cfg.routing.learnReverseRoute(srcNodeHex, peer);
         this.cfg.emitSession({
             remotePubkey: session.remotePubkeyHex ?? srcNodeHex,
+            peerId: handshakeFsp.peerId,
             state: "established",
             ...(remoteRestarted ? { restarted: true } : {}),
         });
@@ -641,6 +655,7 @@ export class FspSessionManager {
             this.sessions.delete(remoteNodeHex);
             this.cfg.emitSession({
                 remotePubkey: session.remotePubkeyHex ?? remoteNodeHex,
+                ...(session.fsp.peerId && { peerId: session.fsp.peerId }),
                 state: "closed",
             });
         }

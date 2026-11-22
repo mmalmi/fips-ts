@@ -1,6 +1,6 @@
 import type { FipsIdentity } from "../identity/index.js";
 import { type TransportAddress } from "../transport/types.js";
-import type { FipsEventName, FipsNodeConfig, FipsServiceHandler } from "./types.js";
+import type { FipsEventName, FipsEventMap, FipsNodeConfig, FipsServiceHandler } from "./types.js";
 export declare class FipsNode {
     readonly identity: FipsIdentity;
     readonly forwarding: boolean;
@@ -71,7 +71,7 @@ export declare class FipsNode {
         dst: string;
         payload: Uint8Array;
     }): Promise<void>;
-    on(event: FipsEventName, cb: (data: unknown) => void): () => void;
+    on<K extends FipsEventName>(event: K, cb: (data: FipsEventMap[K]) => void): () => void;
     private emit;
     private onTransportConn;
     private rememberPeer;

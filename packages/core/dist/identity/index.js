@@ -3,6 +3,15 @@ import { sha256 } from "@noble/hashes/sha256";
 import { randomBytes } from "@noble/hashes/utils";
 import { fromHex, toHex } from "../codec/hex.js";
 import { deriveNodeAddr } from "../nodeaddr/index.js";
+/**
+ * Return the lowercase 32-byte Nostr identity for an x-only or compressed public key in hex.
+ * This converts an encoding. Authentication comes from the event or session that supplied the key.
+ */
+export function peerIdFromPubkey(pubkey) {
+    if (!/^(?:02|03)?[0-9a-f]{64}$/i.test(pubkey))
+        throw new Error("expected an x-only or compressed public key in hex");
+    return pubkey.slice(-64).toLowerCase();
+}
 /** Reconstruct and validate the canonical even-parity compressed key for an x-only key. */
 export function compressedPubkeyFromXOnly(xOnlyPubkey) {
     if (xOnlyPubkey.length !== 32) {

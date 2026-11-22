@@ -23,7 +23,7 @@ import {
 
 import type { FipsRouting } from "./FipsRouting.js";
 import type { FspSessionManager } from "./FspSessionManager.js";
-import { pruneDrainingResponderLinks, sameCompressedIdentity, type AdjacentPeer } from "./PeerState.js";
+import { peerEvent, pruneDrainingResponderLinks, sameCompressedIdentity, type AdjacentPeer } from "./PeerState.js";
 import { PendingFmpResponders } from "./PendingFmpResponders.js";
 import { receiveFmpLinkPacket } from "./FmpLinkReports.js";
 import type { PeerEvent } from "./types.js";
@@ -213,11 +213,7 @@ export class FmpTransportPacketProcessor {
       replacedHandshake.resolve();
     }
     if (!wasEstablished) {
-      this.cfg.emitPeer({
-        remotePubkey: peer.pubkeyHex,
-        remoteAddr: peer.remoteAddr,
-        state: "connected",
-      });
+      this.cfg.emitPeer(peerEvent(peer, "connected"));
       this.replayPendingLookupsAfterEstablishment(peer, replySent);
     }
   }
@@ -497,11 +493,7 @@ export class FmpTransportPacketProcessor {
         && !confirmationReceived) return;
       this.retireDisplacedMsg2Peer(remoteAddr, peer);
       this.rememberPeer(peer);
-      this.cfg.emitPeer({
-        remotePubkey: peer.pubkeyHex,
-        remoteAddr: peer.remoteAddr,
-        state: "connected",
-      });
+      this.cfg.emitPeer(peerEvent(peer, "connected"));
       handshake.resolve();
       peer.outgoingHandshake = undefined;
       this.cfg.routing.scheduleTreeAnnounce(peer);
@@ -636,11 +628,7 @@ export class FmpTransportPacketProcessor {
       } else {
         previous.close();
         this.rememberPeer(peer);
-        this.cfg.emitPeer({
-          remotePubkey: peer.pubkeyHex,
-          remoteAddr: peer.remoteAddr,
-          state: "connected",
-        });
+        this.cfg.emitPeer(peerEvent(peer, "connected"));
         this.replayPendingLookupsAfterEstablishment(peer);
       }
       this.cfg.logger.debug(
@@ -819,11 +807,7 @@ export class FmpTransportPacketProcessor {
         candidate.outgoingHandshake = undefined;
       }
       if (wasConnected) {
-        this.cfg.emitPeer({
-          remotePubkey: candidate.pubkeyHex,
-          remoteAddr: candidate.remoteAddr,
-          state: "disconnected",
-        });
+        this.cfg.emitPeer(peerEvent(candidate, "disconnected"));
       }
     }
     this.cfg.peersByPubkey.delete(remotePubkeyHex);

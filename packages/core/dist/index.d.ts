@@ -1,6 +1,6 @@
 export { BinaryReader, BinaryWriter, bytesEqual, concatBytes, fromHex, toHex, } from "./codec/index.js";
 export { COMPRESSED_PUBKEY_LENGTH, NODE_ADDR_LENGTH, X_ONLY_PUBKEY_LENGTH, compareNodeAddr, deriveNodeAddr, nodeAddrFromHex, nodeAddrFromSlice, nodeAddrToHex, type NodeAddr, } from "./nodeaddr/index.js";
-export { compressedPubkeyFromXOnly, ecdh, exportIdentity, generateIdentity, identityFromSecretKey, importIdentity, signSchnorr, verifySchnorr, type FipsIdentity, type SerializedIdentity, } from "./identity/index.js";
+export { compressedPubkeyFromXOnly, ecdh, exportIdentity, generateIdentity, identityFromSecretKey, importIdentity, peerIdFromPubkey, signSchnorr, verifySchnorr, type FipsIdentity, type SerializedIdentity, } from "./identity/index.js";
 export { encodeNpub, decodeNpub, encodeNsec, decodeNsec, npubFromHex, npubToHex, NpubError, } from "./identity/nip19.js";
 export { authChallengeDigest, generateAuthChallenge, signChallenge, verifyChallenge, type AuthResponse, } from "./identity/auth.js";
 export { PeerIdentity } from "./identity/peer.js";
@@ -17,7 +17,7 @@ export { FspSession } from "./fsp/session.js";
 export { DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN, DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS, DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN, DirectFspTransportReassembler, isDirectFspTransportFragment, segmentDirectFspTransportRecord, } from "./fsp/directTransport.js";
 export { FORWARD_VERSION, decodeForwardEnvelope, encodeForwardEnvelope, type ForwardEnvelope, } from "./node/forward.js";
 export { FipsNode } from "./node/FipsNode.js";
-export type { Clock, DatagramEvent, EndpointDataEvent, ErrorEvent, FipsEventName, FipsNodeConfig, FipsServiceHandler, PeerEvent, RandomSource, ServiceContext, ServiceRegistration, SessionEvent, } from "./node/types.js";
+export type { Clock, DatagramEvent, EndpointDataEvent, ErrorEvent, FipsEventName, FipsEventMap, FipsNodeConfig, FipsServiceHandler, PeerEvent, RandomSource, ServiceContext, ServiceRegistration, SessionEvent, } from "./node/types.js";
 export { noopLogger, transportAddressKey, } from "./transport/types.js";
 export type { DiscoveredPeer, Logger, ReceivedTransportPacket, Transport, TransportAddress, TransportConnectionStateEvent, TransportContext, } from "./transport/types.js";
 //# sourceMappingURL=index.d.ts.map

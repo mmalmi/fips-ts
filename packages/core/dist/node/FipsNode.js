@@ -8,7 +8,7 @@ import { noopLogger, transportAddressKey, } from "../transport/types.js";
 import { FipsRouting } from "./FipsRouting.js";
 import { FmpTransportPacketProcessor, } from "./FmpTransportPacketProcessor.js";
 import { FspSessionManager } from "./FspSessionManager.js";
-import { FMP_HANDSHAKE_TIMEOUT_MS, pruneDrainingResponderLinks, sameCompressedIdentity } from "./PeerState.js";
+import { peerEvent, FMP_HANDSHAKE_TIMEOUT_MS, pruneDrainingResponderLinks, sameCompressedIdentity } from "./PeerState.js";
 import { discoveryPublicKey } from "./routingHelpers.js";
 import { PeerAdmission } from "./PeerAdmission.js";
 const defaultRandom = { bytes: (n) => randomBytes(n) };
@@ -518,8 +518,9 @@ export class FipsNode {
             set = new Set();
             this.listeners.set(event, set);
         }
-        set.add(cb);
-        return () => set.delete(cb);
+        const listener = cb;
+        set.add(listener);
+        return () => set.delete(listener);
     }
     emit(event, data) {
         const set = this.listeners.get(event);
@@ -548,11 +549,7 @@ export class FipsNode {
                 }
                 this.removePeerPath(key, peer, true);
                 if (wasConnected) {
-                    this.emit("peer", {
-                        remotePubkey: peer.pubkeyHex,
-                        remoteAddr: peer.remoteAddr,
-                        state: "disconnected",
-                    });
+                    this.emit("peer", peerEvent(peer, "disconnected"));
                 }
             }
         }

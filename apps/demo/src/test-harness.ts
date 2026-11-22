@@ -13,6 +13,7 @@ import {
   encodeNpub,
   generateIdentity,
   observeAuthenticatedPeer,
+  peerIdFromPubkey,
   toHex,
 } from "@fips/core";
 import { MemoryHub, MemoryTransport } from "@fips/transport-memory";
@@ -119,9 +120,8 @@ async function autoConnectWebRtcPair(relayUrl: string): Promise<NodePair> {
 
   const connected = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("advert FMP connect timeout")), 20_000);
-    const off = a.on("peer", (event) => {
-      const peer = event as { remotePubkey: string; state: string };
-      if (peer.remotePubkey !== toHex(bId.publicKey) || peer.state !== "connected") return;
+    const off = a.on("peer", (peer) => {
+      if (peer.peerId !== toHex(bId.xOnlyPubkey) || peer.state !== "connected") return;
       clearTimeout(timer);
       off();
       resolve();
@@ -442,9 +442,8 @@ async function echoOverPair(pair: NodePair, payload: string, port = 9000): Promi
 async function echoOverChain(three: ThreeNodes, payload: string, port = 9000): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => { off(); reject(new Error("chain echo timeout")); }, 20_000);
-    const off = three.a.on("datagram", (evt) => {
-      const dg = evt as { src: string; dstPort: number; payload: Uint8Array };
-      if (dg.src === three.cPub && dg.dstPort === port) {
+    const off = three.a.on("datagram", (dg) => {
+      if (dg.peerId === peerIdFromPubkey(three.cPub) && dg.dstPort === port) {
         clearTimeout(timer);
         off();
         resolve(new TextDecoder().decode(dg.payload));
@@ -652,9 +651,8 @@ async function echoWithRustWebRtcPeer(
       off();
       reject(new Error("rust echo timeout"));
     }, 20_000);
-    const off = sender.on("endpointData", (evt) => {
-      const msg = evt as { src: string; payload: Uint8Array };
-      if (msg.src !== rustPubkeyHex) return;
+    const off = sender.on("endpointData", (msg) => {
+      if (msg.peerId !== peerIdFromPubkey(rustPubkeyHex)) return;
       if (new TextDecoder().decode(msg.payload) !== expected) return;
       clearTimeout(timer);
       off();
@@ -778,10 +776,10 @@ async function startPersistentWebRtcPeer(
       discoveryApp,
     }),
   });
-  node.on("peer", (event) => {
-    const peer = event as { remotePubkey: string; state: string };
-    if (peer.state === "connected") connectedPeers.add(peer.remotePubkey);
-    if (peer.state === "disconnected") connectedPeers.delete(peer.remotePubkey);
+  node.on("peer", (peer) => {
+    if (peer.remoteAddr.transport !== "webrtc") return;
+    if (peer.state === "connected") connectedPeers.add(peer.peerId);
+    if (peer.state === "disconnected") connectedPeers.delete(peer.peerId);
   });
   node.on("error", (event) => {
     const error = event as { err: unknown; where: string };
@@ -796,14 +794,14 @@ async function startPersistentWebRtcPeer(
 async function connectPersistentWebRtcPeer(remotePubkey: string): Promise<void> {
   if (!persistentWebRtcPeer) throw new Error("persistent WebRTC peer is not started");
   await persistentWebRtcPeer.node.connect({ transport: "webrtc", addr: remotePubkey });
-  persistentWebRtcPeer.connectedPeers.add(remotePubkey);
+  persistentWebRtcPeer.connectedPeers.add(peerIdFromPubkey(remotePubkey));
 }
 
 async function waitForPersistentWebRtcPeer(remotePubkey: string): Promise<void> {
   if (!persistentWebRtcPeer) throw new Error("persistent WebRTC peer is not started");
-  if (persistentWebRtcPeer.connectedPeers.has(remotePubkey)) return;
+  if (persistentWebRtcPeer.connectedPeers.has(peerIdFromPubkey(remotePubkey))) return;
   await waitForPeerState(persistentWebRtcPeer.node, remotePubkey, "connected");
-  persistentWebRtcPeer.connectedPeers.add(remotePubkey);
+  persistentWebRtcPeer.connectedPeers.add(peerIdFromPubkey(remotePubkey));
 }
 
 async function echoPersistentWebRtcPeer(remotePubkey: string, payload: string): Promise<string> {

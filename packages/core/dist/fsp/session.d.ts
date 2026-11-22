@@ -21,6 +21,9 @@ export declare class FspSession {
     readonly role: FspRole;
     remotePubkey?: Uint8Array;
     remoteEpoch?: Uint8Array;
+    private authenticatedPeerId?;
+    /** X-only identity proven by this handshake, retained across close. */
+    get peerId(): string | undefined;
     private readonly localEpoch;
     private readonly strictClient;
     private hs?;

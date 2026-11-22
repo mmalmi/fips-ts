@@ -6,7 +6,7 @@
  */
 import { aeadOpen, aeadSeal } from "../crypto/aead.js";
 import { ReplayWindow } from "../crypto/replay.js";
-import { bytesEqual } from "../codec/hex.js";
+import { bytesEqual, toHex } from "../codec/hex.js";
 import { NoiseHandshake } from "../noise/index.js";
 import { deriveNodeAddr } from "../nodeaddr/index.js";
 import { decodeSessionAck, decodeSessionMsg3, decodeSessionSetup, encodeSessionAck, encodeSessionMsg3, encodeSessionSetup, SESSION_FLAG_DIRECT_FSP_TRANSPORT, } from "../protocol/session.js";
@@ -17,6 +17,9 @@ export class FspSession {
     role;
     remotePubkey;
     remoteEpoch;
+    authenticatedPeerId;
+    /** X-only identity proven by this handshake, retained across close. */
+    get peerId() { return this.authenticatedPeerId; }
     localEpoch;
     strictClient;
     hs;
@@ -252,7 +255,11 @@ export class FspSession {
     finalize() {
         if (!this.hs)
             throw new Error("noise handshake state missing");
+        const remoteStatic = this.hs.getRemoteStatic();
+        if (!remoteStatic || remoteStatic.length !== 33)
+            throw new Error("missing authenticated compressed peer key");
         const { tx, rx } = this.hs.splitTxRx();
+        this.authenticatedPeerId = toHex(remoteStatic.subarray(1));
         this.tx = tx;
         this.rx = rx;
         this.sessionStartMs = performance.now();

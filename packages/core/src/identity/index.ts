@@ -12,6 +12,15 @@ export interface FipsIdentity {
   readonly nodeAddr: NodeAddr;      // 16 bytes
 }
 
+/**
+ * Return the lowercase 32-byte Nostr identity for an x-only or compressed public key in hex.
+ * This converts an encoding. Authentication comes from the event or session that supplied the key.
+ */
+export function peerIdFromPubkey(pubkey: string): string {
+  if (!/^(?:02|03)?[0-9a-f]{64}$/i.test(pubkey)) throw new Error("expected an x-only or compressed public key in hex");
+  return pubkey.slice(-64).toLowerCase();
+}
+
 /** Reconstruct and validate the canonical even-parity compressed key for an x-only key. */
 export function compressedPubkeyFromXOnly(xOnlyPubkey: Uint8Array): Uint8Array {
   if (xOnlyPubkey.length !== 32) {
