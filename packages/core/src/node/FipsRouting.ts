@@ -346,11 +346,11 @@ export class FipsRouting {
   }
 
   async ensureFirstContactRoute(target: NodeAddr, targetHex: string, targetPubkey: Uint8Array): Promise<void> {
+    if (!this.cfg.isStarted()) throw new Error("FIPS node stopped");
     const existing = this.originLookups.get(targetHex);
     if (existing) { await existing.promise; return; }
     this.assertLookupAllowed(targetHex);
-    const hadLookupPeers = this.originLookupPeers().length > 0;
-    await this.runOriginLookup({ target, targetHex, targetPubkey, minMtu: 0, retryWhenReachable: !hadLookupPeers });
+    await this.runOriginLookup({ target, targetHex, targetPubkey, minMtu: 0, retryWhenReachable: this.originLookupPeers().length === 0 });
   }
 
   /** Post-failure suppression keeps an offline target from triggering a fresh network-wide lookup. */

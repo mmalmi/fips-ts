@@ -37,6 +37,9 @@ class RoutedCarrier implements Transport {
     this.closed.add(address.addr);
     this.context!.onConnectionState?.({ remoteAddr: address, state: 'disconnected' });
   }
+  restore(address: TransportAddress) {
+    this.closed.delete(address.addr);
+  }
 }
 
 interface SessionState { fsp: FspSession; currentKBit: boolean }
@@ -141,6 +144,101 @@ describe('routed FSP session lifetime', () => {
     expect(inspect(local.node).sessionManager.sessions.has(toHex(remote.identity.nodeAddr))).toBe(false);
     expect(localSession.fsp.state).toBe('closed');
   });
+
+  it('reroutes an established session after its sole carrier is re-made, before any tree advert lands', async () => {
+    // Default tree routing: no learnedRoutes entry to carry a reply, so the
+    // send relies on coordCache + a tree peer. A has one carrier to B (the
+    // forwarder); B has one to C. A's A->C session is established via B.
+    const network = new Map<string, RoutedCarrier>();
+    const nodes = await Promise.all([0x51, 0x52, 0x53].map(async value => {
+      const identity = await identityFromSecretKey(new Uint8Array(32).fill(value));
+      const carrier = new RoutedCarrier('tree-mode', network);
+      const node = new FipsNode({ identity, transports: [carrier], forwarding: true });
+      const received: Uint8Array[] = [];
+      const errors: unknown[] = [];
+      node.on('endpointData', event => received.push((event as { payload: Uint8Array }).payload));
+      node.on('error', event => errors.push(event));
+      active.push(node);
+      await node.start();
+      return { node, identity, carrier, received, errors };
+    }));
+    const [local, seed, remote] = nodes;
+    const seedKey = toHex(seed.identity.publicKey);
+    const localKey = toHex(local.identity.publicKey);
+    const remoteKey = toHex(remote.identity.publicKey);
+    await local.node.connect({ transport: 'tree-mode', addr: seedKey });
+    await remote.node.connect({ transport: 'tree-mode', addr: seedKey });
+    await local.node.sendEndpointData({ dst: remoteKey, payload: new Uint8Array([1]) });
+    await vi.waitFor(() => expect(remote.received).toEqual([new Uint8Array([1])]));
+
+    const session = inspect(local.node).sessionManager.sessions.get(toHex(remote.identity.nodeAddr))!;
+
+    // The sole A-B carrier ends at both ends. The A->C session keys belong
+    // to C's identity, not B's, so authenticated routing retains them.
+    local.carrier.disconnect({ transport: 'tree-mode', addr: seedKey });
+    seed.carrier.disconnect({ transport: 'tree-mode', addr: localKey });
+    expect(session.fsp.state).toBe('established');
+
+    local.carrier.restore({ transport: 'tree-mode', addr: seedKey });
+    seed.carrier.restore({ transport: 'tree-mode', addr: localKey });
+
+    const reconnected = new Promise<void>(resolve => {
+      local.node.on('peer', event => {
+        const ev = event as { state: string; remotePubkey?: string };
+        if (ev.state === 'connected' && ev.remotePubkey === seedKey) resolve();
+      });
+    });
+    await local.node.connect({ transport: 'tree-mode', addr: seedKey });
+    await reconnected;
+
+    // At `connected`: an established session, cached coordinates for C, but
+    // B has not yet sent its TreeAnnounce and is not yet a tree peer.
+    // nextHopFor(C) answers undefined; a send on the session must still
+    // reach C.
+    await local.node.sendEndpointData({ dst: remoteKey, payload: new Uint8Array([9]) });
+    await vi.waitFor(() => expect(remote.received.at(-1)).toEqual(new Uint8Array([9])));
+    expect(session.fsp.state).toBe('established');
+    expect(local.errors).toEqual([]);
+  });
+
+  it('rejects a send on a stopped node without starting a fresh lookup', async () => {
+    // A send issued after FipsNode.stop() must not start a fresh first-contact
+    // lookup that waits out LOOKUP_ORIGIN_TIMEOUT_MS; it must fail promptly
+    // with the same "FIPS node stopped" shape resolveTransportIdentity uses.
+    const network = new Map<string, RoutedCarrier>();
+    const nodes = await Promise.all([0x61, 0x62, 0x63].map(async value => {
+      const identity = await identityFromSecretKey(new Uint8Array(32).fill(value));
+      const carrier = new RoutedCarrier('tree-stop', network);
+      const node = new FipsNode({ identity, transports: [carrier], forwarding: true });
+      const received: Uint8Array[] = [];
+      const errors: unknown[] = [];
+      node.on('endpointData', event => received.push((event as { payload: Uint8Array }).payload));
+      node.on('error', event => errors.push(event));
+      active.push(node);
+      await node.start();
+      return { node, identity, carrier, received, errors };
+    }));
+    const [local, seed, remote] = nodes;
+    const seedKey = toHex(seed.identity.publicKey);
+    const localKey = toHex(local.identity.publicKey);
+    const remoteKey = toHex(remote.identity.publicKey);
+    await local.node.connect({ transport: 'tree-stop', addr: seedKey });
+    await remote.node.connect({ transport: 'tree-stop', addr: seedKey });
+    await local.node.sendEndpointData({ dst: remoteKey, payload: new Uint8Array([1]) });
+    await vi.waitFor(() => expect(remote.received).toEqual([new Uint8Array([1])]));
+
+    // A-B ends; the established A->C session's route is now unusable.
+    local.carrier.disconnect({ transport: 'tree-stop', addr: seedKey });
+    seed.carrier.disconnect({ transport: 'tree-stop', addr: localKey });
+
+    await local.node.stop();
+    const started = Date.now();
+    const outcome = await local.node.sendEndpointData({ dst: remoteKey, payload: new Uint8Array([2]) })
+      .then(() => 'delivered', err => (err as Error).message);
+    const elapsed = Date.now() - started;
+    expect(outcome).toBe('FIPS node stopped');
+    expect(elapsed).toBeLessThan(500);
+  }, 10_000);
 
   it('still discards old endpoint keys after an authenticated remote process restart', async () => {
     const { local, remote, network } = await fixture();
