@@ -656,7 +656,8 @@ export class FspSessionManager {
 
   private async ensureSession(remotePubkeyHex: string): Promise<Session> {
     const cached = this.sessionsByPubkey.get(remotePubkeyHex);
-    if (cached && cached.fsp.state === "established") {
+    if (cached && cached.fsp.state === "established"
+      && this.cfg.routing.hasUsableRoute(cached.remoteNodeHex ??= nodeAddrToHex(cached.remoteNodeAddr))) {
       if (cached.remotePubkey) this.cfg.assertPeerAllowed?.(cached.remotePubkey);
       return cached;
     }
@@ -664,8 +665,6 @@ export class FspSessionManager {
     this.cfg.assertPeerAllowed?.(remotePubkey);
     const remoteNodeAddr = deriveNodeAddr(remotePubkey);
     const remoteNodeHex = nodeAddrToHex(remoteNodeAddr);
-    const existing = this.findExistingSession(remoteNodeHex, remotePubkeyHex);
-    if (existing) return existing;
     // Cached coordinates can outlive their carrier. Establish a routed path
     // before signaling a transport that itself needs this FSP session.
     if (!this.cfg.routing.hasUsableRoute(remoteNodeHex)) {
