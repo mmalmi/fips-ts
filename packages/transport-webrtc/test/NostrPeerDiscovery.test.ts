@@ -160,6 +160,33 @@ it("closes a provider whose restoration completes after discovery stops", async 
   expect(closes).toBe(1);
 });
 
+it("ignores null advert content during provider restoration and continues with valid adverts", async () => {
+  const identity = await identityFromSecretKey(new Uint8Array(32).fill(0x64));
+  const now = Math.floor(Date.now() / 1_000);
+  const unsigned = {
+    kind: FIPS_ADVERT_KIND,
+    created_at: now,
+    tags: [["d", FIPS_ADVERT_D_TAG], ["protocol", FIPS_ADVERT_D_TAG]],
+  };
+  const malformed = signEvent(identity, { ...unsigned, content: "null" });
+  const valid = signEvent(identity, {
+    ...unsigned,
+    content: JSON.stringify(advertContent(toHex(identity.publicKey))),
+  });
+  const received: NostrEvent[] = [];
+  const discovery = new NostrPeerDiscovery({ identity, relays: [], provider: {
+    publish: async () => {},
+    subscribe: async (_filter, onEvent) => {
+      onEvent(malformed, "local-cache");
+      onEvent(valid, "local-cache");
+      return () => {};
+    },
+  } });
+  await discovery.subscribeAdverts((event) => received.push(event));
+  expect(received).toEqual([valid]);
+  discovery.stop();
+});
+
 it("caches verified event signatures across relays while still rejecting tampered content or sigs", async () => {
   const local = await identityFromSecretKey(new Uint8Array(32).fill(0x71));
   const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x72));

@@ -88,7 +88,7 @@ export class NostrPeerDiscovery {
             catch {
                 return;
             }
-            if (advert.identifier !== FIPS_ADVERT_IDENTIFIER
+            if (!advert || advert.identifier !== FIPS_ADVERT_IDENTIFIER
                 || advert.version !== 1 || !Array.isArray(advert.endpoints))
                 return;
             if (!this.verifyCachedEvent(event))
