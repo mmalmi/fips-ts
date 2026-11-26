@@ -97,6 +97,7 @@ export class FspSessionManager {
   private readonly localEpoch: Uint8Array;
   private readonly localPubkeyHex: string;
   private reportTimer?: ReturnType<typeof setInterval>;
+  private reportsEnabled = false;
   private reportsSending = false;
   private readonly missingSessionRecoveries = new Map<string, {
     abort: AbortController; expiresAtMs: number; promise: Promise<void>;
@@ -123,26 +124,29 @@ export class FspSessionManager {
     };
   }
 
-  start(): void {
-    if (this.reportTimer) return;
-    this.reportTimer = setInterval(() => { void this.sendReceiverReports(); }, 1_000);
-  }
+  start(): void { this.reportsEnabled = true; this.syncReportTimer(); }
 
   stop(): void {
+    this.reportsEnabled = false;
     this.recoveryGeneration++;
     for (const recovery of this.missingSessionRecoveries.values()) recovery.abort.abort();
     this.missingSessionRecoveries.clear();
-    if (this.reportTimer) clearInterval(this.reportTimer);
-    this.reportTimer = undefined;
+    this.syncReportTimer();
     for (const [nodeHex, session] of [...this.sessions]) {
-      if (session.setupPromise) {
-        this.rejectSessionSetup(session, nodeHex, new Error("FSP session manager stopped"));
-      } else {
-        this.closeSessionHandles(session);
-      }
+      if (session.setupPromise) this.rejectSessionSetup(session, nodeHex, new Error("FSP session manager stopped"));
+      else this.closeSessionHandles(session);
     }
     this.sessions.clear();
     this.sessionsByPubkey.clear();
+  }
+
+  private syncReportTimer(): void {
+    if (this.reportsEnabled && this.sessions.size > 0) {
+      this.reportTimer ??= setInterval(() => { void this.sendReceiverReports(); }, 1_000);
+    } else if (this.reportTimer) {
+      clearInterval(this.reportTimer);
+      this.reportTimer = undefined;
+    }
   }
 
   closePeerSessions(remotePubkeyHex: string): void {
@@ -231,6 +235,7 @@ export class FspSessionManager {
 
   async sendReceiverReports(): Promise<void> {
     if (this.reportsSending) return;
+    if (this.sessions.size === 0) { this.syncReportTimer(); return; }
     this.reportsSending = true;
     try {
       await Promise.all([...this.sessions.values()].map(async (session) => {
@@ -546,17 +551,14 @@ export class FspSessionManager {
         currentKBit: false,
       };
       this.sessions.set(srcNodeHex, session);
+      this.syncReportTimer();
       this.cfg.emitSession({ remotePubkey: srcNodeHex, state: "establishing" });
     }
     await this.cfg.routing.sendFspReplyToward(srcNodeAddr, reply, peer);
   }
 
   private async handleSessionMsg3(
-    peer: AdjacentPeer,
-    srcNodeAddr: NodeAddr,
-    srcNodeHex: string,
-    session: Session,
-    fspFrame: Uint8Array,
+    peer: AdjacentPeer, srcNodeAddr: NodeAddr, srcNodeHex: string, session: Session, fspFrame: Uint8Array,
   ): Promise<void> {
     const handshakeFsp = session.pendingResponderFsp ?? session.fsp;
     const promotesPendingEpoch = session.pendingResponderFsp === handshakeFsp;
@@ -702,6 +704,7 @@ export class FspSessionManager {
     });
     const session: Session = { remoteNodeAddr, remoteNodeHex, remotePubkeyHex, remotePubkey, fsp, currentKBit: false };
     this.sessions.set(remoteNodeHex, session);
+    this.syncReportTimer();
     this.indexSession(session, remotePubkeyHex);
     this.cfg.emitSession({ remotePubkey: remotePubkeyHex, state: "establishing" });
     const setupDone = this.waitForSessionSetup(session, remoteNodeHex);

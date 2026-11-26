@@ -51,11 +51,10 @@ export class TreeState {
     ));
   }
 
-  updatePeer(peerNodeAddr: NodeAddr, announce: TreeAnnounce): boolean {
-    const key = nodeAddrToHex(peerNodeAddr);
-    const existing = this.peers.get(key);
+  updatePeer(peerNodeAddr: NodeAddr, announce: TreeAnnounce, peerNodeHex = nodeAddrToHex(peerNodeAddr)): boolean {
+    const existing = this.peers.get(peerNodeHex);
     if (existing && announce.sequence <= existing.sequence) return false;
-    this.peers.set(key, {
+    this.peers.set(peerNodeHex, {
       sequence: announce.sequence,
       parent: announce.parent,
       ancestry: announce.ancestry,
@@ -64,8 +63,8 @@ export class TreeState {
     return this.evaluateParent();
   }
 
-  removePeer(peerNodeAddr: NodeAddr): boolean {
-    const removed = this.peers.delete(nodeAddrToHex(peerNodeAddr));
+  removePeer(peerNodeAddr: NodeAddr, peerNodeHex = nodeAddrToHex(peerNodeAddr)): boolean {
+    const removed = this.peers.delete(peerNodeHex);
     return removed ? this.evaluateParent() : false;
   }
 
@@ -74,11 +73,11 @@ export class TreeState {
     this.evaluateParent();
   }
 
-  isTreePeer(peerNodeAddr: NodeAddr): boolean {
+  isTreePeer(peerNodeAddr: NodeAddr, peerNodeHex = nodeAddrToHex(peerNodeAddr)): boolean {
     if (!bytesEqual(this.parent, this.identity.nodeAddr) && bytesEqual(this.parent, peerNodeAddr)) {
       return true;
     }
-    const peerParent = this.peers.get(nodeAddrToHex(peerNodeAddr))?.parent;
+    const peerParent = this.peers.get(peerNodeHex)?.parent;
     return peerParent ? bytesEqual(peerParent, this.identity.nodeAddr) : false;
   }
 
@@ -109,7 +108,7 @@ export class TreeState {
         if (rootOrder > 0) continue;
         if (rootOrder === 0) {
           const depthOrder = peer.ancestry.length - bestPeer.ancestry.length;
-          if (depthOrder > 0 || (depthOrder === 0 && hex.localeCompare(bestHex!) >= 0)) continue;
+          if (depthOrder > 0 || (depthOrder === 0 && hex >= bestHex!)) continue;
         }
       }
       bestHex = hex;

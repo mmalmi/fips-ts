@@ -45,7 +45,7 @@ function writeFilterAnnounceBody(out, offset, fa) {
     writeU64le(out, offset, fa.sequence);
     out[offset + 8] = fa.hashCount & 0xff;
     out[offset + 9] = fa.sizeClass & 0xff;
-    out.set(fa.filter.asBytes(), offset + 10);
+    fa.filter.copyInto(out, offset + 10);
 }
 /** Encode payload without the leading msg_type byte. */
 export function encodeFilterAnnouncePayload(fa) {

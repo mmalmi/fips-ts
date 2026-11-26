@@ -53,11 +53,15 @@ export class BloomFilter {
     }
     /** Insert raw bytes (e.g. a 16-byte NodeAddr). */
     insertBytes(data) {
-        this.probe(data, true);
+        this.probeDigest(sha256(data), true);
     }
     /** Probabilistic membership: false ⇒ definitely absent; true ⇒ probably present. */
     containsBytes(data) {
-        return this.probe(data, false);
+        return this.probeDigest(sha256(data), false);
+    }
+    /** Probabilistic membership using a precomputed SHA-256 digest of the key. */
+    containsDigest(digest) {
+        return this.probeDigest(digest, false);
     }
     /** In-place OR with another same-sized filter. */
     merge(other) {
@@ -126,12 +130,14 @@ export class BloomFilter {
     asBytes() {
         return new Uint8Array(this.bits);
     }
+    copyInto(target, offset = 0) {
+        target.set(this.bits, offset);
+    }
     get numBytes() {
         return this.bits.length;
     }
     /** Rust-compatible: h1 = LE u64 from SHA-256[0..8]; h2 = LE u64 from SHA-256[8..16]. */
-    probe(data, insert) {
-        const digest = sha256(data);
+    probeDigest(digest, insert) {
         if (this.bitMask !== 0) {
             const mask = this.bitMask;
             let idx = readU32le(digest, 0) & mask;

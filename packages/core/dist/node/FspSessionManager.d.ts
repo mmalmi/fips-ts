@@ -28,6 +28,7 @@ export declare class FspSessionManager {
     private readonly localEpoch;
     private readonly localPubkeyHex;
     private reportTimer?;
+    private reportsEnabled;
     private reportsSending;
     private readonly missingSessionRecoveries;
     private recoveryGeneration;
@@ -36,6 +37,7 @@ export declare class FspSessionManager {
     registerService(port: number, handler: FipsServiceHandler): () => void;
     start(): void;
     stop(): void;
+    private syncReportTimer;
     closePeerSessions(remotePubkeyHex: string): void;
     sendDatagram(args: {
         dst: string;

@@ -6,6 +6,42 @@ package's core archive URL in the same release cohort. The workspace overrides
 resolve core locally during qualification; the published packages retain their
 versioned public core URL.
 
+## Runtime 65 qualification
+
+The runtime-v0.0.65 cohort contains core 0.0.60, browser 0.0.25,
+Ethernet 0.0.42, Memory 0.0.20, WebRTC 0.0.64 and WebSocket 0.0.18.
+
+This release scales discovery, spanning-tree propagation, and Bloom filter
+aggregation to 100–1,000-node meshes while preserving wire, strict-client,
+and public API compatibility:
+
+- Discovery lookup origin TTL increases from 8 to 64 (matching native FIPS),
+  enabling multi-hop reachability across spanning trees deeper than 8 hops
+  (300-node delivery rises from 40/100 to 100/100; 1,000-node meshes converge
+  1000/1000 and deliver 100/100 with zero wasted lookup hops).
+- Discovery forwarding (`FipsRouting` and `filterLookupPeersByBloom`) guides
+  `LookupRequest` packets using each peer's advertised inbound Bloom filter
+  (hashing the target with SHA-256 once per hop via `BloomFilter.containsDigest`),
+  skips `clientOnly` peers unless they are the target, prefers Bloom-matching
+  tree peers in `reply_learned` mode, preserves wide non-tree detours for
+  `minMtu > 0` MTU-qualified probes, and widens origin lookups on retry
+  attempt ≥ 2 to recover from transient Bloom lag.
+- `BloomRouting` coalesces rapid cascading `FilterAnnounce` updates with a
+  50 ms trailing debounce (after an initial two-update burst per link), skips
+  cascading filter floods to confirmed non-tree router shortcuts, precomputes
+  tree filter sources per broadcast, and serializes filters without a 1 KiB
+  temporary copy via `BloomFilter.copyInto`.
+- `FipsRouting` deduplicates identical `TreeAnnounce` sequences per link,
+  coalesces rapid `TreeAnnounce` cascades with a 50 ms trailing debounce after
+  an initial two-update burst, triggers Bloom rebroadcasts only on actual
+  parent/tree-peer membership changes, and keys per-link tracking by `FmpLink`
+  so restarted peers always receive fresh announcements. `FspSessionManager`
+  runs its 1 s receiver-report interval lazily only while sessions exist.
+
+Follow the runtime 62 toolchain, compilation, and archive checks below using
+pinned Node.js 22.23.4, pnpm 9.15.4, TypeScript 5.9.3, Vitest 3.2.7, and the
+unchanged lockfile.
+
 ## Runtime 64 qualification
 
 The runtime-v0.0.64 cohort contains core 0.0.59, browser 0.0.24,

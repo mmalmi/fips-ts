@@ -11,6 +11,19 @@ export declare function discoveryPublicKey(discovered: {
     remoteAddr: TransportAddress;
 }): Uint8Array;
 export declare function lookupReverseKey(requestId: bigint, target: NodeAddr): string;
+/**
+ * Filter candidate lookup peers using their advertised inbound Bloom filters.
+ * Computes SHA-256(target) at most once, skips client-only peers unless they
+ * are the target, and falls back to all candidates only when requested.
+ */
+export declare function filterLookupPeersByBloom(peers: AdjacentPeer[], target: NodeAddr, targetHex: string, defaultPeer: AdjacentPeer | undefined, allowFallback: boolean, treeScope?: {
+    isTreePeer: (peer: AdjacentPeer) => boolean;
+    strictTreeOnly: boolean;
+}): AdjacentPeer[];
+export declare function nextClientRoleMessage(peer: AdjacentPeer, allowLegacyProbe: boolean, nextSequence: () => bigint): {
+    msgType: number;
+    payload: Uint8Array;
+} | undefined;
 export declare function isKnownUnhandledLinkMessage(msgType: number): boolean;
 interface ResolvedTransportIdentity {
     transport: Transport;

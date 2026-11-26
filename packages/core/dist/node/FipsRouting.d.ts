@@ -41,6 +41,10 @@ export declare class FipsRouting {
     private readonly debugEnabled;
     private cachedTreeAnnounce?;
     private pendingTreeBroadcast?;
+    private treeBroadcastTimer?;
+    private lastTreeBroadcastMs;
+    private treeBurstUsed;
+    private treeAnnounceSentSeq;
     private clientSequence;
     constructor(cfg: FipsRoutingConfig);
     get coords(): NodeAddr[];

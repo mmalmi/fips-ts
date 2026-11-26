@@ -9,10 +9,11 @@ import {
 } from "../protocol/link.js";
 import { decodeSessionAck, decodeSessionSetup } from "../protocol/session.js";
 import {
-  decodeLinkExtension, encodeExtensionCapabilities, encodeExtensionClientOnly,
+  decodeLinkExtension, encodeExtensionCapabilities,
   FMP_EXTENSION_CLIENT_ROLE,
 } from "../protocol/extensions.js";
 import { FSP_FLAG_CP, parseFspEstablished } from "../fsp/wire.js";
+import type { FmpLink } from "../fmp/link.js";
 import { FMP_AEAD_TAG_LEN, FMP_ESTABLISHED_HEADER_LEN } from "../fmp/wire.js";
 import { decodeTreeAnnouncePayload, encodeTreeAnnounce, verifyTreeAnnounce } from "../protocol/tree.js";
 import {
@@ -27,8 +28,8 @@ import { LookupBackoff, LookupForwardDeferrals, LookupForwardLimiter } from "./L
 import { OriginLookupRegistry, type PendingOriginLookup } from "./OriginLookupRegistry.js";
 import { peerNodeAddr, peerNodeKey, type AdjacentPeer } from "./PeerState.js";
 import {
-  frameCapacity, isKnownUnhandledLinkMessage, lookupReverseKey,
-  resolveTransportIdentity, selectCarrier,
+  filterLookupPeersByBloom, frameCapacity, isKnownUnhandledLinkMessage, lookupReverseKey,
+  nextClientRoleMessage, resolveTransportIdentity, selectCarrier,
 } from "./routingHelpers.js";
 import { TreeState } from "./TreeState.js";
 
@@ -65,13 +66,14 @@ const MAX_COORD_CACHE_ENTRIES = 4_096;
 const LOOKUP_REVERSE_PATH_TTL_MS = 30_000;
 const MAX_LOOKUP_REVERSE_PATHS = 256;
 const LOOKUP_ORIGIN_TIMEOUT_MS = 5_000;
-const LOOKUP_ORIGIN_TTL = 8;
+const LOOKUP_ORIGIN_TTL = 64;
 const MAX_PENDING_ORIGIN_LOOKUPS = 64;
+// Coalesce rapid TreeAnnounce storms into 50 ms waves after an initial 2-burst.
+const TREE_ANNOUNCE_DEBOUNCE_MS = 50;
 const REPLY_LEARNED_ROUTE_TTL_SECONDS = 300;
 const MAX_REPLY_LEARNED_ROUTES_PER_DESTINATION = 4;
 const MAX_REPLY_LEARNED_LOOKUP_PEERS = 16;
 const FSP_DEFAULT_PATH_MTU = 1_200;
-const MAX_LEGACY_SUPPORT_PROBES = 3;
 // SessionDatagram already includes the message type; FMP adds its timestamp,
 // established header and authentication tag around the forwarding envelope.
 const ROUTED_FRAME_OVERHEAD = SESSION_DATAGRAM_HEADER_SIZE
@@ -92,6 +94,10 @@ export class FipsRouting {
   private readonly debugEnabled: boolean;
   private cachedTreeAnnounce?: { announce: ReturnType<TreeState["announce"]>; payload: Uint8Array };
   private pendingTreeBroadcast?: Promise<void>;
+  private treeBroadcastTimer?: ReturnType<typeof setTimeout>;
+  private lastTreeBroadcastMs = -Infinity;
+  private treeBurstUsed = false;
+  private treeAnnounceSentSeq = new WeakMap<FmpLink, bigint>();
   private clientSequence = 0n;
 
   constructor(private readonly cfg: FipsRoutingConfig) {
@@ -101,7 +107,7 @@ export class FipsRouting {
     this.bloomRouting = new BloomRouting({
       identity: cfg.identity, forwarding: cfg.forwarding, strictClient: cfg.strictClient,
       logger: cfg.logger, getPeers: cfg.getPeers, sendLinkMessage: cfg.sendLinkMessage,
-      emitError: cfg.emitError, isTreePeer: (nodeAddr) => this.treeState.isTreePeer(nodeAddr),
+      emitError: cfg.emitError, isTreePeer: (nodeAddr, nodeHex) => this.treeState.isTreePeer(nodeAddr, nodeHex),
     });
   }
 
@@ -129,8 +135,12 @@ export class FipsRouting {
     this.learnedRoutes.clear();
     this.coordCache.clear();
     this.treeState.reset();
-    this.cachedTreeAnnounce = undefined;
-    this.pendingTreeBroadcast = undefined;
+    this.cachedTreeAnnounce = this.pendingTreeBroadcast = undefined;
+    if (this.treeBroadcastTimer) clearTimeout(this.treeBroadcastTimer);
+    this.treeBroadcastTimer = undefined;
+    this.lastTreeBroadcastMs = -Infinity;
+    this.treeBurstUsed = false;
+    this.treeAnnounceSentSeq = new WeakMap();
     this.bloomRouting.stop();
     for (const peer of this.cfg.getPeers()) {
       peer.clientSupported = peer.clientOnly = undefined;
@@ -144,42 +154,28 @@ export class FipsRouting {
     const wasTreePeer = this.treeState.isTreePeer(peerNodeAddr);
     const parentChanged = this.treeState.removePeer(peerNodeAddr);
     if (parentChanged) this.resetLookupBackoff();
-    if (parentChanged) void this.sendTreeAnnounceToAll();
+    if (parentChanged) void this.broadcastTreeAnnounce();
     if (parentChanged || wasTreePeer) void this.bloomRouting.sendAll();
   }
 
   async handleLinkMessage(peer: AdjacentPeer, msgType: number, payload: Uint8Array): Promise<void> {
-    if (msgType === LinkMessageType.SessionDatagram) {
-      await this.handleSessionDatagram(peer, payload);
-      return;
+    switch (msgType) {
+      case LinkMessageType.SessionDatagram: return this.handleSessionDatagram(peer, payload);
+      case LinkMessageType.Extension: return this.handleExtensionMessage(peer, payload);
+      case LinkMessageType.ClientSupport:
+      case LinkMessageType.ClientOnly: return this.handleLegacyClientMessage(peer, msgType, payload);
+      case 0x54: return;
+      case LinkMessageType.TreeAnnounce: return this.handleTreeAnnounce(peer, payload);
+      case LinkMessageType.FilterAnnounce: return this.bloomRouting.handle(peer, payload);
+      case LinkMessageType.LookupRequest: return this.handleIncomingLookupRequest(peer, payload);
+      case LinkMessageType.LookupResponse:
+        if (!(await this.handleOriginLookupResponse(peer, payload)) && this.cfg.forwarding) {
+          await this.forwardLookupResponse(peer, payload);
+        }
+        return;
+      default:
+        if (!isKnownUnhandledLinkMessage(msgType)) this.cfg.logger.warn("unsupported FMP link message", msgType);
     }
-    if (msgType === LinkMessageType.Extension) {
-      await this.handleExtensionMessage(peer, payload);
-      return;
-    }
-    if (msgType === LinkMessageType.ClientSupport || msgType === LinkMessageType.ClientOnly) {
-      await this.handleLegacyClientMessage(peer, msgType, payload);
-      return;
-    }
-    if (msgType === 0x54) return;
-    if (msgType === LinkMessageType.TreeAnnounce) {
-      await this.handleTreeAnnounce(peer, payload);
-      return;
-    }
-    if (msgType === LinkMessageType.FilterAnnounce) {
-      await this.bloomRouting.handle(peer, payload);
-      return;
-    }
-    if (msgType === LinkMessageType.LookupRequest) {
-      await this.handleIncomingLookupRequest(peer, payload);
-      return;
-    }
-    if (msgType === LinkMessageType.LookupResponse) {
-      if (await this.handleOriginLookupResponse(peer, payload)) return;
-      if (this.cfg.forwarding) await this.forwardLookupResponse(peer, payload);
-      return;
-    }
-    if (!isKnownUnhandledLinkMessage(msgType)) this.cfg.logger.warn("unsupported FMP link message", msgType);
   }
 
   private async handleLegacyClientMessage(peer: AdjacentPeer, msgType: number, payload: Uint8Array): Promise<void> {
@@ -265,26 +261,27 @@ export class FipsRouting {
       if (this.cfg.strictClient) return;
     }
     if (this.cfg.strictClient) {
-      if (peer.extensionNamespace === "namespaced") {
-        if ((peer.extensionCapabilities ?? 0) & FMP_EXTENSION_CLIENT_ROLE) {
-          await this.cfg.sendLinkMessage(peer, LinkMessageType.Extension,
-            encodeExtensionClientOnly(++this.clientSequence));
-        }
-      } else if (peer.extensionNamespace === "legacy") {
-        const payload = new Uint8Array(8);
-        new DataView(payload.buffer).setBigUint64(0, ++this.clientSequence, true);
-        await this.cfg.sendLinkMessage(peer, LinkMessageType.ClientOnly, payload);
-      } else if (allowLegacyProbe && (peer.legacySupportProbes ?? 0) < MAX_LEGACY_SUPPORT_PROBES) {
-        peer.legacySupportProbes = (peer.legacySupportProbes ?? 0) + 1;
-        await this.cfg.sendLinkMessage(peer, LinkMessageType.ClientSupport, new Uint8Array());
-      }
+      const msg = nextClientRoleMessage(peer, allowLegacyProbe, () => ++this.clientSequence);
+      if (msg) await this.cfg.sendLinkMessage(peer, msg.msgType, msg.payload);
       return;
     }
     const announce = this.treeState.announce();
+    const link = peer.link;
+    if (this.treeAnnounceSentSeq.get(link) === announce.sequence) return;
     if (this.cachedTreeAnnounce?.announce !== announce) {
       this.cachedTreeAnnounce = { announce, payload: encodeTreeAnnounce(announce).subarray(1) };
     }
-    await this.cfg.sendLinkMessage(peer, LinkMessageType.TreeAnnounce, this.cachedTreeAnnounce.payload);
+    const previousSeq = this.treeAnnounceSentSeq.get(link);
+    this.treeAnnounceSentSeq.set(link, announce.sequence);
+    try {
+      await this.cfg.sendLinkMessage(peer, LinkMessageType.TreeAnnounce, this.cachedTreeAnnounce.payload);
+    } catch (error) {
+      if (this.treeAnnounceSentSeq.get(link) === announce.sequence) {
+        if (previousSeq === undefined) this.treeAnnounceSentSeq.delete(link);
+        else this.treeAnnounceSentSeq.set(link, previousSeq);
+      }
+      throw error;
+    }
   }
 
   private async handleClientRole(peer: AdjacentPeer, sequence: bigint): Promise<void> {
@@ -367,10 +364,7 @@ export class FipsRouting {
   }
 
   private async refreshTransitRoute(
-    target: NodeAddr,
-    targetHex: string,
-    previousHop?: AdjacentPeer,
-    minMtu = 0,
+    target: NodeAddr, targetHex: string, previousHop?: AdjacentPeer, minMtu = 0,
   ): Promise<string | undefined> {
     const existing = this.originLookups.get(targetHex);
     if (existing) {
@@ -384,26 +378,16 @@ export class FipsRouting {
   }
 
   private async runOriginLookup(args: {
-    target: NodeAddr;
-    targetHex: string;
-    targetPubkey?: Uint8Array;
-    minMtu: number;
-    excludedPeer?: AdjacentPeer;
-    retryWhenReachable?: boolean;
+    target: NodeAddr; targetHex: string; targetPubkey?: Uint8Array;
+    minMtu: number; excludedPeer?: AdjacentPeer; retryWhenReachable?: boolean;
   }): Promise<string | undefined> {
     const pending = this.originLookups.create({
-      targetHex: args.targetHex,
-      targetPubkey: args.targetPubkey,
-      minMtu: args.minMtu,
-      randomBytes: () => this.cfg.randomBytes(8),
-      timeoutMs: LOOKUP_ORIGIN_TIMEOUT_MS,
+      targetHex: args.targetHex, targetPubkey: args.targetPubkey, minMtu: args.minMtu,
+      randomBytes: () => this.cfg.randomBytes(8), timeoutMs: LOOKUP_ORIGIN_TIMEOUT_MS,
     });
     const request = {
-      target: args.target,
-      origin: this.cfg.identity.nodeAddr,
-      ttl: LOOKUP_ORIGIN_TTL,
-      minMtu: args.minMtu,
-      originCoords: this.coords,
+      target: args.target, origin: this.cfg.identity.nodeAddr,
+      ttl: LOOKUP_ORIGIN_TTL, minMtu: args.minMtu, originCoords: this.coords,
     };
     const retrying = this.retryOriginLookup(pending, request, args.excludedPeer);
     try {
@@ -454,9 +438,25 @@ export class FipsRouting {
   }
 
   private broadcastTreeAnnounce(): Promise<void> {
-    return (this.pendingTreeBroadcast ??= Promise.resolve().then(async () => {
-      this.pendingTreeBroadcast = undefined;
+    if (this.pendingTreeBroadcast) return this.pendingTreeBroadcast;
+    if (this.treeBroadcastTimer) return Promise.resolve();
+    const nowMs = Date.now();
+    const elapsed = nowMs - this.lastTreeBroadcastMs;
+    const flush = async () => {
+      const started = Date.now();
+      this.treeBurstUsed = started - this.lastTreeBroadcastMs < TREE_ANNOUNCE_DEBOUNCE_MS * 2;
+      this.lastTreeBroadcastMs = started;
       await this.sendTreeAnnounceToAll();
+      this.lastTreeBroadcastMs = Date.now();
+    };
+    if (this.treeBurstUsed && elapsed < TREE_ANNOUNCE_DEBOUNCE_MS) {
+      this.treeBroadcastTimer = setTimeout(() => { this.treeBroadcastTimer = undefined; void flush(); },
+        TREE_ANNOUNCE_DEBOUNCE_MS - elapsed);
+      return Promise.resolve();
+    }
+    return (this.pendingTreeBroadcast = Promise.resolve().then(() => {
+      this.pendingTreeBroadcast = undefined;
+      return flush();
     }));
   }
 
@@ -468,6 +468,7 @@ export class FipsRouting {
   private async handleTreeAnnounce(peer: AdjacentPeer, payload: Uint8Array): Promise<void> {
     const announce = decodeTreeAnnouncePayload(payload);
     const peerAddr = peerNodeAddr(peer);
+    const peerHex = peerNodeKey(peer);
     if (!bytesEqual(announce.ancestry[0]!.nodeAddr, peerAddr)) {
       throw new Error("TreeAnnounce node address does not match authenticated peer");
     }
@@ -478,16 +479,18 @@ export class FipsRouting {
     peer.routingRoleSequence = announce.sequence;
     const wasClient = peer.clientOnly;
     peer.clientOnly = false;
-    const wasTreePeer = this.treeState.isTreePeer(peerAddr);
-    const changed = this.treeState.updatePeer(peerAddr, announce);
-    const isTreePeer = this.treeState.isTreePeer(peerAddr);
+    const prevParent = this.treeState.parentNodeAddr;
+    const wasTreePeer = this.treeState.isTreePeer(peerAddr, peerHex);
+    const changed = this.treeState.updatePeer(peerAddr, announce, peerHex);
+    const isTreePeer = this.treeState.isTreePeer(peerAddr, peerHex);
     if (this.debugEnabled) {
-      this.cfg.logger.debug("tree announce accepted", peerNodeKey(peer),
+      this.cfg.logger.debug("tree announce accepted", peerHex,
         "depth", announce.ancestry.length - 1, "root", nodeAddrToHex(announce.ancestry.at(-1)!.nodeAddr));
     }
     if (changed) this.resetLookupBackoff();
     if (changed) await this.broadcastTreeAnnounce();
-    if (changed || wasClient || wasTreePeer !== isTreePeer) await this.bloomRouting.sendAll();
+    const parentChanged = !bytesEqual(prevParent, this.treeState.parentNodeAddr);
+    if (parentChanged || wasClient || wasTreePeer !== isTreePeer) await this.bloomRouting.sendAll();
   }
 
   private cacheSessionCoordinates(datagram: SessionDatagram): void {
@@ -524,9 +527,7 @@ export class FipsRouting {
   }
 
   private async handleLookupRequest(
-    sourcePeer: AdjacentPeer,
-    request: LookupRequest,
-    allowDeferral = true,
+    sourcePeer: AdjacentPeer, request: LookupRequest, allowDeferral = true,
   ): Promise<void> {
     const targetHex = nodeAddrToHex(request.target);
     if (frameCapacity(sourcePeer) < request.minMtu) return;
@@ -562,13 +563,10 @@ export class FipsRouting {
   }
 
   private selectLookupForwardTargets(
-    sourcePeer: AdjacentPeer,
-    request: LookupRequest,
-    targetHex: string,
-    existingReverse?: LookupReversePath,
+    sourcePeer: AdjacentPeer, request: LookupRequest, targetHex: string, existingReverse?: LookupReversePath,
   ): { nextHops: AdjacentPeer[]; canResolveDirectly: boolean } {
     const directOrLearned = this.nextHopFor(targetHex, sourcePeer, request.minMtu);
-    const fallbackPeers = directOrLearned ? [] : this.lookupFallbackPeers(sourcePeer, request);
+    const fallbackPeers = directOrLearned ? [] : this.lookupFallbackPeers(sourcePeer, request, targetHex);
     const candidates = directOrLearned ? [directOrLearned] : fallbackPeers;
     const nextHops = existingReverse
       ? candidates.filter((nextHop) => !existingReverse.forwardedNextHops.has(peerNodeKey(nextHop)))
@@ -606,10 +604,7 @@ export class FipsRouting {
   }
 
   private async sendLookupToNextHops(
-    reverse: LookupReversePath,
-    reverseKey: string,
-    nextHops: AdjacentPeer[],
-    targetHex: string,
+    reverse: LookupReversePath, reverseKey: string, nextHops: AdjacentPeer[], targetHex: string,
   ): Promise<void> {
     for (const nextHop of nextHops) reverse.forwardedNextHops.add(peerNodeKey(nextHop));
     const encoded = encodeLookupRequestPayload(reverse.request);
@@ -628,16 +623,24 @@ export class FipsRouting {
     this.cfg.logger.debug("lookup request forwarded", targetHex, nextHops.length);
   }
 
-  private lookupFallbackPeers(sourcePeer: AdjacentPeer, request: LookupRequest): AdjacentPeer[] {
+  private lookupFallbackPeers(sourcePeer: AdjacentPeer, request: LookupRequest, targetHex: string): AdjacentPeer[] {
     const originHex = nodeAddrToHex(request.origin);
-    return [...this.cfg.getPeers()]
-      .filter((peer) =>
-        peer !== sourcePeer
-        && peer.link.state === "established"
-        && (this.treeState.isTreePeer(peerNodeAddr(peer)) || this.cfg.routingMode === "reply_learned")
-        && peerNodeKey(peer) !== originHex
-        && frameCapacity(peer) >= request.minMtu
-      )
+    const isTree = (peer: AdjacentPeer) => this.treeState.isTreePeer(peerNodeAddr(peer), peerNodeKey(peer));
+    const candidates = [...this.cfg.getPeers()].filter((peer) =>
+      peer !== sourcePeer
+      && peer.link.state === "established"
+      && (isTree(peer) || this.cfg.routingMode === "reply_learned")
+      && peerNodeKey(peer) !== originHex
+      && frameCapacity(peer) >= request.minMtu
+    );
+    if (request.minMtu > 0) {
+      return candidates.filter((peer) => !peer.clientOnly || peerNodeKey(peer) === targetHex)
+        .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS);
+    }
+    const treeScope = this.cfg.routingMode === "reply_learned"
+      ? { isTreePeer: isTree, strictTreeOnly: isTree(sourcePeer) }
+      : undefined;
+    return filterLookupPeersByBloom(candidates, request.target, targetHex, undefined, false, treeScope)
       .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS);
   }
 
@@ -656,10 +659,7 @@ export class FipsRouting {
   }
 
   private async resolveAndForwardLookup(
-    targetHex: string,
-    reverseKey: string,
-    reverse: LookupReversePath,
-    sourcePeer: AdjacentPeer,
+    targetHex: string, reverseKey: string, reverse: LookupReversePath, sourcePeer: AdjacentPeer,
   ): Promise<void> {
     try {
       await this.resolveRoute(reverse.request.target, targetHex);
@@ -729,13 +729,11 @@ export class FipsRouting {
 
   private originLookupPeers(excludedPeer?: AdjacentPeer, minMtu = 0): AdjacentPeer[] {
     const defaultPeer = this.cfg.defaultRoute ? this.cfg.getPeerByPubkey(this.cfg.defaultRoute) : undefined;
-    return [...this.cfg.getPeers()]
-      .filter((peer) => {
-        if (peer === excludedPeer || peer.link.state !== "established" || frameCapacity(peer) < minMtu) return false;
-        if (this.cfg.routingMode === "reply_learned") return true;
-        return peer === defaultPeer || this.treeState.isTreePeer(peerNodeAddr(peer));
-      })
-      .slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS);
+    return [...this.cfg.getPeers()].filter((peer) => {
+      if (peer === excludedPeer || peer.link.state !== "established" || frameCapacity(peer) < minMtu) return false;
+      if (this.cfg.routingMode === "reply_learned") return true;
+      return peer === defaultPeer || this.treeState.isTreePeer(peerNodeAddr(peer), peerNodeKey(peer));
+    });
   }
 
   private async retryOriginLookup(
@@ -743,11 +741,22 @@ export class FipsRouting {
     request: Omit<LookupRequest, "requestId">,
     excludedPeer?: AdjacentPeer,
   ): Promise<void> {
+    let attempt = 0;
     await this.originLookups.retry(pending, async () => {
       const encoded = encodeLookupRequestPayload({ ...request, requestId: pending.requestId });
-      const peers = this.originLookupPeers(excludedPeer, pending.minMtu);
+      const candidates = this.originLookupPeers(excludedPeer, pending.minMtu);
+      const defaultPeer = this.cfg.defaultRoute ? this.cfg.getPeerByPubkey(this.cfg.defaultRoute) : undefined;
+      const treeScope = this.cfg.routingMode === "reply_learned"
+        ? { isTreePeer: (peer: AdjacentPeer) => this.treeState.isTreePeer(peerNodeAddr(peer), peerNodeKey(peer)), strictTreeOnly: false }
+        : undefined;
+      const filtered = attempt < 2 && pending.minMtu === 0
+        ? filterLookupPeersByBloom(candidates, request.target, pending.targetHex, defaultPeer, true, treeScope)
+        : candidates.filter((peer) => !peer.clientOnly || peerNodeKey(peer) === pending.targetHex);
+      attempt += 1;
       await Promise.allSettled(
-        peers.map((peer) => this.cfg.sendLinkMessage(peer, LinkMessageType.LookupRequest, encoded)),
+        filtered.slice(0, MAX_REPLY_LEARNED_LOOKUP_PEERS).map(
+          (peer) => this.cfg.sendLinkMessage(peer, LinkMessageType.LookupRequest, encoded),
+        ),
       );
     });
   }

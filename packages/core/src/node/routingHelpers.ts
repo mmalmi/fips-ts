@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha256";
+
 import { bytesEqual, fromHex } from "../codec/hex.js";
 import {
   compressedPubkeyFromXOnly,
@@ -8,6 +10,7 @@ import {
   type NodeAddr,
 } from "../nodeaddr/index.js";
 import { LinkMessageType } from "../protocol/link.js";
+import { encodeExtensionClientOnly, FMP_EXTENSION_CLIENT_ROLE } from "../protocol/extensions.js";
 import type { Transport, TransportAddress } from "../transport/types.js";
 
 import { peerNodeKey, type AdjacentPeer } from "./PeerState.js";
@@ -62,6 +65,62 @@ export function discoveryPublicKey(discovered: {
 
 export function lookupReverseKey(requestId: bigint, target: NodeAddr): string {
   return `${requestId.toString(16)}:${nodeAddrToHex(target)}`;
+}
+
+/**
+ * Filter candidate lookup peers using their advertised inbound Bloom filters.
+ * Computes SHA-256(target) at most once, skips client-only peers unless they
+ * are the target, and falls back to all candidates only when requested.
+ */
+export function filterLookupPeersByBloom(
+  peers: AdjacentPeer[],
+  target: NodeAddr,
+  targetHex: string,
+  defaultPeer: AdjacentPeer | undefined,
+  allowFallback: boolean,
+  treeScope?: { isTreePeer: (peer: AdjacentPeer) => boolean; strictTreeOnly: boolean },
+): AdjacentPeer[] {
+  const candidates = peers.filter((peer) => !peer.clientOnly || peerNodeKey(peer) === targetHex);
+  if (candidates.length === 0) return [];
+  let digest: Uint8Array | undefined;
+  const matchesBloom = (peer: AdjacentPeer): boolean => {
+    if (peerNodeKey(peer) === targetHex || peer === defaultPeer || !peer.inboundFilter) return true;
+    digest ??= sha256(target);
+    return peer.inboundFilter.containsDigest(digest);
+  };
+  if (treeScope) {
+    const treeMatches = candidates.filter((peer) =>
+      (peerNodeKey(peer) === targetHex || peer === defaultPeer || treeScope.isTreePeer(peer)) && matchesBloom(peer),
+    );
+    if (treeMatches.length > 0 || treeScope.strictTreeOnly) return treeMatches;
+  }
+  const matched = candidates.filter(matchesBloom);
+  return matched.length > 0 || !allowFallback ? matched : candidates;
+}
+
+const MAX_LEGACY_SUPPORT_PROBES = 3;
+
+export function nextClientRoleMessage(
+  peer: AdjacentPeer,
+  allowLegacyProbe: boolean,
+  nextSequence: () => bigint,
+): { msgType: number; payload: Uint8Array } | undefined {
+  if (peer.extensionNamespace === "namespaced") {
+    if ((peer.extensionCapabilities ?? 0) & FMP_EXTENSION_CLIENT_ROLE) {
+      return { msgType: LinkMessageType.Extension, payload: encodeExtensionClientOnly(nextSequence()) };
+    }
+    return undefined;
+  }
+  if (peer.extensionNamespace === "legacy") {
+    const payload = new Uint8Array(8);
+    new DataView(payload.buffer).setBigUint64(0, nextSequence(), true);
+    return { msgType: LinkMessageType.ClientOnly, payload };
+  }
+  if (allowLegacyProbe && (peer.legacySupportProbes ?? 0) < MAX_LEGACY_SUPPORT_PROBES) {
+    peer.legacySupportProbes = (peer.legacySupportProbes ?? 0) + 1;
+    return { msgType: LinkMessageType.ClientSupport, payload: new Uint8Array() };
+  }
+  return undefined;
 }
 
 export function isKnownUnhandledLinkMessage(msgType: number): boolean {

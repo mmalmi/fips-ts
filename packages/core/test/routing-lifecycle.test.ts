@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  buildTreeAnnounce, encodeFspEstablished, encodeSessionDatagram, encodeTreeAnnounce,
+  BloomFilter, buildTreeAnnounce, decodeLookupRequest, encodeFspEstablished,
+  encodeLookupRequestPayload, encodeSessionDatagram, encodeTreeAnnounce,
   FSP_FLAG_CP, identityFromSecretKey, LinkMessageType, nodeAddrToHex, noopLogger, toHex,
 } from "../src/index.js";
 import { FipsRouting } from "../src/node/FipsRouting.js";
 import type { AdjacentPeer } from "../src/node/PeerState.js";
+
+afterEach(() => vi.useRealTimers());
 
 describe("routing lifecycle", () => {
   it("forgets the old tree and accepts a restarted peer's fresh announcements", async () => {
@@ -118,5 +121,91 @@ describe("routing lifecycle", () => {
     await routing.sendFspReplyToward(initiator.nodeAddr, new Uint8Array([0x02]), childPeer);
     expect(sentTo).toEqual([rootPeer.pubkeyHex]);
     routing.stop();
+  });
+
+  it("guides lookups by inbound Bloom filters, prefers tree peers in reply_learned, skips clientOnly peers, and uses TTL 64", async () => {
+    vi.useFakeTimers();
+    const ids = await Promise.all([0x71, 0x72, 0x73, 0x74, 0x75, 0x76].map((byte) =>
+      identityFromSecretKey(new Uint8Array(32).fill(byte))));
+    ids.sort((a, b) => nodeAddrToHex(a.nodeAddr).localeCompare(nodeAddrToHex(b.nodeAddr)));
+    const [root, local, matchChild, missChild, shortcut, target] = ids;
+    const mkPeer = (id: typeof root, opts?: Partial<AdjacentPeer>) => ({
+      pubkey: id.publicKey, pubkeyHex: toHex(id.publicKey),
+      remoteAddr: { transport: "memory", addr: toHex(id.publicKey) },
+      transport: { mtu: 1400 }, link: { state: "established" }, ...opts,
+    }) as AdjacentPeer;
+    const rootPeer = mkPeer(root, { inboundFilter: BloomFilter.empty() });
+    const matchFilter = BloomFilter.empty();
+    matchFilter.insertBytes(target.nodeAddr);
+    const matchPeer = mkPeer(matchChild, { inboundFilter: matchFilter });
+    const missPeer = mkPeer(missChild, { inboundFilter: BloomFilter.empty() });
+    const shortcutFilter = BloomFilter.empty();
+    shortcutFilter.insertBytes(target.nodeAddr);
+    const shortcutPeer = mkPeer(shortcut, { inboundFilter: shortcutFilter });
+    const clientPeer = mkPeer(await identityFromSecretKey(new Uint8Array(32).fill(0x77)), {
+      clientOnly: true, inboundFilter: matchFilter,
+    });
+    const peers = [rootPeer, matchPeer, missPeer, shortcutPeer, clientPeer];
+    const sent: Array<{ peer: AdjacentPeer; type: number; payload: Uint8Array }> = [];
+    let randSeq = 0;
+    const routing = new FipsRouting({
+      identity: local, forwarding: true, routingMode: "reply_learned", transports: [],
+      logger: noopLogger, randomBytes: (len) => new Uint8Array(len).fill(++randSeq),
+      getPeers: () => peers, getPeerByPubkey: () => undefined, getPeerByNodeAddr: () => undefined,
+      sendLinkMessage: async (peer, type, payload) => { sent.push({ peer, type, payload: payload.slice() }); },
+      connectKnownPeer: async () => {}, handleLocalSession: async () => {},
+      emitError: () => {}, isStarted: () => true,
+    });
+    try {
+      // Establish tree: root -> local -> {matchChild, missChild}; shortcut is non-tree.
+      const e = (id: typeof root) => ({ nodeAddr: id.nodeAddr, sequence: 1n, timestamp: 1n });
+      await routing.handleLinkMessage(rootPeer, LinkMessageType.TreeAnnounce,
+        encodeTreeAnnounce(buildTreeAnnounce(root, root.nodeAddr, 1n, 1n, [e(root)])).subarray(1));
+      for (const [peer, id] of [[matchPeer, matchChild], [missPeer, missChild]] as const) {
+        await routing.handleLinkMessage(peer, LinkMessageType.TreeAnnounce,
+          encodeTreeAnnounce(buildTreeAnnounce(id, local.nodeAddr, 1n, 1n, [e(id), e(local), e(root)])).subarray(1));
+      }
+      sent.length = 0;
+
+      // Normal transit lookup (minMtu=0) from rootPeer forwards ONLY to matchPeer.
+      await routing.handleLinkMessage(rootPeer, LinkMessageType.LookupRequest, encodeLookupRequestPayload({
+        requestId: 99n, target: target.nodeAddr, origin: root.nodeAddr,
+        originCoords: [root.nodeAddr], ttl: 64, minMtu: 0,
+      }));
+      expect(sent.filter((s) => s.type === LinkMessageType.LookupRequest).map((s) => s.peer)).toEqual([matchPeer]);
+
+      // Size-qualified MTU detour lookup (minMtu>0) still explores non-tree wide shortcuts while skipping clientOnly peers.
+      sent.length = 0;
+      const otherTarget = new Uint8Array(16).fill(0x99);
+      await routing.handleLinkMessage(rootPeer, LinkMessageType.LookupRequest, encodeLookupRequestPayload({
+        requestId: 100n, target: otherTarget, origin: root.nodeAddr,
+        originCoords: [root.nodeAddr], ttl: 64, minMtu: 1200,
+      }));
+      const mtuPeers = sent.filter((s) => s.type === LinkMessageType.LookupRequest).map((s) => s.peer);
+      expect(mtuPeers).toContain(shortcutPeer);
+      expect(mtuPeers).not.toContain(clientPeer);
+
+      // Origin lookup uses TTL 64, queries only matchPeer on first two attempts, then widens on attempt 3.
+      sent.length = 0;
+      const lookup = routing.ensureFirstContactRoute(target.nodeAddr, nodeAddrToHex(target.nodeAddr), target.publicKey)
+        .catch(() => "stopped");
+      await vi.advanceTimersByTimeAsync(0);
+      const req0 = sent.filter((s) => s.type === LinkMessageType.LookupRequest);
+      expect(req0.map((s) => s.peer)).toEqual([matchPeer]);
+      expect(decodeLookupRequest(req0[0]!.payload).ttl).toBe(64);
+      sent.length = 0;
+      await vi.advanceTimersByTimeAsync(250);
+      expect(sent.filter((s) => s.type === LinkMessageType.LookupRequest).map((s) => s.peer)).toEqual([matchPeer]);
+      sent.length = 0;
+      await vi.advanceTimersByTimeAsync(500);
+      const req2Peers = sent.filter((s) => s.type === LinkMessageType.LookupRequest).map((s) => s.peer);
+      expect(req2Peers).toContain(shortcutPeer);
+      expect(req2Peers).not.toContain(clientPeer);
+      routing.stop();
+      expect(await lookup).toBe("stopped");
+    } finally {
+      routing.stop();
+    }
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

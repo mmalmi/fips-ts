@@ -15,10 +15,10 @@ export declare class TreeState {
     get root(): NodeAddr;
     get parentNodeAddr(): NodeAddr;
     announce(): TreeAnnounce;
-    updatePeer(peerNodeAddr: NodeAddr, announce: TreeAnnounce): boolean;
-    removePeer(peerNodeAddr: NodeAddr): boolean;
+    updatePeer(peerNodeAddr: NodeAddr, announce: TreeAnnounce, peerNodeHex?: string): boolean;
+    removePeer(peerNodeAddr: NodeAddr, peerNodeHex?: string): boolean;
     reset(): void;
-    isTreePeer(peerNodeAddr: NodeAddr): boolean;
+    isTreePeer(peerNodeAddr: NodeAddr, peerNodeHex?: string): boolean;
     nextHop(destCoords: NodeAddr[], eligible: (nodeHex: string) => boolean): string | undefined;
     private evaluateParent;
     private selfEntry;

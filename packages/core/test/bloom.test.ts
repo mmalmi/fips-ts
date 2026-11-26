@@ -175,4 +175,20 @@ describe("BloomFilter (Rust bloom/tests.rs)", () => {
     expect(a.equals(BloomFilter.withParams(1024, DEFAULT_HASH_COUNT))).toBe(false);
     expect(a.equals(BloomFilter.withParams(DEFAULT_FILTER_SIZE_BITS, 3))).toBe(false);
   });
+
+  it("supports precomputed SHA-256 digests and zero-allocation copyInto()", () => {
+    for (const numBits of [DEFAULT_FILTER_SIZE_BITS, 240]) {
+      const f = BloomFilter.withParams(numBits, 5);
+      const present = makeNodeAddr(0x11);
+      const absent = makeNodeAddr(0x22);
+      f.insertBytes(present);
+      expect(f.containsDigest(sha256(present))).toBe(true);
+      expect(f.containsDigest(sha256(absent))).toBe(false);
+      const dest = new Uint8Array(f.numBytes + 6).fill(0xee);
+      f.copyInto(dest, 3);
+      expect(bytesEqual(dest.subarray(3, 3 + f.numBytes), f.asBytes())).toBe(true);
+      expect(dest[2]).toBe(0xee);
+      expect(dest[3 + f.numBytes]).toBe(0xee);
+    }
+  });
 });

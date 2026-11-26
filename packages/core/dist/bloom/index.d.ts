@@ -29,6 +29,8 @@ export declare class BloomFilter {
     insertBytes(data: Uint8Array): void;
     /** Probabilistic membership: false ⇒ definitely absent; true ⇒ probably present. */
     containsBytes(data: Uint8Array): boolean;
+    /** Probabilistic membership using a precomputed SHA-256 digest of the key. */
+    containsDigest(digest: Uint8Array): boolean;
     /** In-place OR with another same-sized filter. */
     merge(other: BloomFilter): void;
     /** Return a fresh copy of this filter. */
@@ -41,8 +43,9 @@ export declare class BloomFilter {
     fillRatio(): number;
     isEmpty(): boolean;
     asBytes(): Uint8Array;
+    copyInto(target: Uint8Array, offset?: number): void;
     get numBytes(): number;
     /** Rust-compatible: h1 = LE u64 from SHA-256[0..8]; h2 = LE u64 from SHA-256[8..16]. */
-    private probe;
+    private probeDigest;
 }
 //# sourceMappingURL=index.d.ts.map

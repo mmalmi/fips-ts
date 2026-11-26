@@ -28,12 +28,11 @@ export class TreeState {
     announce() {
         return (this.cachedAnnounce ??= buildTreeAnnounce(this.identity, this.parent, this.sequence, this.timestamp, this.ancestry));
     }
-    updatePeer(peerNodeAddr, announce) {
-        const key = nodeAddrToHex(peerNodeAddr);
-        const existing = this.peers.get(key);
+    updatePeer(peerNodeAddr, announce, peerNodeHex = nodeAddrToHex(peerNodeAddr)) {
+        const existing = this.peers.get(peerNodeHex);
         if (existing && announce.sequence <= existing.sequence)
             return false;
-        this.peers.set(key, {
+        this.peers.set(peerNodeHex, {
             sequence: announce.sequence,
             parent: announce.parent,
             ancestry: announce.ancestry,
@@ -41,19 +40,19 @@ export class TreeState {
         });
         return this.evaluateParent();
     }
-    removePeer(peerNodeAddr) {
-        const removed = this.peers.delete(nodeAddrToHex(peerNodeAddr));
+    removePeer(peerNodeAddr, peerNodeHex = nodeAddrToHex(peerNodeAddr)) {
+        const removed = this.peers.delete(peerNodeHex);
         return removed ? this.evaluateParent() : false;
     }
     reset() {
         this.peers.clear();
         this.evaluateParent();
     }
-    isTreePeer(peerNodeAddr) {
+    isTreePeer(peerNodeAddr, peerNodeHex = nodeAddrToHex(peerNodeAddr)) {
         if (!bytesEqual(this.parent, this.identity.nodeAddr) && bytesEqual(this.parent, peerNodeAddr)) {
             return true;
         }
-        const peerParent = this.peers.get(nodeAddrToHex(peerNodeAddr))?.parent;
+        const peerParent = this.peers.get(peerNodeHex)?.parent;
         return peerParent ? bytesEqual(peerParent, this.identity.nodeAddr) : false;
     }
     nextHop(destCoords, eligible) {
@@ -86,7 +85,7 @@ export class TreeState {
                     continue;
                 if (rootOrder === 0) {
                     const depthOrder = peer.ancestry.length - bestPeer.ancestry.length;
-                    if (depthOrder > 0 || (depthOrder === 0 && hex.localeCompare(bestHex) >= 0))
+                    if (depthOrder > 0 || (depthOrder === 0 && hex >= bestHex))
                         continue;
                 }
             }
