@@ -26,15 +26,17 @@ export declare class FmpTransportPacketProcessor {
     private readonly reassembler;
     private readonly remoteEpochHistory;
     private readonly pendingResponders;
+    private readonly debugEnabled;
     constructor(cfg: FmpTransportPacketProcessorConfig);
     clear(): void;
     discardPendingResponder(peer: AdjacentPeer): void;
     process(transport: Transport, received: ReceivedTransportPacket): void;
     private handleMsg1;
     private reconcileAuthenticatedMsg1;
+    private rebindPeerIdentity;
+    private reconcileSameIdentityMsg1;
     private stageUnconfirmedCarrier;
     private prepareMsg1Peer;
-    private rejectRetiredEpoch;
     private handleMsg2;
     private confirmOutgoingHandshake;
     private replayPendingLookupsAfterEstablishment;
@@ -45,6 +47,7 @@ export declare class FmpTransportPacketProcessor {
     private matchEstablishedLink;
     private newResponderLink;
     private rememberPeer;
+    private unindexPeer;
     private rememberRemoteEpoch;
     private isRetiredRemoteEpoch;
     private rejectRetiredMsg2Peer;

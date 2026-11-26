@@ -11,7 +11,8 @@
 
 import { sha256 } from "@noble/hashes/sha256";
 
-import { BinaryReader } from "../codec/binary.js";
+import { readU32le, readU64le } from "../codec/binary.js";
+import { bytesEqual } from "../codec/hex.js";
 
 export const DEFAULT_FILTER_SIZE_BITS = 8192;
 export const DEFAULT_HASH_COUNT = 5;
@@ -23,6 +24,7 @@ export class BloomError extends Error {}
 
 export class BloomFilter {
   private readonly bits: Uint8Array;
+  private readonly bitMask: number;
   readonly numBits: number;
   readonly hashCount: number;
 
@@ -30,6 +32,7 @@ export class BloomFilter {
     this.bits = bits;
     this.numBits = numBits;
     this.hashCount = hashCount;
+    this.bitMask = (numBits & (numBits - 1)) === 0 && numBits <= 0x4000_0000 ? numBits - 1 : 0;
   }
 
   /** New empty filter with default parameters (8192 bits, 5 hashes). */
@@ -60,36 +63,42 @@ export class BloomFilter {
 
   /** Insert raw bytes (e.g. a 16-byte NodeAddr). */
   insertBytes(data: Uint8Array): void {
-    for (let k = 0; k < this.hashCount; k++) {
-      this.setBit(this.hash(data, k));
-    }
+    this.probe(data, true);
   }
 
   /** Probabilistic membership: false ⇒ definitely absent; true ⇒ probably present. */
   containsBytes(data: Uint8Array): boolean {
-    for (let k = 0; k < this.hashCount; k++) {
-      if (!this.getBit(this.hash(data, k))) return false;
-    }
-    return true;
+    return this.probe(data, false);
   }
 
   /** In-place OR with another same-sized filter. */
   merge(other: BloomFilter): void {
     if (this.numBits !== other.numBits) {
-      throw new BloomError(
-        `filter size mismatch: ${this.numBits} vs ${other.numBits}`,
-      );
+      throw new BloomError(`filter size mismatch: ${this.numBits} vs ${other.numBits}`);
     }
-    for (let i = 0; i < this.bits.length; i++) this.bits[i] |= other.bits[i];
+    if ((this.bits.length & 3) === 0 && (this.bits.byteOffset & 3) === 0 && (other.bits.byteOffset & 3) === 0) {
+      const a = new Uint32Array(this.bits.buffer, this.bits.byteOffset, this.bits.length >>> 2);
+      const b = new Uint32Array(other.bits.buffer, other.bits.byteOffset, other.bits.length >>> 2);
+      for (let i = 0; i < a.length; i++) a[i] |= b[i]!;
+      return;
+    }
+    for (let i = 0; i < this.bits.length; i++) this.bits[i] |= other.bits[i]!;
+  }
+
+  /** Return a fresh copy of this filter. */
+  clone(): BloomFilter {
+    return new BloomFilter(new Uint8Array(this.bits), this.numBits, this.hashCount);
   }
 
   /** Return a fresh filter = self ∪ other. */
   union(other: BloomFilter): BloomFilter {
-    const out = BloomFilter.withParams(this.numBits, this.hashCount);
-    for (let i = 0; i < this.bits.length; i++) {
-      out.bits[i] = this.bits[i] | other.bits[i];
-    }
+    const out = this.clone();
+    out.merge(other);
     return out;
+  }
+
+  equals(other: BloomFilter): boolean {
+    return this.hashCount === other.hashCount && bytesEqual(this.bits, other.bits);
   }
 
   clear(): void {
@@ -98,8 +107,19 @@ export class BloomFilter {
 
   countOnes(): number {
     let count = 0;
+    if ((this.bits.length & 3) === 0 && (this.bits.byteOffset & 3) === 0) {
+      const words = new Uint32Array(this.bits.buffer, this.bits.byteOffset, this.bits.length >>> 2);
+      for (let i = 0; i < words.length; i++) {
+        let v = words[i]!;
+        if (v === 0) continue;
+        v -= (v >>> 1) & 0x55555555;
+        v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+        count += Math.imul((v + (v >>> 4)) & 0x0f0f0f0f, 0x01010101) >>> 24;
+      }
+      return count;
+    }
     for (let i = 0; i < this.bits.length; i++) {
-      let b = this.bits[i];
+      let b = this.bits[i]!;
       while (b !== 0) {
         b &= b - 1;
         count++;
@@ -127,23 +147,29 @@ export class BloomFilter {
     return this.bits.length;
   }
 
-  // ---- internal hashing ----
-
   /** Rust-compatible: h1 = LE u64 from SHA-256[0..8]; h2 = LE u64 from SHA-256[8..16]. */
-  private hash(data: Uint8Array, k: number): number {
+  private probe(data: Uint8Array, insert: boolean): boolean {
     const digest = sha256(data);
-    const r = new BinaryReader(digest);
-    const h1 = r.u64le();
-    const h2 = r.u64le();
-    const combined = (h1 + BigInt(k) * h2) & 0xffffffffffffffffn;
-    return Number(combined % BigInt(this.numBits));
-  }
-
-  private setBit(index: number): void {
-    this.bits[index >>> 3] |= 1 << (index & 7);
-  }
-
-  private getBit(index: number): boolean {
-    return (this.bits[index >>> 3] & (1 << (index & 7))) !== 0;
+    if (this.bitMask !== 0) {
+      const mask = this.bitMask;
+      let idx = readU32le(digest, 0) & mask;
+      const step = readU32le(digest, 8) & mask;
+      for (let k = 0; k < this.hashCount; k++) {
+        if (insert) this.bits[idx >>> 3] |= 1 << (idx & 7);
+        else if ((this.bits[idx >>> 3]! & (1 << (idx & 7))) === 0) return false;
+        idx = (idx + step) & mask;
+      }
+      return true;
+    }
+    let h = readU64le(digest, 0);
+    const h2 = readU64le(digest, 8);
+    const mod = BigInt(this.numBits);
+    for (let k = 0; k < this.hashCount; k++) {
+      const idx = Number(h % mod);
+      if (insert) this.bits[idx >>> 3] |= 1 << (idx & 7);
+      else if ((this.bits[idx >>> 3]! & (1 << (idx & 7))) === 0) return false;
+      h = (h + h2) & 0xffff_ffff_ffff_ffffn;
+    }
+    return true;
   }
 }

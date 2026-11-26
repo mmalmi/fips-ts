@@ -1,13 +1,29 @@
-import { decodeFspEstablished, FSP_FLAG_DIRECT_TRANSPORT } from "./wire.js";
+import { readU16le, readU32le, readU64le, writeU16le, writeU32le, writeU64le, } from "../codec/binary.js";
+import { FSP_FLAG_DIRECT_TRANSPORT, parseFspEstablished } from "./wire.js";
 export const DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN = 20;
 export const DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN = 72 * 1024;
 export const DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS = 128;
 const FRAGMENT_MAGIC = Uint8Array.of(0x44, 0x46, 0x50, 0x31); // DFP1
 const REASSEMBLY_TTL_MS = 2_000;
 const MAX_REASSEMBLY_RECORDS = 512;
+const PRUNE_INTERVAL_MS = 500;
 export function isDirectFspTransportFragment(data) {
-    return data.length >= FRAGMENT_MAGIC.length
-        && FRAGMENT_MAGIC.every((byte, index) => data[index] === byte);
+    return data.length >= 4
+        && data[0] === 0x44 && data[1] === 0x46 && data[2] === 0x50 && data[3] === 0x31;
+}
+function parseFragmentHeader(fragment) {
+    if (fragment.length <= DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN)
+        return undefined;
+    const recordId = readU64le(fragment, 4);
+    const totalLen = readU32le(fragment, 12);
+    const fragmentIndex = readU16le(fragment, 16);
+    const fragmentCount = readU16le(fragment, 18);
+    if (totalLen <= 0 || totalLen > DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN
+        || fragmentCount <= 1 || fragmentCount > DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS
+        || fragmentCount > totalLen || fragmentIndex >= fragmentCount) {
+        return undefined;
+    }
+    return { recordId, totalLen, fragmentIndex, fragmentCount };
 }
 export function segmentDirectFspTransportRecord(record, pathMtu) {
     if (!Number.isSafeInteger(pathMtu) || pathMtu <= 0) {
@@ -18,7 +34,7 @@ export function segmentDirectFspTransportRecord(record, pathMtu) {
     if (record.length > DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN) {
         throw new Error("direct FSP record exceeds reassembly limit");
     }
-    const established = decodeFspEstablished(record);
+    const established = parseFspEstablished(record, false);
     if ((established.flags & FSP_FLAG_DIRECT_TRANSPORT) === 0) {
         throw new Error("segmented FSP record must use direct transport");
     }
@@ -29,7 +45,7 @@ export function segmentDirectFspTransportRecord(record, pathMtu) {
     if (fragmentCount <= 1 || fragmentCount > DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS) {
         throw new Error("direct FSP record requires too many fragments");
     }
-    const fragments = [];
+    const fragments = new Array(fragmentCount);
     for (let index = 0; index < fragmentCount; index += 1) {
         const start = index * maxPayload;
         const payload = record.subarray(start, Math.min(start + maxPayload, record.length));
@@ -40,114 +56,94 @@ export function segmentDirectFspTransportRecord(record, pathMtu) {
         writeU16le(fragment, 16, index);
         writeU16le(fragment, 18, fragmentCount);
         fragment.set(payload, DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN);
-        fragments.push(fragment);
+        fragments[index] = fragment;
     }
     return fragments;
 }
 export class DirectFspTransportReassembler {
     entries = new Map();
+    lastPruneMs = -Infinity;
     ingest(source, fragment, nowMs) {
         if (!isDirectFspTransportFragment(fragment)) {
             throw new Error("packet is not a direct FSP transport fragment");
         }
-        if (fragment.length <= DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN)
+        const header = parseFragmentHeader(fragment);
+        if (!header)
             return undefined;
-        const recordId = readU64le(fragment, 4);
-        const totalLen = readU32le(fragment, 12);
-        const fragmentIndex = readU16le(fragment, 16);
-        const fragmentCount = readU16le(fragment, 18);
-        if (totalLen <= 0
-            || totalLen > DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN
-            || fragmentCount <= 1
-            || fragmentCount > DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS
-            || fragmentCount > totalLen
-            || fragmentIndex >= fragmentCount) {
-            return undefined;
+        if (this.entries.size > 0 && (nowMs - this.lastPruneMs >= PRUNE_INTERVAL_MS || nowMs < this.lastPruneMs)) {
+            this.prune(nowMs);
         }
-        this.prune(nowMs);
-        const key = `${source}:${recordId.toString(16)}`;
-        let entry = this.entries.get(key);
-        if (!entry
-            || nowMs - entry.createdAtMs > REASSEMBLY_TTL_MS
-            || entry.totalLen !== totalLen
-            || entry.fragments.length !== fragmentCount) {
-            this.reserveEntry();
-            entry = {
-                createdAtMs: nowMs,
-                totalLen,
-                receivedBytes: 0,
-                fragments: new Array(fragmentCount).fill(undefined),
-            };
-            this.entries.set(key, entry);
-        }
-        if (!entry.fragments[fragmentIndex]) {
+        const key = `${source}:${header.recordId.toString(16)}`;
+        const entry = this.getOrResetEntry(key, header, nowMs);
+        if (!entry.fragments[header.fragmentIndex]) {
             const payload = fragment.slice(DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN);
-            if (entry.receivedBytes + payload.length > totalLen) {
+            if (entry.receivedBytes + payload.length > header.totalLen) {
                 this.entries.delete(key);
                 return undefined;
             }
-            entry.fragments[fragmentIndex] = payload;
+            entry.fragments[header.fragmentIndex] = payload;
             entry.receivedBytes += payload.length;
+            entry.missingFragments -= 1;
         }
-        if (entry.receivedBytes !== totalLen || entry.fragments.some((part) => !part)) {
+        if (entry.missingFragments !== 0 || entry.receivedBytes !== header.totalLen)
             return undefined;
-        }
-        const record = new Uint8Array(totalLen);
+        const record = new Uint8Array(header.totalLen);
         let offset = 0;
         for (const part of entry.fragments) {
-            if (!part)
-                return undefined;
             record.set(part, offset);
             offset += part.length;
         }
         this.entries.delete(key);
-        return offset === totalLen ? record : undefined;
+        return offset === header.totalLen ? record : undefined;
     }
     clear() {
         this.entries.clear();
+        this.lastPruneMs = -Infinity;
+    }
+    getOrResetEntry(key, header, nowMs) {
+        const existing = this.entries.get(key);
+        if (existing
+            && nowMs - existing.createdAtMs <= REASSEMBLY_TTL_MS
+            && existing.totalLen === header.totalLen
+            && existing.fragments.length === header.fragmentCount) {
+            return existing;
+        }
+        if (existing)
+            this.entries.delete(key);
+        this.reserveEntry(nowMs);
+        const entry = {
+            createdAtMs: nowMs,
+            totalLen: header.totalLen,
+            receivedBytes: 0,
+            missingFragments: header.fragmentCount,
+            fragments: new Array(header.fragmentCount),
+        };
+        this.entries.set(key, entry);
+        return entry;
     }
     prune(nowMs) {
+        this.lastPruneMs = nowMs;
         for (const [key, entry] of this.entries) {
             if (nowMs - entry.createdAtMs > REASSEMBLY_TTL_MS)
                 this.entries.delete(key);
         }
     }
-    reserveEntry() {
+    reserveEntry(nowMs) {
         if (this.entries.size < MAX_REASSEMBLY_RECORDS)
             return;
-        const oldest = [...this.entries.entries()].reduce((candidate, current) => current[1].createdAtMs < candidate[1].createdAtMs ? current : candidate);
-        this.entries.delete(oldest[0]);
+        this.prune(nowMs);
+        if (this.entries.size < MAX_REASSEMBLY_RECORDS)
+            return;
+        let oldestKey;
+        let oldestTime = Infinity;
+        for (const [key, entry] of this.entries) {
+            if (entry.createdAtMs < oldestTime) {
+                oldestTime = entry.createdAtMs;
+                oldestKey = key;
+            }
+        }
+        if (oldestKey !== undefined)
+            this.entries.delete(oldestKey);
     }
-}
-function writeU16le(target, offset, value) {
-    target[offset] = value & 0xff;
-    target[offset + 1] = (value >>> 8) & 0xff;
-}
-function writeU32le(target, offset, value) {
-    target[offset] = value & 0xff;
-    target[offset + 1] = (value >>> 8) & 0xff;
-    target[offset + 2] = (value >>> 16) & 0xff;
-    target[offset + 3] = (value >>> 24) & 0xff;
-}
-function writeU64le(target, offset, value) {
-    for (let index = 0; index < 8; index += 1) {
-        target[offset + index] = Number((value >> BigInt(index * 8)) & 0xffn);
-    }
-}
-function readU16le(source, offset) {
-    return source[offset] | (source[offset + 1] << 8);
-}
-function readU32le(source, offset) {
-    return (source[offset]
-        | (source[offset + 1] << 8)
-        | (source[offset + 2] << 16)
-        | (source[offset + 3] << 24)) >>> 0;
-}
-function readU64le(source, offset) {
-    let value = 0n;
-    for (let index = 0; index < 8; index += 1) {
-        value |= BigInt(source[offset + index]) << BigInt(index * 8);
-    }
-    return value;
 }
 //# sourceMappingURL=directTransport.js.map

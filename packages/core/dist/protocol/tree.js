@@ -1,5 +1,5 @@
 import { sha256 } from "@noble/hashes/sha256";
-import { BinaryReader, BinaryWriter } from "../codec/binary.js";
+import { BinaryReader, BinaryWriter, writeU64le } from "../codec/binary.js";
 import { bytesEqual } from "../codec/hex.js";
 import { signSchnorr, verifySchnorr } from "../identity/index.js";
 import { compareNodeAddr } from "../nodeaddr/index.js";
@@ -8,12 +8,12 @@ export const TREE_ANNOUNCE_VERSION = 1;
 export const TREE_COORD_ENTRY_SIZE = 32;
 export const TREE_ANNOUNCE_MIN_PAYLOAD_SIZE = 99;
 export function treeDeclarationBytes(nodeAddr, parent, sequence, timestamp) {
-    const writer = new BinaryWriter();
-    writer.bytes(nodeAddr);
-    writer.bytes(parent);
-    writer.u64le(sequence);
-    writer.u64le(timestamp);
-    return writer.toBytes();
+    const out = new Uint8Array(48);
+    out.set(nodeAddr, 0);
+    out.set(parent, 16);
+    writeU64le(out, 32, sequence);
+    writeU64le(out, 40, timestamp);
+    return out;
 }
 export function buildTreeAnnounce(identity, parent, sequence, timestamp, ancestry) {
     const signature = signSchnorr(identity, sha256(treeDeclarationBytes(identity.nodeAddr, parent, sequence, timestamp)));
@@ -42,9 +42,15 @@ export function decodeTreeAnnounce(buf) {
     if (buf.length < 1 + TREE_ANNOUNCE_MIN_PAYLOAD_SIZE) {
         throw new Error("TreeAnnounce too short");
     }
-    const reader = new BinaryReader(buf);
-    if (reader.u8() !== LinkMessageType.TreeAnnounce)
+    if (buf[0] !== LinkMessageType.TreeAnnounce)
         throw new Error("not a TreeAnnounce");
+    return decodeTreeAnnouncePayload(buf.subarray(1));
+}
+export function decodeTreeAnnouncePayload(payload) {
+    if (payload.length < TREE_ANNOUNCE_MIN_PAYLOAD_SIZE) {
+        throw new Error("TreeAnnounce too short");
+    }
+    const reader = new BinaryReader(payload);
     if (reader.u8() !== TREE_ANNOUNCE_VERSION)
         throw new Error("unsupported TreeAnnounce version");
     const sequence = reader.u64le();
@@ -65,12 +71,6 @@ export function decodeTreeAnnounce(buf) {
     const announce = { sequence, timestamp, parent, ancestry, signature: reader.bytes(64) };
     validateTreeAnnounceSemantics(announce);
     return announce;
-}
-export function decodeTreeAnnouncePayload(payload) {
-    const frame = new Uint8Array(payload.length + 1);
-    frame[0] = LinkMessageType.TreeAnnounce;
-    frame.set(payload, 1);
-    return decodeTreeAnnounce(frame);
 }
 export function verifyTreeAnnounce(announce, peerPubkey) {
     const nodeAddr = announce.ancestry[0].nodeAddr;

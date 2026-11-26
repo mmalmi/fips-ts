@@ -1,7 +1,7 @@
 import type { FipsIdentity } from "../identity/index.js";
-import { type NodeAddr } from "../nodeaddr/index.js";
-import type { Logger } from "../transport/types.js";
-import type { AdjacentPeer } from "./PeerState.js";
+import type { NodeAddr } from "../nodeaddr/index.js";
+import { type Logger } from "../transport/types.js";
+import { type AdjacentPeer } from "./PeerState.js";
 interface BloomRoutingConfig {
     identity: FipsIdentity;
     forwarding: boolean;
@@ -15,7 +15,11 @@ interface BloomRoutingConfig {
 export declare class BloomRouting {
     private readonly cfg;
     private sequence;
+    private readonly debugEnabled;
+    private readonly selfFilter;
+    private pendingBroadcast?;
     constructor(cfg: BloomRoutingConfig);
+    stop(): void;
     schedule(peer: AdjacentPeer): void;
     sendAll(excludedPeer?: AdjacentPeer): Promise<void>;
     handle(peer: AdjacentPeer, payload: Uint8Array): Promise<void>;

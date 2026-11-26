@@ -59,8 +59,13 @@ export interface FmpEstablished extends FmpEstablishedHeader {
     payloadLen: number;
     ciphertext: Uint8Array;
 }
+export declare function writeFmpEstablishedHeader(buf: Uint8Array, h: FmpEstablishedHeader, payloadLen: number): void;
 export declare function encodeFmpEstablishedHeader(h: FmpEstablishedHeader, payloadLen: number): Uint8Array;
 export declare function encodeFmpEstablished(p: FmpEstablished): Uint8Array;
+/** Zero-copy established frame parser for internal hot paths. */
+export declare function parseFmpEstablished(buf: Uint8Array): FmpEstablished & {
+    aad: Uint8Array;
+};
 export declare function decodeFmpEstablished(buf: Uint8Array): FmpEstablished;
 export interface FmpInnerPacket {
     timestamp: number;

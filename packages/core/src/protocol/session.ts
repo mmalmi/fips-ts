@@ -12,60 +12,27 @@ export interface SessionSetup {
   handshakePayload: Uint8Array;
 }
 
-export interface SessionAck {
-  srcCoords: NodeAddr[];
-  destCoords: NodeAddr[];
-  flags: number;
-  handshakePayload: Uint8Array;
-}
+export type SessionAck = SessionSetup;
 
 export interface SessionMsg3 {
   flags: number;
   handshakePayload: Uint8Array;
 }
 
-export function encodeSessionSetup(msg: SessionSetup): Uint8Array {
-  const body = new BinaryWriter();
-  body.u8(msg.flags & 0xff);
-  encodeCoords(msg.srcCoords, body);
-  encodeCoords(msg.destCoords, body);
-  body.u16le(msg.handshakePayload.length);
-  body.bytes(msg.handshakePayload);
-  return encodeSessionHandshakeFrame(FSP_PHASE_MSG1, body.toBytes());
-}
+export const encodeSessionSetup = (msg: SessionSetup): Uint8Array =>
+  encodeSessionCoordsFrame(FSP_PHASE_MSG1, msg);
 
-export function decodeSessionSetup(frame: Uint8Array): SessionSetup {
-  const body = decodeSessionHandshakeFrame(frame, FSP_PHASE_MSG1);
-  const r = new BinaryReader(body);
-  const flags = r.u8();
-  const srcCoords = decodeCoords(r);
-  const destCoords = decodeCoords(r);
-  const handshakePayload = r.bytes(r.u16le());
-  return { srcCoords, destCoords, flags, handshakePayload };
-}
+export const decodeSessionSetup = (frame: Uint8Array): SessionSetup =>
+  decodeSessionCoordsFrame(frame, FSP_PHASE_MSG1);
 
-export function encodeSessionAck(msg: SessionAck): Uint8Array {
-  const body = new BinaryWriter();
-  body.u8(msg.flags & 0xff);
-  encodeCoords(msg.srcCoords, body);
-  encodeCoords(msg.destCoords, body);
-  body.u16le(msg.handshakePayload.length);
-  body.bytes(msg.handshakePayload);
-  return encodeSessionHandshakeFrame(FSP_PHASE_MSG2, body.toBytes());
-}
+export const encodeSessionAck = (msg: SessionAck): Uint8Array =>
+  encodeSessionCoordsFrame(FSP_PHASE_MSG2, msg);
 
-export function decodeSessionAck(frame: Uint8Array): SessionAck {
-  const body = decodeSessionHandshakeFrame(frame, FSP_PHASE_MSG2);
-  const r = new BinaryReader(body);
-  const flags = r.u8();
-  const srcCoords = decodeCoords(r);
-  const destCoords = decodeCoords(r);
-  const handshakePayload = r.bytes(r.u16le());
-  return { srcCoords, destCoords, flags, handshakePayload };
-}
+export const decodeSessionAck = (frame: Uint8Array): SessionAck =>
+  decodeSessionCoordsFrame(frame, FSP_PHASE_MSG2);
 
 export function encodeSessionMsg3(msg: SessionMsg3): Uint8Array {
-  const body = new BinaryWriter();
+  const body = new BinaryWriter(3 + msg.handshakePayload.length);
   body.u8(msg.flags & 0xff);
   body.u16le(msg.handshakePayload.length);
   body.bytes(msg.handshakePayload);
@@ -73,15 +40,33 @@ export function encodeSessionMsg3(msg: SessionMsg3): Uint8Array {
 }
 
 export function decodeSessionMsg3(frame: Uint8Array): SessionMsg3 {
-  const body = decodeSessionHandshakeFrame(frame, FSP_PHASE_MSG3);
-  const r = new BinaryReader(body);
+  const r = new BinaryReader(decodeSessionHandshakeFrame(frame, FSP_PHASE_MSG3));
   const flags = r.u8();
-  const handshakePayload = r.bytes(r.u16le());
-  return { flags, handshakePayload };
+  return { flags, handshakePayload: r.bytes(r.u16le()) };
+}
+
+function encodeSessionCoordsFrame(phase: number, msg: SessionSetup): Uint8Array {
+  const body = new BinaryWriter(
+    7 + (msg.srcCoords.length + msg.destCoords.length) * 16 + msg.handshakePayload.length,
+  );
+  body.u8(msg.flags & 0xff);
+  encodeCoords(msg.srcCoords, body);
+  encodeCoords(msg.destCoords, body);
+  body.u16le(msg.handshakePayload.length);
+  body.bytes(msg.handshakePayload);
+  return encodeSessionHandshakeFrame(phase, body.toBytes());
+}
+
+function decodeSessionCoordsFrame(frame: Uint8Array, expectedPhase: number): SessionSetup {
+  const r = new BinaryReader(decodeSessionHandshakeFrame(frame, expectedPhase));
+  const flags = r.u8();
+  const srcCoords = decodeCoords(r);
+  const destCoords = decodeCoords(r);
+  return { srcCoords, destCoords, flags, handshakePayload: r.bytes(r.u16le()) };
 }
 
 function encodeSessionHandshakeFrame(phase: number, body: Uint8Array): Uint8Array {
-  const w = new BinaryWriter();
+  const w = new BinaryWriter(4 + body.length);
   w.u8(((FSP_VERSION & 0xf) << 4) | (phase & 0xf));
   w.u8(0);
   w.u16le(body.length);
@@ -100,7 +85,7 @@ function decodeSessionHandshakeFrame(frame: Uint8Array, expectedPhase: number): 
   if (phase !== expectedPhase) throw new Error(`expected FSP phase ${expectedPhase}, got ${phase}`);
   if (flags !== 0) throw new Error("FSP handshake flags must be zero");
   const body = r.bytes(payloadLen);
-  if (r.rest().length !== 0) throw new Error("trailing bytes after FSP handshake frame");
+  if (r.remaining !== 0) throw new Error("trailing bytes after FSP handshake frame");
   return body;
 }
 

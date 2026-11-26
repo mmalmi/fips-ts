@@ -1,8 +1,12 @@
 import {
-  decodeFmpEstablished,
-  decodeFmpMsg1,
-  decodeFmpMsg2,
-  decodeFspEstablished,
+  FMP_ESTABLISHED_HEADER_LEN,
+  FMP_MSG1_TOTAL_LEN,
+  FMP_MSG2_TOTAL_LEN,
+  FSP_ESTABLISHED_HEADER_LEN,
+  FSP_FLAG_CP,
+  FSP_FLAG_U,
+  NOISE_IK_MSG1_LEN,
+  NOISE_IK_MSG2_LEN,
   isDirectFspEstablished,
   isDirectFspTransportFragment,
   noopLogger,
@@ -29,6 +33,7 @@ const DEFAULT_RECONNECT_INITIAL_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_SEND_POLL_MS = 10;
 const MAX_SEEDS = 256;
+const AEAD_TAG_LEN = 16;
 
 export type LocalKeyHint =
   | { kind: "request"; nonce: bigint }
@@ -74,13 +79,14 @@ interface PendingSend {
 
 interface SeedState {
   readonly url: string;
+  readonly addr: TransportAddress;
   socket?: WebSocket;
   generation: number;
   nonce?: bigint;
   remoteXOnly?: Uint8Array;
   readyWaiters: Set<Deferred>;
   queue: PendingSend[];
-  receiveChain: Promise<void>;
+  queueHead: number;
   reconnectDelayMs: number;
   reconnectTimer?: ReturnType<typeof setTimeout>;
   connectTimer?: ReturnType<typeof setTimeout>;
@@ -123,6 +129,7 @@ export class WebSocketTransport implements Transport {
   };
 
   private ctx?: TransportContext;
+  private localXOnlyHex = "";
   private discoveries?: AsyncEventStream<DiscoveredPeer>;
   private stopping = true;
 
@@ -186,10 +193,11 @@ export class WebSocketTransport implements Transport {
     }
     this.seeds = new Map(normalized.map((url) => [url, {
       url,
+      addr: { transport: this.type, addr: url },
       generation: 0,
       readyWaiters: new Set<Deferred>(),
       queue: [],
-      receiveChain: Promise.resolve(),
+      queueHead: 0,
       reconnectDelayMs: this.reconnectInitialMs,
     }]));
   }
@@ -198,6 +206,7 @@ export class WebSocketTransport implements Transport {
     if (!this.stopping) return;
     this.stopping = false;
     this.ctx = ctx;
+    this.localXOnlyHex = toHex(ctx.localIdentity.xOnlyPubkey);
     this.discoveries = new AsyncEventStream<DiscoveredPeer>(this.seeds.size * 2);
     for (const state of this.seeds.values()) this.dial(state);
   }
@@ -222,6 +231,7 @@ export class WebSocketTransport implements Transport {
     this.discoveries?.close();
     this.discoveries = undefined;
     this.ctx = undefined;
+    this.localXOnlyHex = "";
   }
 
   discover(): AsyncIterable<DiscoveredPeer> {
@@ -243,7 +253,23 @@ export class WebSocketTransport implements Transport {
     validateFipsRecord(packet, this.maxFrameBytes);
     if (packet.length > this.maxBufferedBytes) throw new Error("WebSocket record exceeds send buffer budget");
     if (!this.isReady(state)) throw new Error("WebSocket seed is not connected");
-    if (state.queue.length >= this.maxSendQueue) {
+    const queued = state.queue.length - state.queueHead;
+    if (queued === 0 && !state.sendTimer && state.socket!.bufferedAmount + packet.length <= this.maxBufferedBytes) {
+      if (state.remoteXOnly && this.ctx?.allowPeer?.(state.remoteXOnly) === false) {
+        throw new Error("FIPS peer is blocked");
+      }
+      try {
+        state.socket!.send(packet);
+        this.counters.framesSent++;
+        this.counters.bytesSent += packet.length;
+        return;
+      } catch (error) {
+        const err = asError(error);
+        this.failSocket(state, state.generation, err);
+        throw err;
+      }
+    }
+    if (queued >= this.maxSendQueue) {
       this.counters.sendQueueFull++;
       throw new Error("WebSocket send queue full");
     }
@@ -260,6 +286,8 @@ export class WebSocketTransport implements Transport {
 
   private stateFor(addr: TransportAddress): SeedState {
     if (addr.transport !== this.type) throw new Error("wrong transport");
+    const direct = this.seeds.get(addr.addr);
+    if (direct) return direct;
     const normalized = normalizeSeedUrl(addr.addr);
     const state = this.seeds.get(normalized);
     if (!state) throw new Error(`unconfigured WebSocket seed URL ${normalized}`);
@@ -272,7 +300,7 @@ export class WebSocketTransport implements Transport {
     this.counters.connectionAttempts++;
     this.logger.debug("WebSocket seed connect", state.url);
     this.ctx?.onConnectionState?.({
-      remoteAddr: this.addr(state),
+      remoteAddr: state.addr,
       state: "connecting",
     });
     let socket: WebSocket;
@@ -288,6 +316,8 @@ export class WebSocketTransport implements Transport {
       this.failSocket(state, generation, new Error("WebSocket connect timeout"));
     }, this.connectTimeoutMs);
 
+    let pendingAsync = 0;
+    let receiveChain = Promise.resolve();
     socket.addEventListener("open", () => {
       if (!this.isCurrent(state, socket, generation)) return;
       if (state.connectTimer) clearTimeout(state.connectTimer);
@@ -306,9 +336,21 @@ export class WebSocketTransport implements Transport {
     });
     socket.addEventListener("message", (event) => {
       if (!this.isCurrent(state, socket, generation)) return;
-      state.receiveChain = state.receiveChain
-        .then(() => this.receive(state, socket, generation, (event as MessageEvent).data))
-        .catch((error) => this.failSocket(state, generation, asError(error)));
+      const data = (event as MessageEvent).data;
+      if (pendingAsync === 0 && !(typeof Blob !== "undefined" && data instanceof Blob)) {
+        try {
+          const { wire, owned } = syncBinaryMessage(data);
+          this.processMessage(state, socket, wire, owned);
+        } catch (error) {
+          this.failSocket(state, generation, asError(error));
+        }
+        return;
+      }
+      pendingAsync++;
+      receiveChain = receiveChain
+        .then(() => this.receiveAsync(state, socket, generation, data))
+        .catch((error) => this.failSocket(state, generation, asError(error)))
+        .finally(() => { pendingAsync--; });
     });
     socket.addEventListener("error", () => {
       if (!this.isCurrent(state, socket, generation)) return;
@@ -324,15 +366,26 @@ export class WebSocketTransport implements Transport {
     });
   }
 
-  private async receive(
+  private async receiveAsync(
     state: SeedState,
     socket: WebSocket,
     generation: number,
     data: unknown,
   ): Promise<void> {
     if (!this.isCurrent(state, socket, generation)) return;
-    const wire = await binaryMessage(data);
+    const { wire, owned } = typeof Blob !== "undefined" && data instanceof Blob
+      ? { wire: new Uint8Array(await data.arrayBuffer()), owned: true }
+      : syncBinaryMessage(data);
     if (!this.isCurrent(state, socket, generation)) return;
+    this.processMessage(state, socket, wire, owned);
+  }
+
+  private processMessage(
+    state: SeedState,
+    socket: WebSocket,
+    wire: Uint8Array,
+    owned: boolean,
+  ): void {
     const hint = decodeLocalKeyHint(wire);
     if (hint?.kind === "request") {
       if (!this.ctx) throw new Error("WebSocket transport is not started");
@@ -341,7 +394,7 @@ export class WebSocketTransport implements Transport {
     }
     if (hint?.kind === "response") {
       if (hint.nonce !== state.nonce || state.remoteXOnly) return;
-      if (toHex(hint.pubkey) === toHex(this.ctx!.localIdentity.xOnlyPubkey)) {
+      if (toHex(hint.pubkey) === this.localXOnlyHex) {
         throw new Error("WebSocket seed returned the local FIPS identity");
       }
       if (this.ctx?.allowPeer?.(hint.pubkey) === false) throw new Error("FIPS peer is blocked");
@@ -350,9 +403,9 @@ export class WebSocketTransport implements Transport {
       state.remoteXOnly = new Uint8Array(hint.pubkey);
       state.reconnectDelayMs = this.reconnectInitialMs;
       this.resolveReadyWaiters(state);
-      this.ctx?.onConnectionState?.({ remoteAddr: this.addr(state), state: "connected" });
+      this.ctx?.onConnectionState?.({ remoteAddr: state.addr, state: "connected" });
       this.discoveries?.push({
-        remoteAddr: this.addr(state),
+        remoteAddr: state.addr,
         publicKey: new Uint8Array(hint.pubkey),
         meta: { source: "websocket-seed" },
       });
@@ -370,8 +423,8 @@ export class WebSocketTransport implements Transport {
     this.counters.bytesReceived += wire.length;
     this.ctx?.onPacket({
       transportType: this.type,
-      remoteAddr: this.addr(state),
-      data: new Uint8Array(wire),
+      remoteAddr: state.addr,
+      data: owned ? wire : new Uint8Array(wire),
       receivedAtMs: Date.now(),
     });
   }
@@ -379,12 +432,12 @@ export class WebSocketTransport implements Transport {
   private pump(state: SeedState): void {
     if (state.sendTimer || !this.isReady(state)) return;
     const socket = state.socket!;
-    while (state.queue.length > 0) {
+    while (state.queueHead < state.queue.length) {
       if (state.remoteXOnly && this.ctx?.allowPeer?.(state.remoteXOnly) === false) {
         this.rejectQueue(state, new Error("FIPS peer is blocked"));
         return;
       }
-      const next = state.queue[0]!;
+      const next = state.queue[state.queueHead]!;
       if (socket.bufferedAmount + next.data.length > this.maxBufferedBytes) {
         state.sendTimer = setTimeout(() => {
           state.sendTimer = undefined;
@@ -392,15 +445,23 @@ export class WebSocketTransport implements Transport {
         }, this.sendPollMs);
         return;
       }
-      state.queue.shift();
+      state.queueHead++;
+      if (state.queueHead === state.queue.length) {
+        state.queue.length = 0;
+        state.queueHead = 0;
+      } else if (state.queueHead >= 64) {
+        state.queue.splice(0, state.queueHead);
+        state.queueHead = 0;
+      }
       try {
         socket.send(next.data);
         this.counters.framesSent++;
         this.counters.bytesSent += next.data.length;
         next.resolve();
       } catch (error) {
-        next.reject(asError(error));
-        this.failSocket(state, state.generation, asError(error));
+        const err = asError(error);
+        next.reject(err);
+        this.failSocket(state, state.generation, err);
         return;
       }
     }
@@ -427,7 +488,7 @@ export class WebSocketTransport implements Transport {
     this.rejectQueue(state, error);
     if (wasOpen) this.counters.connectionsClosed++;
     this.ctx?.onConnectionState?.({
-      remoteAddr: this.addr(state),
+      remoteAddr: state.addr,
       state: "disconnected",
       reason: error.message,
     });
@@ -450,10 +511,6 @@ export class WebSocketTransport implements Transport {
     return state.socket === socket && state.generation === generation;
   }
 
-  private addr(state: SeedState): TransportAddress {
-    return { transport: this.type, addr: state.url };
-  }
-
   private resolveReadyWaiters(state: SeedState): void {
     for (const waiter of state.readyWaiters) waiter.resolve();
     state.readyWaiters.clear();
@@ -465,7 +522,10 @@ export class WebSocketTransport implements Transport {
   }
 
   private rejectQueue(state: SeedState, error: Error): void {
-    for (const pending of state.queue.splice(0)) pending.reject(error);
+    const items = state.queue.slice(state.queueHead);
+    state.queue.length = 0;
+    state.queueHead = 0;
+    for (const pending of items) pending.reject(error);
   }
 
   private clearConnectionTimers(state: SeedState): void {
@@ -525,18 +585,55 @@ function validateFipsRecord(wire: Uint8Array, maxBytes: number): void {
     throw new Error(`WebSocket FIPS record exceeds ${maxBytes} bytes`);
   }
   if (isDirectFspEstablished(wire)) {
-    decodeFspEstablished(wire);
+    validateDirectFspEstablished(wire);
     return;
   }
   if (isDirectFspTransportFragment(wire)) {
     validateDirectFspFragment(wire);
     return;
   }
+  if ((wire[0]! >>> 4) !== 0) throw new Error("bad FMP version");
   const phase = peekFmpPhase(wire);
-  if (phase === 0) decodeFmpEstablished(wire);
-  else if (phase === 1) decodeFmpMsg1(wire);
-  else if (phase === 2) decodeFmpMsg2(wire);
-  else throw new Error(`unknown FIPS physical record phase ${phase}`);
+  const payloadLen = wire.length >= 4 ? (wire[2]! | (wire[3]! << 8)) : -1;
+  if (phase === 0) {
+    if (wire.length < FMP_ESTABLISHED_HEADER_LEN + AEAD_TAG_LEN
+      || wire.length - FMP_ESTABLISHED_HEADER_LEN !== payloadLen + AEAD_TAG_LEN) {
+      throw new Error("invalid FMP Established record");
+    }
+  } else if (phase === 1) {
+    if (wire.length !== FMP_MSG1_TOTAL_LEN || wire[1] !== 0 || payloadLen !== 4 + NOISE_IK_MSG1_LEN) {
+      throw new Error("invalid FMP Msg1 record");
+    }
+  } else if (phase === 2) {
+    if (wire.length !== FMP_MSG2_TOTAL_LEN || wire[1] !== 0 || payloadLen !== 8 + NOISE_IK_MSG2_LEN) {
+      throw new Error("invalid FMP Msg2 record");
+    }
+  } else {
+    throw new Error(`unknown FIPS physical record phase ${phase}`);
+  }
+}
+
+function validateDirectFspEstablished(wire: Uint8Array): void {
+  if (wire.length < FSP_ESTABLISHED_HEADER_LEN + AEAD_TAG_LEN) {
+    throw new Error("FSP Established too short");
+  }
+  const flags = wire[1]!;
+  if ((flags & FSP_FLAG_U) !== 0) {
+    throw new Error("plaintext FSP error frames are not supported here");
+  }
+  const payloadLen = wire[2]! | (wire[3]! << 8);
+  let off = FSP_ESTABLISHED_HEADER_LEN;
+  if ((flags & FSP_FLAG_CP) !== 0) {
+    for (let i = 0; i < 2; i++) {
+      if (off + 2 > wire.length) throw new Error("FSP coordinate field too short");
+      const count = wire[off]! | (wire[off + 1]! << 8);
+      off += 2 + count * 16;
+      if (off > wire.length) throw new Error("FSP coordinate entries truncated");
+    }
+  }
+  if (wire.length - off !== payloadLen + AEAD_TAG_LEN) {
+    throw new Error("FSP payload_len mismatch");
+  }
 }
 
 function validateDirectFspFragment(wire: Uint8Array): void {
@@ -558,14 +655,11 @@ function validateDirectFspFragment(wire: Uint8Array): void {
   }
 }
 
-async function binaryMessage(data: unknown): Promise<Uint8Array> {
+function syncBinaryMessage(data: unknown): { wire: Uint8Array; owned: boolean } {
   if (typeof data === "string") throw new Error("WebSocket transport accepts binary messages only");
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (data instanceof ArrayBuffer) return { wire: new Uint8Array(data), owned: true };
   if (ArrayBuffer.isView(data)) {
-    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  }
-  if (typeof Blob !== "undefined" && data instanceof Blob) {
-    return new Uint8Array(await data.arrayBuffer());
+    return { wire: new Uint8Array(data.buffer, data.byteOffset, data.byteLength), owned: false };
   }
   throw new Error("unsupported WebSocket binary message");
 }

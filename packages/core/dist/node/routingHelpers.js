@@ -2,9 +2,8 @@ import { bytesEqual, fromHex } from "../codec/hex.js";
 import { compressedPubkeyFromXOnly, } from "../identity/index.js";
 import { deriveNodeAddr, nodeAddrToHex, } from "../nodeaddr/index.js";
 import { LinkMessageType } from "../protocol/link.js";
-export function peerNodeKey(peer) {
-    return nodeAddrToHex(deriveNodeAddr(peer.pubkey));
-}
+import { peerNodeKey } from "./PeerState.js";
+export { peerNodeKey };
 export function frameCapacity(peer) {
     return Math.min(0xffff, peer.transport.maxFrameBytes ?? peer.transport.mtu);
 }

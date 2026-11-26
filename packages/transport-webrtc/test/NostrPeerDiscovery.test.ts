@@ -159,3 +159,44 @@ it("closes a provider whose restoration completes after discovery stops", async 
   close(); discovery.stop();
   expect(closes).toBe(1);
 });
+
+it("caches verified event signatures across relays while still rejecting tampered content or sigs", async () => {
+  const local = await identityFromSecretKey(new Uint8Array(32).fill(0x71));
+  const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x72));
+  const relayA = new FakeRelay();
+  const relayB = new FakeRelay();
+  const discovery = new NostrPeerDiscovery({
+    identity: local,
+    relays: [relayClient(relayA), relayClient(relayB)],
+    discoveryApp: "hashtree-v1",
+  });
+  const seen: Array<[string, string]> = [];
+  await discovery.subscribeAdverts((event, _advert, sourceRelay) => {
+    seen.push([event.id, sourceRelay]);
+  });
+  const now = Math.floor(Date.now() / 1_000);
+  const valid = signEvent(remote, {
+    created_at: now,
+    kind: FIPS_ADVERT_KIND,
+    tags: [
+      ["d", "hashtree-v1"],
+      ["protocol", "hashtree-v1"],
+      ["version", FIPS_PROTOCOL_VERSION],
+      ["expiration", String(now + 600)],
+    ],
+    content: JSON.stringify(advertContent(toHex(remote.publicKey))),
+  });
+  relayA.emit(valid);
+  relayB.emit(valid);
+  // Same id with tampered content (valid JSON) or tampered signature must be rejected.
+  relayA.emit({
+    ...valid,
+    content: JSON.stringify({ ...advertContent(toHex(remote.publicKey)), stunServers: ["stun:evil.example:3478"] }),
+  });
+  relayA.emit({
+    ...valid,
+    sig: (valid.sig[0] === "0" ? "1" : "0") + valid.sig.slice(1),
+  });
+  expect(seen).toHaveLength(2);
+  discovery.stop();
+});

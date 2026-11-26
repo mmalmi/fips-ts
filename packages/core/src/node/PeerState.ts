@@ -1,4 +1,5 @@
 import { peerIdFromPubkey } from "../identity/index.js";
+import { deriveNodeAddr, nodeAddrToHex, type NodeAddr } from "../nodeaddr/index.js";
 import type { PeerEvent } from "./types.js";
 import type { FmpLink } from "../fmp/link.js";
 import type { BloomFilter } from "../bloom/index.js";
@@ -18,6 +19,9 @@ export function sameCompressedIdentity(a: Uint8Array, b: Uint8Array): boolean {
 export interface AdjacentPeer {
   pubkey: Uint8Array;
   pubkeyHex: string;
+  cachedNodeAddrPubkey?: Uint8Array;
+  cachedNodeAddr?: NodeAddr;
+  cachedNodeAddrHex?: string;
   remoteAddr: TransportAddress;
   transport: Transport;
   link: FmpLink;
@@ -41,6 +45,24 @@ export interface AdjacentPeer {
     reject: (err: Error) => void;
     confirmCarrier?: () => void;
   };
+}
+
+/** Return the peer's 16-byte NodeAddr, deriving and caching it once per pubkey. */
+export function peerNodeAddr(peer: AdjacentPeer): NodeAddr {
+  if (peer.cachedNodeAddrPubkey !== peer.pubkey || !peer.cachedNodeAddr) {
+    peer.cachedNodeAddr = deriveNodeAddr(peer.pubkey);
+    peer.cachedNodeAddrHex = nodeAddrToHex(peer.cachedNodeAddr);
+    peer.cachedNodeAddrPubkey = peer.pubkey;
+  }
+  return peer.cachedNodeAddr;
+}
+
+/** Return the peer's 32-char lowercase NodeAddr hex, cached per pubkey. */
+export function peerNodeKey(peer: AdjacentPeer): string {
+  if (peer.cachedNodeAddrPubkey !== peer.pubkey || !peer.cachedNodeAddrHex) {
+    peerNodeAddr(peer);
+  }
+  return peer.cachedNodeAddrHex!;
 }
 
 export function peerEvent(peer: AdjacentPeer, state: PeerEvent["state"]): PeerEvent {

@@ -4,6 +4,7 @@ export declare class WebRtcTransport implements Transport {
     readonly type = "webrtc";
     readonly mtu: number;
     private ctx?;
+    private localPubkeyHex;
     private readonly cfg;
     private readonly logger;
     private readonly RTCPC;
@@ -34,12 +35,10 @@ export declare class WebRtcTransport implements Transport {
     private stopping;
     constructor(config: WebRtcTransportConfig);
     start(ctx: TransportContext): Promise<void>;
+    private initRelayClients;
     stop(): Promise<void>;
     private handleAdvert;
-    /**
-     * Replace the identities auto-connect dials first (for example the
-     * application's own devices). Newly preferred peers are dialed at once.
-     */
+    /** Replace the identities auto-connect dials first. Newly preferred peers are dialed at once. */
     setPreferredAutoConnectPeers(peers: readonly string[]): void;
     /** A live peer republished its advert: lift any failure backoff toward it. */
     private handleAdvertRefresh;
@@ -55,8 +54,11 @@ export declare class WebRtcTransport implements Transport {
     handlePeerRestart(remotePubkeyHex: string): Promise<void>;
     handleSessionEstablished(remotePubkeyHex: string, restarted?: boolean): void;
     private startInitiatorHandshake;
+    private createConnection;
     private handleIncomingSignal;
+    private handleDuplicateSignal;
     private processIncomingOffer;
+    private admitIncomingOffer;
     private handleIncomingOffer;
     private handleInboundConnectionState;
     private scheduleAutoReconnect;
@@ -70,6 +72,8 @@ export declare class WebRtcTransport implements Transport {
     private peerAllowed;
     private speculativeAutoConnects;
     private autoConnectCapacityUsed;
+    private rememberKnownSession;
+    private rememberSeenSignal;
     private maxSpeculativeAutoConnects;
 }
 //# sourceMappingURL=WebRtcTransport.d.ts.map

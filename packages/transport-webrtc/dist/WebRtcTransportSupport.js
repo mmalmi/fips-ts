@@ -32,23 +32,25 @@ export function hasPendingInboundForPeer(pending, remotePubkeyHex) {
     return [...pending].some((item) => item.remotePubkeyHex === remotePubkeyHex);
 }
 export function waitForIceGatheringComplete(pc, timeoutMs) {
-    if (pc.iceGatheringState === "complete")
+    if (pc.iceGatheringState === "complete" || pc.connectionState === "closed")
         return Promise.resolve();
     return new Promise((resolve) => {
-        const timer = setTimeout(() => {
+        const finish = () => {
+            clearTimeout(timer);
             pc.removeEventListener("icegatheringstatechange", onChange);
+            pc.removeEventListener("connectionstatechange", onChange);
             resolve();
-        }, timeoutMs);
+        };
+        const timer = setTimeout(finish, timeoutMs);
         function onChange() {
-            if (pc.iceGatheringState === "complete") {
-                clearTimeout(timer);
-                pc.removeEventListener("icegatheringstatechange", onChange);
-                resolve();
-            }
+            if (pc.iceGatheringState === "complete" || pc.connectionState === "closed")
+                finish();
         }
         pc.addEventListener("icegatheringstatechange", onChange);
+        pc.addEventListener("connectionstatechange", onChange);
     });
 }
+const MAX_QUEUED_EVENTS = 256;
 export class AsyncEventStream {
     values = [];
     waiters = [];
@@ -57,10 +59,14 @@ export class AsyncEventStream {
         if (this.closed)
             return;
         const waiter = this.waiters.shift();
-        if (waiter)
+        if (waiter) {
             waiter({ done: false, value });
-        else
+        }
+        else {
+            if (this.values.length >= MAX_QUEUED_EVENTS)
+                this.values.shift();
             this.values.push(value);
+        }
     }
     close() {
         if (this.closed)
@@ -117,5 +123,14 @@ export function advertExpiryMs(event, ttlMs, nowMs) {
     if (!Number.isSafeInteger(advertisedExpiryMs))
         return undefined;
     return Math.min(localExpiryMs, advertisedExpiryMs);
+}
+export function storeBoundedId(set, key, maxEntries) {
+    set.delete(key);
+    if (set.size >= maxEntries) {
+        const oldest = set.values().next().value;
+        if (oldest !== undefined)
+            set.delete(oldest);
+    }
+    set.add(key);
 }
 //# sourceMappingURL=WebRtcTransportSupport.js.map

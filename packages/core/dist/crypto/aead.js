@@ -1,24 +1,37 @@
 import { chacha20poly1305 } from "@noble/ciphers/chacha";
-import { BinaryWriter } from "../codec/binary.js";
+import { writeU64le } from "../codec/binary.js";
+const scratchNonce = new Uint8Array(12);
+function writeNonceInto(target, counter) {
+    if (typeof counter !== "bigint")
+        throw new TypeError("u64le expects bigint");
+    if (counter < 0n || counter > 0xffffffffffffffffn) {
+        throw new RangeError(`u64 out of range: ${counter}`);
+    }
+    writeU64le(target, 4, counter);
+    return target;
+}
 /**
  * Build the 12-byte ChaCha20-Poly1305 nonce per FIPS spec:
  *   4 bytes zero || 8 bytes LE counter
  */
 export function noiseNonce(counter) {
-    const w = new BinaryWriter();
-    w.bytes(new Uint8Array(4));
-    w.u64le(counter);
-    return w.toBytes();
+    return writeNonceInto(new Uint8Array(12), counter);
 }
 /** AEAD seal returning ciphertext || 16-byte tag. */
 export function aeadSeal(key, counter, plaintext, aad) {
     if (key.length !== 32)
         throw new Error("AEAD key must be 32 bytes");
-    return chacha20poly1305(key, noiseNonce(counter), aad).encrypt(plaintext);
+    return chacha20poly1305(key, writeNonceInto(scratchNonce, counter), aad).encrypt(plaintext);
+}
+/** AEAD seal writing ciphertext || 16-byte tag directly into `output` (supports in-place). */
+export function aeadSealInto(key, counter, plaintext, aad, output) {
+    if (key.length !== 32)
+        throw new Error("AEAD key must be 32 bytes");
+    chacha20poly1305(key, writeNonceInto(scratchNonce, counter), aad).encrypt(plaintext, output);
 }
 export function aeadOpen(key, counter, ciphertext, aad) {
     if (key.length !== 32)
         throw new Error("AEAD key must be 32 bytes");
-    return chacha20poly1305(key, noiseNonce(counter), aad).decrypt(ciphertext);
+    return chacha20poly1305(key, writeNonceInto(scratchNonce, counter), aad).decrypt(ciphertext);
 }
 //# sourceMappingURL=aead.js.map

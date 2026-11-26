@@ -20,6 +20,7 @@ export class MemoryTransport {
     mtu;
     ctx;
     pubkeyHex = "";
+    localAddr;
     hub;
     loss;
     rand;
@@ -33,6 +34,7 @@ export class MemoryTransport {
     async start(ctx) {
         this.ctx = ctx;
         this.pubkeyHex = toHex(ctx.localIdentity.publicKey);
+        this.localAddr = { transport: "memory", addr: this.pubkeyHex };
         this.hub.register(this.pubkeyHex, this);
     }
     async stop() {
@@ -46,6 +48,7 @@ export class MemoryTransport {
         }
         this.connected.clear();
         this.ctx = undefined;
+        this.localAddr = undefined;
     }
     async connect(addr) {
         const remote = this.hub.resolve(addr.addr);
@@ -55,7 +58,7 @@ export class MemoryTransport {
         this.connected.add(key);
         this.ctx?.onConnectionState?.({ remoteAddr: addr, state: "connected" });
         // Tell the remote we're now reachable too — so it can route packets back.
-        const ourAddr = { transport: "memory", addr: this.pubkeyHex };
+        const ourAddr = this.localAddr ?? { transport: "memory", addr: this.pubkeyHex };
         remote.connected.add(transportAddressKey(ourAddr));
         remote.ctx?.onConnectionState?.({ remoteAddr: ourAddr, state: "connected" });
     }
@@ -65,7 +68,7 @@ export class MemoryTransport {
         const remote = this.hub.resolve(addr.addr);
         if (!remote || !remote.ctx)
             throw new Error(`memory peer offline: ${addr.addr}`);
-        const fromAddr = { transport: "memory", addr: this.pubkeyHex };
+        const fromAddr = this.localAddr ?? { transport: "memory", addr: this.pubkeyHex };
         // Deliver asynchronously so callers don't see synchronous reentrancy.
         queueMicrotask(() => {
             remote.ctx?.onPacket({

@@ -1,5 +1,6 @@
 const READY_FRAME = new Uint8Array([0xff, 0x46, 0x57, 0x52, 0x31]); // FWR1
 const DEFAULT_READY_FALLBACK_MS = 250;
+const textEncoder = new TextEncoder();
 /**
  * A single WebRTC datachannel link to one remote pubkey.
  *
@@ -39,7 +40,7 @@ export class WebRtcConnection {
             else if (ev.data instanceof Uint8Array)
                 buf = ev.data;
             else if (typeof ev.data === "string")
-                buf = new TextEncoder().encode(ev.data);
+                buf = textEncoder.encode(ev.data);
             else
                 return;
             if (isReadyFrame(buf)) {
@@ -128,12 +129,15 @@ export class WebRtcConnection {
         if (this.dataChannel.readyState !== "open") {
             throw new Error(`datachannel not open (state=${this.dataChannel.readyState})`);
         }
-        // The DOM type only accepts Uint8Array<ArrayBuffer> — copy the bytes
-        // into a fresh, non-shared buffer to be safe.
-        const copy = new Uint8Array(new ArrayBuffer(data.length));
-        copy.set(data);
-        this.dataChannel.send(copy);
-        this.logger?.debug("webrtc packet sent", this.remotePubkeyHex, copy.length, copy[0] ?? null);
+        // The DOM type only accepts Uint8Array<ArrayBuffer> — avoid copying when
+        // the caller already gave us an exact non-shared ArrayBuffer view.
+        const out = data.buffer instanceof ArrayBuffer
+            && data.byteOffset === 0
+            && data.byteLength === data.buffer.byteLength
+            ? data
+            : new Uint8Array(data);
+        this.dataChannel.send(out);
+        this.logger?.debug("webrtc packet sent", this.remotePubkeyHex, out.length, out[0] ?? null);
     }
     close() {
         if (this.fallbackTimer)

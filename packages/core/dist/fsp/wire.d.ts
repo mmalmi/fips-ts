@@ -63,7 +63,16 @@ export interface FspEstablished extends FspEstablishedHeader {
     ciphertext: Uint8Array;
 }
 export declare function encodeFspEstablishedHeader(h: FspEstablishedHeader, payloadLen: number): Uint8Array;
+export declare function allocateFspEstablishedFrame(h: FspEstablishedHeader, payloadLen: number, coords?: Pick<FspEstablished, "srcCoords" | "destCoords">): {
+    frame: Uint8Array;
+    payloadOffset: number;
+};
 export declare function encodeFspEstablished(p: FspEstablished): Uint8Array;
+export interface ParsedFspEstablished extends FspEstablished {
+    aad: Uint8Array;
+}
+/** Zero-copy FSP established frame parser for internal hot paths. */
+export declare function parseFspEstablished(buf: Uint8Array, includeCoords?: boolean): ParsedFspEstablished;
 export declare function decodeFspEstablished(buf: Uint8Array): FspEstablished;
 export interface FspInnerPacket {
     timestamp: number;

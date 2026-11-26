@@ -31,4 +31,5 @@ export interface AdvertWaiter {
     signal?: AbortSignal;
     onAbort?: () => void;
 }
+export declare function storeBoundedId(set: Set<string>, key: string, maxEntries: number): void;
 //# sourceMappingURL=WebRtcTransportSupport.d.ts.map

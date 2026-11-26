@@ -7,6 +7,8 @@ export declare class TreeState {
     private timestamp;
     private parent;
     private ancestry;
+    private cachedCoords;
+    private cachedAnnounce?;
     private readonly peers;
     constructor(identity: FipsIdentity);
     get coords(): NodeAddr[];

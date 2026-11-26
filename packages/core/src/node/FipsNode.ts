@@ -1,10 +1,11 @@
 import { randomBytes } from "@noble/hashes/utils";
 
+import { readU32le } from "../codec/binary.js";
 import { bytesEqual, fromHex, toHex } from "../codec/hex.js";
 import { FmpLink } from "../fmp/link.js";
 import type { FipsIdentity } from "../identity/index.js";
 import { deriveNodeAddr, nodeAddrToHex } from "../nodeaddr/index.js";
-import { DisconnectReason, LinkMessageType, decodeSessionDatagramPayload } from "../protocol/link.js";
+import { DisconnectReason, LinkMessageType, parseSessionDatagramPayload } from "../protocol/link.js";
 import { decodeLookupRequest } from "../protocol/discovery.js";
 import {
   noopLogger,
@@ -32,7 +33,15 @@ import {
   FmpTransportPacketProcessor,
 } from "./FmpTransportPacketProcessor.js";
 import { FspSessionManager } from "./FspSessionManager.js";
-import { peerEvent, FMP_HANDSHAKE_TIMEOUT_MS, pruneDrainingResponderLinks, sameCompressedIdentity, type AdjacentPeer } from "./PeerState.js";
+import {
+  peerEvent,
+  peerNodeAddr,
+  peerNodeKey,
+  FMP_HANDSHAKE_TIMEOUT_MS,
+  pruneDrainingResponderLinks,
+  sameCompressedIdentity,
+  type AdjacentPeer,
+} from "./PeerState.js";
 import { discoveryPublicKey } from "./routingHelpers.js";
 import { PeerAdmission } from "./PeerAdmission.js";
 
@@ -91,7 +100,7 @@ export class FipsNode {
     if (this.startupEpoch.length !== 8) {
       throw new Error("FIPS random source returned a bad startup epoch");
     }
-    this.nextFmpSessionIdx = readU32Le(this.startupEpoch) || 1;
+    this.nextFmpSessionIdx = readU32le(this.startupEpoch, 0) || 1;
     this.logger = cfg.logger ?? noopLogger;
     this.heartbeatIntervalMs = cfg.heartbeatIntervalMs ?? FMP_HEARTBEAT_INTERVAL_MS;
     if (!Number.isSafeInteger(this.heartbeatIntervalMs) || this.heartbeatIntervalMs <= 0) {
@@ -225,8 +234,7 @@ export class FipsNode {
           onPacket: (packet) => { if (current()) this.packetProcessor.process(t, packet); },
           onConnectionState: (e) => { if (current()) this.onTransportConn(t, e); },
           allowPeer: (pubkey) => current() && this.admission.allows(pubkey),
-          isLinked: () => current()
-            && [...this.peers.values()].some((peer) => peer.link.state === "established"),
+          isLinked: () => current() && this.hasEstablishedPeer(),
           connectTransport: async (addr) => {
             if (!current()) throw new Error("FIPS transport was stopped");
             await this.connect(addr);
@@ -358,7 +366,8 @@ export class FipsNode {
 
   private trackSend(task: Promise<void>): Promise<void> {
     this.pendingSends.add(task);
-    void task.finally(() => this.pendingSends.delete(task)).catch(() => {});
+    const done = () => { this.pendingSends.delete(task); };
+    void task.then(done, done);
     return task;
   }
 
@@ -597,10 +606,17 @@ export class FipsNode {
     }
   }
 
+  private hasEstablishedPeer(): boolean {
+    for (const peer of this.peers.values()) {
+      if (peer.link.state === "established") return true;
+    }
+    return false;
+  }
+
   private rememberPeer(peer: AdjacentPeer): void {
     if (peer.pubkey.length === 0 || !peer.pubkeyHex) return;
     this.peersByPubkey.set(peer.pubkeyHex, peer);
-    this.peersByNodeAddr.set(nodeAddrToHex(deriveNodeAddr(peer.pubkey)), peer);
+    this.peersByNodeAddr.set(peerNodeKey(peer), peer);
   }
 
   private removePeerPath(
@@ -633,20 +649,20 @@ export class FipsNode {
       this.routing.scheduleTreeAnnounce(alternate);
       return;
     }
+    let nodeAddrHex: string | undefined;
     if (peer.pubkey.length > 0) {
-      const peerNodeAddr = deriveNodeAddr(peer.pubkey);
-      const nodeAddrHex = nodeAddrToHex(peerNodeAddr);
+      const peerAddr = peerNodeAddr(peer);
+      nodeAddrHex = peerNodeKey(peer);
       if (this.peersByNodeAddr.get(nodeAddrHex) === peer) {
         this.peersByNodeAddr.delete(nodeAddrHex);
       }
-      this.routing.removePeer(peerNodeAddr);
+      this.routing.removePeer(peerAddr);
     }
     // An FSP session belongs to the remote identity, not this direct carrier.
     // Retain its keys when authenticated routing can still reach that identity;
     // a new local session would disagree with the surviving peer's key epoch.
     if (closeSessionWithoutAlternate && alternates.length === 0
-      && (peer.pubkey.length === 0
-        || !this.routing.hasUsableRoute(nodeAddrToHex(deriveNodeAddr(peer.pubkey))))) {
+      && (!nodeAddrHex || !this.routing.hasUsableRoute(nodeAddrHex))) {
       this.sessionManager.closePeerSessions(peer.pubkeyHex);
     }
   }
@@ -659,7 +675,7 @@ export class FipsNode {
   ): Promise<void> {
     this.admission.assertPeer(peer.pubkey);
     if (this.admission.hasBlockedPeers && msgType === LinkMessageType.SessionDatagram) {
-      const datagram = decodeSessionDatagramPayload(payload);
+      const datagram = parseSessionDatagramPayload(payload);
       this.admission.assertNode(datagram.srcAddr);
       this.admission.assertNode(datagram.destAddr);
     } else if (this.admission.hasBlockedPeers && msgType === LinkMessageType.LookupRequest) {
@@ -698,10 +714,6 @@ export class FipsNode {
 function sessionEventNodeHex(remote: string): string | undefined {
   if (/^(02|03)[0-9a-fA-F]{64}$/.test(remote)) return nodeAddrToHex(deriveNodeAddr(fromHex(remote)));
   return /^[0-9a-fA-F]{32}$/.test(remote) ? remote.toLowerCase() : undefined;
-}
-
-function readU32Le(bytes: Uint8Array): number {
-  return new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
 }
 
 function expandCompanionTransports(configured: Transport[]): Transport[] {

@@ -1,23 +1,69 @@
+export function writeU16le(buf: Uint8Array, off: number, n: number): void {
+  buf[off] = n & 0xff;
+  buf[off + 1] = (n >>> 8) & 0xff;
+}
+
+export function writeU32le(buf: Uint8Array, off: number, n: number): void {
+  buf[off] = n & 0xff;
+  buf[off + 1] = (n >>> 8) & 0xff;
+  buf[off + 2] = (n >>> 16) & 0xff;
+  buf[off + 3] = (n >>> 24) & 0xff;
+}
+
+export function writeU64le(buf: Uint8Array, off: number, n: bigint): void {
+  writeU32le(buf, off, Number(n & 0xffff_ffffn));
+  writeU32le(buf, off + 4, Number((n >> 32n) & 0xffff_ffffn));
+}
+
+export function readU16le(buf: Uint8Array, off: number): number {
+  return (buf[off]! | (buf[off + 1]! << 8)) >>> 0;
+}
+
+export function readU32le(buf: Uint8Array, off: number): number {
+  return (
+    buf[off]!
+    | (buf[off + 1]! << 8)
+    | (buf[off + 2]! << 16)
+    | (buf[off + 3]! << 24)
+  ) >>> 0;
+}
+
+export function readU64le(buf: Uint8Array, off: number): bigint {
+  return (BigInt(readU32le(buf, off + 4)) << 32n) | BigInt(readU32le(buf, off));
+}
+
 export class BinaryWriter {
-  private chunks: Uint8Array[] = [];
+  private buf: Uint8Array;
   private len = 0;
+
+  constructor(initialCapacity = 64) {
+    this.buf = new Uint8Array(initialCapacity);
+  }
+
+  private ensure(extra: number): void {
+    const needed = this.len + extra;
+    if (needed <= this.buf.length) return;
+    let cap = this.buf.length || 64;
+    while (cap < needed) cap *= 2;
+    const next = new Uint8Array(cap);
+    next.set(this.buf.subarray(0, this.len));
+    this.buf = next;
+  }
 
   u8(n: number): void {
     if (!Number.isInteger(n) || n < 0 || n > 0xff) {
       throw new RangeError(`u8 out of range: ${n}`);
     }
-    this.chunks.push(new Uint8Array([n]));
-    this.len += 1;
+    this.ensure(1);
+    this.buf[this.len++] = n;
   }
 
   u16le(n: number): void {
     if (!Number.isInteger(n) || n < 0 || n > 0xffff) {
       throw new RangeError(`u16 out of range: ${n}`);
     }
-    const b = new Uint8Array(2);
-    b[0] = n & 0xff;
-    b[1] = (n >>> 8) & 0xff;
-    this.chunks.push(b);
+    this.ensure(2);
+    writeU16le(this.buf, this.len, n);
     this.len += 2;
   }
 
@@ -25,12 +71,8 @@ export class BinaryWriter {
     if (!Number.isInteger(n) || n < 0 || n > 0xffffffff) {
       throw new RangeError(`u32 out of range: ${n}`);
     }
-    const b = new Uint8Array(4);
-    b[0] = n & 0xff;
-    b[1] = (n >>> 8) & 0xff;
-    b[2] = (n >>> 16) & 0xff;
-    b[3] = (n >>> 24) & 0xff;
-    this.chunks.push(b);
+    this.ensure(4);
+    writeU32le(this.buf, this.len, n);
     this.len += 4;
   }
 
@@ -39,18 +81,14 @@ export class BinaryWriter {
     if (n < 0n || n > 0xffffffffffffffffn) {
       throw new RangeError(`u64 out of range: ${n}`);
     }
-    const b = new Uint8Array(8);
-    let v = n;
-    for (let i = 0; i < 8; i++) {
-      b[i] = Number(v & 0xffn);
-      v >>= 8n;
-    }
-    this.chunks.push(b);
+    this.ensure(8);
+    writeU64le(this.buf, this.len, n);
     this.len += 8;
   }
 
   bytes(b: Uint8Array): void {
-    this.chunks.push(b);
+    this.ensure(b.length);
+    this.buf.set(b, this.len);
     this.len += b.length;
   }
 
@@ -59,13 +97,7 @@ export class BinaryWriter {
   }
 
   toBytes(): Uint8Array {
-    const out = new Uint8Array(this.len);
-    let off = 0;
-    for (const c of this.chunks) {
-      out.set(c, off);
-      off += c.length;
-    }
-    return out;
+    return this.buf.slice(0, this.len);
   }
 }
 
@@ -83,48 +115,41 @@ export class BinaryReader {
 
   u8(): number {
     this.require(1);
-    return this.buf[this.off++];
+    return this.buf[this.off++]!;
   }
 
   u16le(): number {
     this.require(2);
-    const v = this.buf[this.off] | (this.buf[this.off + 1] << 8);
+    const v = readU16le(this.buf, this.off);
     this.off += 2;
-    return v >>> 0;
+    return v;
   }
 
   u32le(): number {
     this.require(4);
-    const v =
-      this.buf[this.off] |
-      (this.buf[this.off + 1] << 8) |
-      (this.buf[this.off + 2] << 16) |
-      (this.buf[this.off + 3] << 24);
+    const v = readU32le(this.buf, this.off);
     this.off += 4;
-    return v >>> 0;
+    return v;
   }
 
   u64le(): bigint {
     this.require(8);
-    let v = 0n;
-    for (let i = 7; i >= 0; i--) {
-      v = (v << 8n) | BigInt(this.buf[this.off + i]);
-    }
+    const v = readU64le(this.buf, this.off);
     this.off += 8;
     return v;
   }
 
   bytes(n: number): Uint8Array {
     this.require(n);
-    const out = this.buf.subarray(this.off, this.off + n);
+    const out = this.buf.slice(this.off, this.off + n);
     this.off += n;
-    return new Uint8Array(out);
+    return out;
   }
 
   rest(): Uint8Array {
-    const out = this.buf.subarray(this.off);
+    const out = this.buf.slice(this.off);
     this.off = this.buf.length;
-    return new Uint8Array(out);
+    return out;
   }
 
   get position(): number {

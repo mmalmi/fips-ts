@@ -1,3 +1,5 @@
+const MAX_TRANSIT_SAMPLES = 32;
+
 /** Receiver-side MMP measurements shared by FMP links and FSP sessions. */
 export class ReceiverReports {
   private packets = 0n;
@@ -15,7 +17,11 @@ export class ReceiverReports {
   private bursts = 0;
   private maxBurst = 0;
   private totalBurst = 0;
-  private transitSamples: Array<{ time: number; transit: number }> = [];
+  private readonly sampleTimes = new Float64Array(MAX_TRANSIT_SAMPLES);
+  private readonly sampleTransits = new Float64Array(MAX_TRANSIT_SAMPLES);
+  private sampleHead = 0;
+  private sampleCount = 0;
+  private lastTransit = 0;
 
   resetEpoch(): void {
     this.highest = 0n;
@@ -25,7 +31,7 @@ export class ReceiverReports {
     this.timestamp = this.jitterUs = 0;
     this.receivedAt = undefined;
     this.burst = this.bursts = this.maxBurst = this.totalBurst = 0;
-    this.transitSamples = [];
+    this.sampleHead = this.sampleCount = this.lastTransit = 0;
   }
 
   record(
@@ -57,10 +63,14 @@ export class ReceiverReports {
       const sentDeltaMs = (received.timestamp - this.timestamp) | 0;
       const transitDeltaUs = ((nowMs - this.receivedAt) - sentDeltaMs) * 1_000;
       this.jitterUs += (Math.abs(transitDeltaUs) - this.jitterUs) / 16;
-      transit = this.transitSamples.at(-1)!.transit + transitDeltaUs / 1_000;
+      transit = this.lastTransit + transitDeltaUs / 1_000;
     }
-    this.transitSamples.push({ time: nowMs, transit });
-    if (this.transitSamples.length > 32) this.transitSamples.shift();
+    this.lastTransit = transit;
+    const slot = (this.sampleHead + this.sampleCount) & (MAX_TRANSIT_SAMPLES - 1);
+    this.sampleTimes[slot] = nowMs;
+    this.sampleTransits[slot] = transit;
+    if (this.sampleCount < MAX_TRANSIT_SAMPLES) this.sampleCount++;
+    else this.sampleHead = (this.sampleHead + 1) & (MAX_TRANSIT_SAMPLES - 1);
     this.timestamp = received.timestamp;
     this.receivedAt = nowMs;
   }
@@ -98,15 +108,23 @@ export class ReceiverReports {
   }
 
   private transitTrend(): number {
-    const samples = this.transitSamples;
-    if (samples.length < 2) return 0;
-    const meanTime = samples.reduce((sum, sample) => sum + sample.time, 0) / samples.length;
-    const meanTransit = samples.reduce((sum, sample) => sum + sample.transit, 0) / samples.length;
+    const n = this.sampleCount;
+    if (n < 2) return 0;
+    let sumTime = 0;
+    let sumTransit = 0;
+    for (let i = 0; i < n; i++) {
+      const idx = (this.sampleHead + i) & (MAX_TRANSIT_SAMPLES - 1);
+      sumTime += this.sampleTimes[idx]!;
+      sumTransit += this.sampleTransits[idx]!;
+    }
+    const meanTime = sumTime / n;
+    const meanTransit = sumTransit / n;
     let covariance = 0;
     let variance = 0;
-    for (const sample of samples) {
-      const time = sample.time - meanTime;
-      covariance += time * (sample.transit - meanTransit);
+    for (let i = 0; i < n; i++) {
+      const idx = (this.sampleHead + i) & (MAX_TRANSIT_SAMPLES - 1);
+      const time = this.sampleTimes[idx]! - meanTime;
+      covariance += time * (this.sampleTransits[idx]! - meanTransit);
       variance += time * time;
     }
     const slope = variance > 0 ? covariance / variance * 1_000_000 : 0;

@@ -74,6 +74,7 @@ export declare class FipsNode {
     on<K extends FipsEventName>(event: K, cb: (data: FipsEventMap[K]) => void): () => void;
     private emit;
     private onTransportConn;
+    private hasEstablishedPeer;
     private rememberPeer;
     private removePeerPath;
     private sendLinkMessage;

@@ -15,5 +15,6 @@ export interface UnsignedEvent {
 export declare function serializeForId(e: UnsignedEvent): Uint8Array;
 export declare function computeEventId(e: UnsignedEvent): string;
 export declare function signEvent(identity: FipsIdentity, e: Omit<UnsignedEvent, "pubkey">): NostrEvent;
+export declare function verifyEventSignature(sig: string, id: string, pubkey: string): boolean;
 export declare function verifyEvent(e: NostrEvent): boolean;
 //# sourceMappingURL=nostrEvent.d.ts.map

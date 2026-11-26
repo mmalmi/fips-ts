@@ -10,6 +10,8 @@ const BASE_BEACON_LENGTH = 34;
 const DEFAULT_INTERFACE_MTU = 1500;
 const DEFAULT_BEACON_INTERVAL_MS = 30_000;
 const MIN_BEACON_INTERVAL_MS = 10_000;
+const MAX_LEARNED_MAC_ENTRIES = 1_024;
+const MAX_QUEUED_DISCOVERIES = 256;
 const BROADCAST_BYTES = new Uint8Array(6).fill(0xff);
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 const textEncoder = new TextEncoder();
@@ -118,12 +120,16 @@ export class VirtualEthernetTransport {
         const destination = parseMac(addr.addr);
         if (isZeroMac(destination))
             throw new Error("destination MAC is all zeros");
-        const payload = new Uint8Array(FIPS_ETHERNET_DATA_HEADER_LENGTH + packet.length);
-        payload[0] = FRAME_TYPE_DATA;
-        payload[1] = packet.length & 0xff;
-        payload[2] = packet.length >>> 8;
-        payload.set(packet, FIPS_ETHERNET_DATA_HEADER_LENGTH);
-        await this.port.sendFrame(buildEthernetFrame(destination, this.localMac, payload));
+        const frame = new Uint8Array(ETHERNET_HEADER_LENGTH + FIPS_ETHERNET_DATA_HEADER_LENGTH + packet.length);
+        frame.set(destination, 0);
+        frame.set(this.localMac, 6);
+        frame[12] = FIPS_ETHERTYPE >>> 8;
+        frame[13] = FIPS_ETHERTYPE & 0xff;
+        frame[ETHERNET_HEADER_LENGTH] = FRAME_TYPE_DATA;
+        frame[ETHERNET_HEADER_LENGTH + 1] = packet.length & 0xff;
+        frame[ETHERNET_HEADER_LENGTH + 2] = packet.length >>> 8;
+        frame.set(packet, ETHERNET_HEADER_LENGTH + FIPS_ETHERNET_DATA_HEADER_LENGTH);
+        await this.port.sendFrame(frame);
     }
     async close(addr) {
         const mac = formatMac(parseMac(addr.addr));
@@ -213,8 +219,8 @@ export class VirtualEthernetTransport {
         const mac = formatMac(source);
         const pubkeyHex = toHex(publicKey);
         const key = toHex(publicKey.subarray(1));
-        this.macByPubkey.set(key, mac);
-        this.pubkeyByMac.set(mac, pubkeyHex);
+        putBounded(this.macByPubkey, key, mac);
+        putBounded(this.pubkeyByMac, mac, pubkeyHex);
         this.discoveryStream?.push({
             remoteAddr: { transport: this.type, addr: mac },
             publicKey,
@@ -284,6 +290,15 @@ function integerInRange(value, min, max, name) {
     }
     return value;
 }
+function putBounded(map, key, value) {
+    map.delete(key);
+    if (map.size >= MAX_LEARNED_MAC_ENTRIES) {
+        const oldest = map.keys().next().value;
+        if (oldest !== undefined)
+            map.delete(oldest);
+    }
+    map.set(key, value);
+}
 class AsyncEventStream {
     values = [];
     waiters = [];
@@ -292,10 +307,14 @@ class AsyncEventStream {
         if (this.closed)
             return;
         const waiter = this.waiters.shift();
-        if (waiter)
+        if (waiter) {
             waiter({ done: false, value });
-        else
+        }
+        else {
+            if (this.values.length >= MAX_QUEUED_DISCOVERIES)
+                this.values.shift();
             this.values.push(value);
+        }
     }
     close() {
         if (this.closed)

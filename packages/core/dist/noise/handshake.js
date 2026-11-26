@@ -61,7 +61,9 @@ export class NoiseHandshake {
     constructor(init) {
         this.pattern = init.pattern;
         this.role = init.role;
-        this.s = deriveKeyPair(init.identity.secretKey);
+        this.s = init.identity.publicKey.length === DHLEN
+            ? { priv: init.identity.secretKey, pub: init.identity.publicKey }
+            : deriveKeyPair(init.identity.secretKey);
         this.rs = init.remoteStatic;
         this.ephemeralOverride = init.ephemeralOverride;
         const protocol = PROTOCOL_NAMES[init.pattern];

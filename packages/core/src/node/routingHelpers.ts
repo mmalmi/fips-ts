@@ -10,11 +10,9 @@ import {
 import { LinkMessageType } from "../protocol/link.js";
 import type { Transport, TransportAddress } from "../transport/types.js";
 
-import type { AdjacentPeer } from "./PeerState.js";
+import { peerNodeKey, type AdjacentPeer } from "./PeerState.js";
 
-export function peerNodeKey(peer: AdjacentPeer): string {
-  return nodeAddrToHex(deriveNodeAddr(peer.pubkey));
-}
+export { peerNodeKey };
 
 export function frameCapacity(peer: AdjacentPeer): number {
   return Math.min(0xffff, peer.transport.maxFrameBytes ?? peer.transport.mtu);

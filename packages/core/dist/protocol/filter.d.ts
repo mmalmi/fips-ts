@@ -23,8 +23,12 @@ export interface FilterAnnounce {
  * size (1024 bytes / 8192 bits).
  */
 export declare function buildFilterAnnounce(filter: BloomFilter, sequence: bigint): FilterAnnounce;
+/** Encode payload without the leading msg_type byte. */
+export declare function encodeFilterAnnouncePayload(fa: FilterAnnounce): Uint8Array;
 /** Encode including the leading msg_type byte. */
 export declare function encodeFilterAnnounce(fa: FilterAnnounce): Uint8Array;
+/** Decode FilterAnnounce payload (without leading msg_type byte). */
+export declare function decodeFilterAnnouncePayload(payload: Uint8Array): FilterAnnounce;
 /**
  * Decode from a buffer that includes the leading msg_type byte. Rejects
  * unknown size_class or truncated payloads.

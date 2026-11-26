@@ -32,6 +32,7 @@ import {
   incomingOfferReplacesPendingDial,
   randomId,
   resolveWebRtcTransportConfig,
+  storeBoundedId,
   waitForIceGatheringComplete,
   type PendingInboundConnection,
   type AdvertWaiter,
@@ -46,8 +47,13 @@ import {
   type WebRtcSignal,
 } from "./WebRtcSignal.js";
 import type { WebRtcTransportConfig } from "./WebRtcTransportConfig.js";
-import { cancelOfferRetry, isRetryOfRejectedOffer, retryOffersAfterRestart, sendPendingOffer,
-  type PendingDial } from "./WebRtcDial.js";
+import {
+  cancelOfferRetry,
+  isRetryOfRejectedOffer,
+  retryOffersAfterRestart,
+  sendPendingOffer,
+  type PendingDial,
+} from "./WebRtcDial.js";
 
 class IncomingOfferHandoff extends Error {
   constructor() {
@@ -58,11 +64,14 @@ class IncomingOfferHandoff extends Error {
 const ADVERT_RESOLUTION_TIMEOUT_MS = 5_000;
 const AUTO_RECONNECT_DELAY_MS = 500;
 const AUTO_CONNECT_SETTLE_MS = 750;
+const MAX_SESSION_IDS = 1_024;
+const EMPTY_REPLAY_SET = new Set<string>();
 
 export class WebRtcTransport implements Transport {
   readonly type = "webrtc";
   readonly mtu: number;
   private ctx?: TransportContext;
+  private localPubkeyHex = "";
   private readonly cfg: ResolvedWebRtcTransportConfig;
   private readonly logger: Logger;
   private readonly RTCPC: typeof RTCPeerConnection;
@@ -94,22 +103,16 @@ export class WebRtcTransport implements Transport {
 
   constructor(config: WebRtcTransportConfig) {
     this.cfg = resolveWebRtcTransportConfig(config);
-    this.autoConnectPolicy = new WebRtcAutoConnectPolicy(
-      config.preferredAutoConnectPeers ?? [],
-    );
+    this.autoConnectPolicy = new WebRtcAutoConnectPolicy(config.preferredAutoConnectPeers ?? []);
     this.advertCache = new WebRtcAdvertCache(
       this.cfg.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS,
       (remoteAddr) => this.autoConnectAttempts.delete(remoteAddr),
     );
     this.mtu = this.cfg.mtu;
     this.logger = config.logger ?? noopLogger;
-    this.RTCPC =
-      config.rtcPeerConnection ??
-      ((globalThis as { RTCPeerConnection?: typeof RTCPeerConnection })
-        .RTCPeerConnection as typeof RTCPeerConnection);
-    if (!this.RTCPC) {
-      throw new Error("RTCPeerConnection not available in this environment");
-    }
+    this.RTCPC = config.rtcPeerConnection
+      ?? ((globalThis as { RTCPeerConnection?: typeof RTCPeerConnection }).RTCPeerConnection as typeof RTCPeerConnection);
+    if (!this.RTCPC) throw new Error("RTCPeerConnection not available in this environment");
     if (this.cfg.advertiseOnNostr && this.cfg.relays.length === 0 && !this.cfg.discoveryProvider) {
       throw new Error("advertiseOnNostr requires at least one Nostr relay");
     }
@@ -118,40 +121,9 @@ export class WebRtcTransport implements Transport {
   async start(ctx: TransportContext): Promise<void> {
     this.stopping = false;
     this.ctx = ctx;
+    this.localPubkeyHex = toHex(ctx.localIdentity.publicKey);
     this.discoveryStream = new AsyncEventStream<DiscoveredPeer>();
-    const sharedRelayClients = this.cfg.relayClients;
-    if (this.cfg.discoveryProvider) {
-      this.relayClients = [];
-      this.ownsRelayClients = false;
-    } else if (this.cfg.relays.length === 0) {
-      if (sharedRelayClients && sharedRelayClients.length > 0) {
-        throw new Error("shared relay clients require matching configured relays");
-      }
-      this.relayClients = [];
-      this.ownsRelayClients = false;
-    } else if (sharedRelayClients !== undefined) {
-      const configuredUrls = this.cfg.relays.map((url) => new URL(url).toString());
-      const sharedUrls = sharedRelayClients.map((client) => new URL(client.url).toString());
-      if (
-        sharedUrls.length === 0
-        || sharedUrls.length !== configuredUrls.length
-        || sharedUrls.some((url, index) => url !== configuredUrls[index])
-      ) {
-        throw new Error("shared relay clients must match configured relays in order");
-      }
-      this.relayClients = sharedRelayClients;
-      this.ownsRelayClients = false;
-    } else {
-      this.relayClients = this.cfg.relays.map(
-        (u) => new NostrRelayClient({
-          url: u,
-          webSocket: this.cfg.webSocket,
-          connectTimeoutMs: this.cfg.relayConnectTimeoutMs,
-          logger: this.logger,
-        }),
-      );
-      this.ownsRelayClients = true;
-    }
+    this.initRelayClients();
     if (this.relayClients.length > 0 || this.cfg.discoveryProvider) {
       this.peerDiscovery = new NostrPeerDiscovery({
         identity: ctx.localIdentity,
@@ -161,27 +133,42 @@ export class WebRtcTransport implements Transport {
         advertTtlMs: this.cfg.advertTtlMs,
         logger: this.logger,
       });
-      this.advertCleanup = await this.peerDiscovery.subscribeAdverts(
-        (event, advert, sourceRelayUrl) => {
-          this.handleAdvert(event, advert, sourceRelayUrl).catch((err) => {
-            this.logger.warn("handleAdvert", err);
-          });
-        },
-      );
+      this.advertCleanup = await this.peerDiscovery.subscribeAdverts((event, advert, sourceRelayUrl) => {
+        this.handleAdvert(event, advert, sourceRelayUrl).catch((err) => this.logger.warn("handleAdvert", err));
+      });
     }
-
     if (this.cfg.advertiseOnNostr) {
       await this.publishLocalAdvert();
-      const refreshMs = Math.max(
-        1_000,
-        Math.floor((this.cfg.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS) / 2),
-      );
+      const refreshMs = Math.max(1_000, Math.floor((this.cfg.advertTtlMs ?? DEFAULT_FIPS_ADVERT_TTL_MS) / 2));
       this.advertRefreshTimer = setInterval(() => {
         if (this.stopping) return;
-        void this.publishLocalAdvert().catch((err) => {
-          this.logger.warn("advert refresh failed", err);
-        });
+        void this.publishLocalAdvert().catch((err) => this.logger.warn("advert refresh failed", err));
       }, refreshMs);
+    }
+  }
+
+  private initRelayClients(): void {
+    const shared = this.cfg.relayClients;
+    if (this.cfg.discoveryProvider) {
+      this.relayClients = [];
+      this.ownsRelayClients = false;
+    } else if (this.cfg.relays.length === 0) {
+      if (shared && shared.length > 0) throw new Error("shared relay clients require matching configured relays");
+      this.relayClients = [];
+      this.ownsRelayClients = false;
+    } else if (shared !== undefined) {
+      const configuredUrls = this.cfg.relays.map((url) => new URL(url).toString());
+      const sharedUrls = shared.map((client) => new URL(client.url).toString());
+      if (sharedUrls.length !== configuredUrls.length || sharedUrls.some((url, i) => url !== configuredUrls[i])) {
+        throw new Error("shared relay clients must match configured relays in order");
+      }
+      this.relayClients = shared;
+      this.ownsRelayClients = false;
+    } else {
+      this.relayClients = this.cfg.relays.map((url) => new NostrRelayClient({
+        url, webSocket: this.cfg.webSocket, connectTimeoutMs: this.cfg.relayConnectTimeoutMs, logger: this.logger,
+      }));
+      this.ownsRelayClients = true;
     }
   }
 
@@ -223,31 +210,23 @@ export class WebRtcTransport implements Transport {
     this.advertCache.clear();
     this.peersWithTraffic.clear();
     for (const [nodeAddrHex, waiters] of this.advertWaiters) {
-      for (const waiter of [...waiters]) {
-        this.settleAdvertWaiter(nodeAddrHex, waiter, undefined);
-      }
+      for (const waiter of [...waiters]) this.settleAdvertWaiter(nodeAddrHex, waiter, undefined);
     }
     this.advertWaiters.clear();
     this.discoveryStream?.close();
     this.discoveryStream = undefined;
     this.peerDiscovery = undefined;
     this.ctx = undefined;
+    this.localPubkeyHex = "";
   }
 
-  private async handleAdvert(
-    event: NostrEvent,
-    advert: FipsAdvertContent,
-    sourceRelayUrl: string,
-  ): Promise<void> {
-    const localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : "";
+  private async handleAdvert(event: NostrEvent, advert: FipsAdvertContent, sourceRelayUrl: string): Promise<void> {
+    if (this.stopping || !this.ctx) return;
     for (const endpoint of advert.endpoints) {
-      if (endpoint.transport !== "webrtc" || !/^(02|03)[0-9a-fA-F]{64}$/.test(endpoint.addr)) {
-        continue;
-      }
+      if (endpoint.transport !== "webrtc" || !/^(02|03)[0-9a-fA-F]{64}$/.test(endpoint.addr)) continue;
       const remotePubkeyHex = endpoint.addr.toLowerCase();
       if (remotePubkeyHex.slice(2) !== event.pubkey.toLowerCase()) continue;
-      if (remotePubkeyHex === localPubkeyHex) continue;
-      if (!this.peerAllowed(remotePubkeyHex)) continue;
+      if (remotePubkeyHex === this.localPubkeyHex || !this.peerAllowed(remotePubkeyHex)) continue;
       const peer: DiscoveredPeer = {
         remoteAddr: { transport: this.type, addr: remotePubkeyHex },
         publicKey: fromHex(remotePubkeyHex),
@@ -264,16 +243,13 @@ export class WebRtcTransport implements Transport {
       if (this.cfg.autoConnect && !requested && !this.autoConnectFillTimer) {
         this.autoConnectFillTimer = setTimeout(() => {
           this.autoConnectFillTimer = undefined;
-          this.fillAutoConnectSlots(localPubkeyHex);
+          this.fillAutoConnectSlots();
         }, AUTO_CONNECT_SETTLE_MS);
       }
     }
   }
 
-  /**
-   * Replace the identities auto-connect dials first (for example the
-   * application's own devices). Newly preferred peers are dialed at once.
-   */
+  /** Replace the identities auto-connect dials first. Newly preferred peers are dialed at once. */
   setPreferredAutoConnectPeers(peers: readonly string[]): void {
     const added = new Set(this.autoConnectPolicy.setPreferredPeers(peers));
     if (added.size === 0) return;
@@ -293,19 +269,15 @@ export class WebRtcTransport implements Transport {
     this.logger.debug("webrtc auto-connect backoff cleared by newer advert", remotePubkeyHex);
   }
 
-  private fillAutoConnectSlots(localPubkeyHex = this.ctx ? toHex(this.ctx.localIdentity.publicKey) : ""): void {
+  private fillAutoConnectSlots(localPubkeyHex = this.localPubkeyHex): void {
     if (!this.cfg.autoConnect || this.stopping || !this.ctx) return;
-    const localXOnlyPubkey = localPubkeyHex.slice(2);
     const now = Date.now();
     this.advertCache.prune(now);
     this.autoConnectPolicy.pruneCooldowns(now);
     const partition = this.autoConnectPolicy.partitionByInitiator(
-      [...this.advertCache.values()], localXOnlyPubkey, this.cfg.acceptConnections);
-    const candidates = this.autoConnectPolicy.sort(
-      partition.outbound,
-      this.autoConnectAttempts,
-      now,
+      [...this.advertCache.values()], localPubkeyHex.slice(2), this.cfg.acceptConnections,
     );
+    const candidates = this.autoConnectPolicy.sort(partition.outbound, this.autoConnectAttempts, now);
     const reservePreferredSlot = this.autoConnectPolicy.shouldReserveSlot(
       candidates.map((cached) => cached.peer.remoteAddr.addr),
       this.conns.keys(), this.pendingConnects.keys(), this.autoConnectPeers,
@@ -314,10 +286,8 @@ export class WebRtcTransport implements Transport {
     for (const cached of candidates) {
       const remote = cached.peer.remoteAddr.addr;
       if (!this.peerAllowed(remote)) continue;
-      const autoConnectLimit = this.autoConnectPolicy.connectionLimit(
-        this.cfg.maxAutoConnections, reservePreferredSlot, remote);
-      if (this.autoConnectCapacityUsed() >= autoConnectLimit) continue;
-      // Preferred peers sort first and may exceed the speculative bound.
+      const limit = this.autoConnectPolicy.connectionLimit(this.cfg.maxAutoConnections, reservePreferredSlot, remote);
+      if (this.autoConnectCapacityUsed() >= limit) continue;
       if (!this.autoConnectPolicy.isPreferred(remote)
         && this.speculativeAutoConnects() >= this.maxSpeculativeAutoConnects()) return;
       const ownedRemote = this.ownedPeerAddress(remote);
@@ -326,15 +296,8 @@ export class WebRtcTransport implements Transport {
       if (this.autoConnectPolicy.cooldownUntil(remote) > now) continue;
       this.autoConnectAttempts.set(remote, ++this.autoConnectAttemptSequence);
       this.autoConnectPeers.add(remote);
-      const push = () => {
-        if (this.stopping || !this.ctx || this.conns.has(remote)) {
-          this.autoConnectPeers.delete(remote);
-          return;
-        }
-        this.logger.debug("webrtc auto-connect queued", remote);
-        this.discoveryStream?.push(cloneDiscoveredPeer(cached.peer));
-      };
-      push();
+      this.logger.debug("webrtc auto-connect queued", remote);
+      this.discoveryStream?.push(cloneDiscoveredPeer(cached.peer));
     }
   }
 
@@ -343,9 +306,7 @@ export class WebRtcTransport implements Transport {
     await this.peerDiscovery.publishAdvert({
       identifier: FIPS_ADVERT_D_TAG,
       version: 1,
-      endpoints: [
-        { transport: "webrtc", addr: toHex(this.ctx.localIdentity.publicKey) },
-      ],
+      endpoints: [{ transport: "webrtc", addr: this.localPubkeyHex }],
       stunServers: this.cfg.stunServers,
     });
   }
@@ -353,17 +314,13 @@ export class WebRtcTransport implements Transport {
   async resolve(nodeAddr: NodeAddr, signal?: AbortSignal): Promise<DiscoveredPeer | undefined> {
     const nodeAddrHex = nodeAddrToHex(nodeAddr);
     const cached = this.advertCache.get(nodeAddrHex);
-    // Resolution may race the discovery consumer. Keep any queued reservation
-    // until connect() atomically transfers it to pendingAutoConnects.
     if (cached) return this.peerAllowed(cached.remoteAddr.addr) ? cached : undefined;
     if (!this.ctx || signal?.aborted) return undefined;
 
     return new Promise<DiscoveredPeer | undefined>((resolve) => {
       const waiter: AdvertWaiter = {
         resolve,
-        timer: setTimeout(() => {
-          this.settleAdvertWaiter(nodeAddrHex, waiter, undefined);
-        }, ADVERT_RESOLUTION_TIMEOUT_MS),
+        timer: setTimeout(() => this.settleAdvertWaiter(nodeAddrHex, waiter, undefined), ADVERT_RESOLUTION_TIMEOUT_MS),
         signal,
       };
       if (signal) {
@@ -371,10 +328,7 @@ export class WebRtcTransport implements Transport {
         signal.addEventListener("abort", waiter.onAbort, { once: true });
       }
       let waiters = this.advertWaiters.get(nodeAddrHex);
-      if (!waiters) {
-        waiters = new Set();
-        this.advertWaiters.set(nodeAddrHex, waiters);
-      }
+      if (!waiters) { waiters = new Set(); this.advertWaiters.set(nodeAddrHex, waiters); }
       waiters.add(waiter);
     });
   }
@@ -382,24 +336,16 @@ export class WebRtcTransport implements Transport {
   private resolveAdvertWaiters(nodeAddrHex: string, peer: DiscoveredPeer): boolean {
     const waiters = this.advertWaiters.get(nodeAddrHex);
     if (!waiters || waiters.size === 0) return false;
-    for (const waiter of [...waiters]) {
-      this.settleAdvertWaiter(nodeAddrHex, waiter, cloneDiscoveredPeer(peer));
-    }
+    for (const waiter of [...waiters]) this.settleAdvertWaiter(nodeAddrHex, waiter, cloneDiscoveredPeer(peer));
     return true;
   }
 
-  private settleAdvertWaiter(
-    nodeAddrHex: string,
-    waiter: AdvertWaiter,
-    peer: DiscoveredPeer | undefined,
-  ): void {
+  private settleAdvertWaiter(nodeAddrHex: string, waiter: AdvertWaiter, peer: DiscoveredPeer | undefined): void {
     const waiters = this.advertWaiters.get(nodeAddrHex);
     if (!waiters?.delete(waiter)) return;
     if (waiters.size === 0) this.advertWaiters.delete(nodeAddrHex);
     clearTimeout(waiter.timer);
-    if (waiter.signal && waiter.onAbort) {
-      waiter.signal.removeEventListener("abort", waiter.onAbort);
-    }
+    if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
     waiter.resolve(peer);
   }
 
@@ -409,37 +355,24 @@ export class WebRtcTransport implements Transport {
 
   async connect(addr: TransportAddress): Promise<void> {
     if (addr.transport !== "webrtc") throw new Error("wrong transport");
-    if (addr.addr.length !== 66) {
-      throw new Error("WebRTC addr must be 33-byte compressed pubkey hex");
-    }
+    if (addr.addr.length !== 66) throw new Error("WebRTC addr must be 33-byte compressed pubkey hex");
     const remotePubkeyHex = this.ownedPeerAddress(addr.addr);
     if (!this.peerAllowed(remotePubkeyHex)) throw new Error("FIPS peer is blocked");
-    // Discovery reservations only cover the queued handoff to FipsNode.
-    // Once connect() starts, the concrete pending/connected maps own capacity.
     const isAutoConnect = this.autoConnectPeers.delete(addr.addr);
     if (this.conns.has(remotePubkeyHex)) return;
     const pendingConnect = this.pendingConnects.get(remotePubkeyHex);
-    if (pendingConnect) {
-      await pendingConnect;
-      return;
-    }
+    if (pendingConnect) { await pendingConnect; return; }
     if (isAutoConnect) this.pendingAutoConnects.add(remotePubkeyHex);
-    if (!this.ctx?.sendLinkNegotiation) {
-      throw new Error("WebRTC negotiation requires an authenticated FIPS route");
-    }
-    const sessionId = randomId();
-    this.knownSessionIds.add(sessionId);
-    this.logger.debug("webrtc connect start", remotePubkeyHex, sessionId);
+    if (!this.ctx?.sendLinkNegotiation) throw new Error("WebRTC negotiation requires an authenticated FIPS route");
 
-    const pc = new this.RTCPC({
-      iceServers: this.cfg.stunServers.map((u) => ({ urls: u })),
-    });
+    const sessionId = randomId();
+    this.rememberKnownSession(sessionId);
+    this.logger.debug("webrtc connect start", remotePubkeyHex, sessionId);
+    const pc = new this.RTCPC({ iceServers: this.cfg.stunServers.map((urls) => ({ urls })) });
     const dataChannelOptions: RTCDataChannelInit = {
       ordered: this.cfg.ordered,
+      ...(this.cfg.maxRetransmits != null ? { maxRetransmits: this.cfg.maxRetransmits } : {}),
     };
-    if (this.cfg.maxRetransmits !== undefined && this.cfg.maxRetransmits !== null) {
-      dataChannelOptions.maxRetransmits = this.cfg.maxRetransmits;
-    }
     const dataChannel = pc.createDataChannel(this.cfg.dataChannelLabel, dataChannelOptions);
 
     let awaitingSessionRecovery = false;
@@ -448,29 +381,15 @@ export class WebRtcTransport implements Transport {
         cancelOfferRetry(dial);
         this.pendingDials.delete(sessionId);
         const detail = [
-          `phase=${dial.phase}`,
-          `connection=${pc.connectionState}`,
-          `ice=${pc.iceConnectionState}`,
-          `signaling=${pc.signalingState}`,
-          `local=${pc.localDescription ? "set" : "missing"}`,
+          `phase=${dial.phase}`, `connection=${pc.connectionState}`, `ice=${pc.iceConnectionState}`,
+          `signaling=${pc.signalingState}`, `local=${pc.localDescription ? "set" : "missing"}`,
           `remote=${pc.remoteDescription ? "set" : "missing"}`,
         ].join(",");
         pc.close();
         reject(new Error(`WebRTC connect timeout (${detail})`));
       }, this.cfg.connectTimeoutMs);
-
-      const dial: PendingDial = {
-        sessionId,
-        remotePubkeyHex,
-        phase: "starting",
-        pc,
-        dataChannel,
-        resolve,
-        reject,
-        timer,
-      };
+      const dial: PendingDial = { sessionId, remotePubkeyHex, phase: "starting", pc, dataChannel, resolve, reject, timer };
       this.pendingDials.set(sessionId, dial);
-
       this.startInitiatorHandshake(dial, addr).catch((err) => {
         awaitingSessionRecovery = dial.phase === "sending-offer";
         clearTimeout(timer);
@@ -484,23 +403,14 @@ export class WebRtcTransport implements Transport {
     try {
       await connectPromise;
     } catch (error) {
-      // A live inbound negotiation has taken ownership of this peer. It is
-      // not a failed connection attempt and must not acquire a retry cooldown.
       if (!(error instanceof IncomingOfferHandoff)) {
         this.handleAutoConnectFailure(remotePubkeyHex, awaitingSessionRecovery);
       }
       throw error;
     } finally {
-      if (this.pendingConnects.get(remotePubkeyHex) === connectPromise) {
-        this.pendingConnects.delete(remotePubkeyHex);
-      }
-      if (!this.conns.has(remotePubkeyHex)) {
-        this.autoConnectPeers.delete(remotePubkeyHex);
-      }
-      if (isAutoConnect) {
-        this.pendingAutoConnects.delete(remotePubkeyHex);
-        this.fillAutoConnectSlots();
-      }
+      if (this.pendingConnects.get(remotePubkeyHex) === connectPromise) this.pendingConnects.delete(remotePubkeyHex);
+      if (!this.conns.has(remotePubkeyHex)) this.autoConnectPeers.delete(remotePubkeyHex);
+      if (isAutoConnect) { this.pendingAutoConnects.delete(remotePubkeyHex); this.fillAutoConnectSlots(); }
     }
   }
 
@@ -508,9 +418,7 @@ export class WebRtcTransport implements Transport {
     if (!this.peerAllowed(addr.addr)) throw new Error("FIPS peer is blocked");
     const conn = this.conns.get(this.ownedPeerAddress(addr.addr));
     if (!conn) throw new Error(`no webrtc connection to ${addr.addr}`);
-    if (packet.length > this.mtu) {
-      throw new Error(`packet ${packet.length} exceeds MTU ${this.mtu}`);
-    }
+    if (packet.length > this.mtu) throw new Error(`packet ${packet.length} exceeds MTU ${this.mtu}`);
     conn.send(packet);
   }
 
@@ -526,8 +434,7 @@ export class WebRtcTransport implements Transport {
       dial.reject(new Error("WebRTC path closed"));
     }
     for (const [sessionId, pending] of this.pendingInbound) {
-      if (pending.remotePubkeyHex !== remotePubkeyHex) continue;
-      this.clearPendingInbound(sessionId, true);
+      if (pending.remotePubkeyHex === remotePubkeyHex) this.clearPendingInbound(sessionId, true);
     }
     const provenPeer = this.peersWithTraffic.delete(remotePubkeyHex);
     this.retireExistingConnection(remotePubkeyHex);
@@ -565,91 +472,69 @@ export class WebRtcTransport implements Transport {
     await dial.pc.setLocalDescription(offer);
     if (!ownsDial()) return;
     await waitForIceGatheringComplete(dial.pc, this.cfg.iceGatherTimeoutMs);
-    // An incoming offer can win while any of these operations is pending.
-    // Never send the canceled offer or attach callbacks to its closed PC.
     if (!ownsDial()) return;
     await sendPendingOffer(dial, this.pendingDials,
       (remote, signal) => this.sendWebRtcSignal(remote, signal), this.logger);
     if (!ownsDial()) return;
-    // Wire connection state to dialer promise once data channel opens.
     let conn: WebRtcConnection | null = null;
-    const ownsConnection = () => ownsDial()
-      || (conn !== null && this.conns.get(dial.remotePubkeyHex) === conn);
-    conn = new WebRtcConnection({
-      remotePubkeyHex: dial.remotePubkeyHex,
-      remoteAddr: addr,
-      pc: dial.pc,
-      dataChannel: dial.dataChannel,
+    const ownsConnection = () => ownsDial() || (conn !== null && this.conns.get(dial.remotePubkeyHex) === conn);
+    conn = this.createConnection(dial.remotePubkeyHex, addr, dial.pc, dial.dataChannel, ownsConnection, (state) => {
+      if (!ownsConnection() || (conn && this.supersededConnections.has(conn))) return;
+      this.ctx?.onConnectionState?.({ remoteAddr: addr, state });
+      if (state === "connected") {
+        if (conn) this.conns.set(dial.remotePubkeyHex, conn);
+        this.autoConnectPolicy.recordSuccess(dial.remotePubkeyHex);
+        if (this.pendingDials.delete(dial.sessionId)) {
+          clearTimeout(dial.timer);
+          cancelOfferRetry(dial);
+          dial.resolve();
+        }
+      } else if (state === "failed" || state === "disconnected") {
+        this.conns.delete(dial.remotePubkeyHex);
+        this.scheduleAutoReconnect(dial.remotePubkeyHex);
+        if (this.pendingDials.delete(dial.sessionId)) {
+          clearTimeout(dial.timer);
+          cancelOfferRetry(dial);
+          dial.reject(new Error(`webrtc state ${state}`));
+        }
+        conn?.close();
+      }
+    });
+  }
+
+  private createConnection(
+    remotePubkeyHex: string,
+    remoteAddr: TransportAddress,
+    pc: RTCPeerConnection,
+    dataChannel: RTCDataChannel,
+    ownsConnection: () => boolean,
+    onState: (state: "connecting" | "connected" | "disconnected" | "failed") => void,
+  ): WebRtcConnection {
+    return new WebRtcConnection({
+      remotePubkeyHex, remoteAddr, pc, dataChannel,
       onPacket: (data) => {
         if (!ownsConnection()) return;
-        this.peersWithTraffic.add(dial.remotePubkeyHex);
-        this.ctx?.onPacket({
-          transportType: "webrtc",
-          remoteAddr: addr,
-          data,
-          receivedAtMs: Date.now(),
-        });
+        this.peersWithTraffic.add(remotePubkeyHex);
+        this.ctx?.onPacket({ transportType: "webrtc", remoteAddr, data, receivedAtMs: Date.now() });
       },
-      onState: (state) => {
-        if (!ownsConnection()) return;
-        if (conn && this.supersededConnections.has(conn)) return;
-        this.ctx?.onConnectionState?.({ remoteAddr: addr, state });
-        if (state === "connected") {
-          if (conn) this.conns.set(dial.remotePubkeyHex, conn);
-          this.autoConnectPolicy.recordSuccess(dial.remotePubkeyHex);
-          if (this.pendingDials.delete(dial.sessionId)) {
-            clearTimeout(dial.timer);
-            cancelOfferRetry(dial);
-            dial.resolve();
-          }
-        } else if (state === "failed" || state === "disconnected") {
-          this.conns.delete(dial.remotePubkeyHex);
-          this.scheduleAutoReconnect(dial.remotePubkeyHex);
-          if (this.pendingDials.delete(dial.sessionId)) {
-            clearTimeout(dial.timer);
-            cancelOfferRetry(dial);
-            dial.reject(new Error(`webrtc state ${state}`));
-          }
-          conn?.close();
-        }
-      },
+      onState,
       logger: this.logger,
     });
   }
 
   private async handleIncomingSignal(signal: WebRtcSignal, remotePubkeyHex: string): Promise<void> {
-    if (!this.ctx) return;
-    if (!this.peerAllowed(remotePubkeyHex)) return;
+    if (!this.ctx || !this.peerAllowed(remotePubkeyHex)) return;
     remotePubkeyHex = this.ownedPeerAddress(remotePubkeyHex);
     this.logger.debug("webrtc signal received", signal.kind, signal.negotiationId, remotePubkeyHex);
-    const localPubkeyHex = toHex(this.ctx.localIdentity.publicKey);
+    const nowMs = Date.now();
     const duplicate = this.signalCache.duplicate(signal, remotePubkeyHex);
     const valid = validateWebRtcSignal(signal, {
       knownNegotiationIds: this.knownSessionIds,
-      seenNegotiationIds: duplicate ? new Set<string>() : this.seenSessionIds,
-      nowMs: Date.now(),
+      seenNegotiationIds: duplicate ? EMPTY_REPLAY_SET : this.seenSessionIds,
+      nowMs,
     });
     if (duplicate) {
-      if (valid.kind !== "offer" || duplicate.inFlight
-        || Date.now() - duplicate.lastAttemptAtMs < 1_000) return;
-      if (duplicate.response) {
-        // Never replay an answer for a timed-out, replaced or closed PC.
-        if (duplicate.responseIsLive && !duplicate.responseIsLive()) return;
-        duplicate.inFlight = true;
-        try {
-          await this.sendWebRtcSignal(remotePubkeyHex, duplicate.response);
-        } catch (error) {
-          this.logger.debug("cached WebRTC response failed", error);
-        } finally {
-          duplicate.inFlight = false;
-          duplicate.lastAttemptAtMs = Date.now();
-        }
-      } else if (duplicate.retryable) {
-        // The previous handling failed, rather than merely still being in
-        // flight. Only this authenticated peer and identical SDP may retry.
-        duplicate.inFlight = true;
-        await this.processIncomingOffer(valid, remotePubkeyHex, localPubkeyHex, duplicate);
-      }
+      await this.handleDuplicateSignal(valid, duplicate, remotePubkeyHex);
       return;
     }
     const answeringDial = valid.kind === "answer" ? this.pendingDials.get(valid.negotiationId) : undefined;
@@ -659,41 +544,56 @@ export class WebRtcTransport implements Transport {
     if (valid.kind === "offer") {
       const cached = this.signalCache.remember(valid, remotePubkeyHex);
       if (!cached) throw new Error("WebRTC negotiation replay cache full");
-      this.seenSessionIds.add(`${valid.negotiationId}:${valid.kind}`);
-      await this.processIncomingOffer(valid, remotePubkeyHex, localPubkeyHex, cached);
+      this.rememberSeenSignal(valid);
+      await this.processIncomingOffer(valid, remotePubkeyHex, cached);
       return;
     }
-    this.seenSessionIds.add(`${valid.negotiationId}:${valid.kind}`);
+    this.rememberSeenSignal(valid);
+    const dial = this.pendingDials.get(valid.negotiationId);
+    if (!dial) return;
     if (valid.kind === "answer") {
-      const dial = this.pendingDials.get(valid.negotiationId);
-      if (!dial) return;
       cancelOfferRetry(dial);
       this.signalCache.remember(valid, remotePubkeyHex);
       dial.phase = "applying-answer";
       await dial.pc.setRemoteDescription({ type: "answer", sdp: valid.payload.sdp! });
       dial.phase = "opening-data-channel";
       this.logger.debug("webrtc answer applied", remotePubkeyHex, valid.negotiationId);
-      return;
+    } else if (valid.kind === "reject") {
+      clearTimeout(dial.timer);
+      cancelOfferRetry(dial);
+      this.pendingDials.delete(valid.negotiationId);
+      dial.pc.close();
+      dial.reject(new Error("peer rejected"));
     }
-    if (valid.kind === "reject") {
-      const dial = this.pendingDials.get(valid.negotiationId);
-      if (dial) {
-        clearTimeout(dial.timer);
-        cancelOfferRetry(dial);
-        this.pendingDials.delete(valid.negotiationId);
-        dial.pc.close();
-        dial.reject(new Error("peer rejected"));
-      }
-      return;
-    }
-    // "candidate" not used in non-trickle v1.
   }
 
-  private async processIncomingOffer(
-    offer: WebRtcSignal, remote: string, local: string, cached: CachedSignal,
+  private async handleDuplicateSignal(
+    valid: WebRtcSignal,
+    duplicate: CachedSignal,
+    remotePubkeyHex: string,
   ): Promise<void> {
+    if (valid.kind !== "offer" || duplicate.inFlight || Date.now() - duplicate.lastAttemptAtMs < 1_000) return;
+    if (duplicate.response) {
+      // Never replay an answer for a timed-out, replaced or closed PC.
+      if (duplicate.responseIsLive && !duplicate.responseIsLive()) return;
+      duplicate.inFlight = true;
+      try {
+        await this.sendWebRtcSignal(remotePubkeyHex, duplicate.response);
+      } catch (error) {
+        this.logger.debug("cached WebRTC response failed", error);
+      } finally {
+        duplicate.inFlight = false;
+        duplicate.lastAttemptAtMs = Date.now();
+      }
+    } else if (duplicate.retryable) {
+      duplicate.inFlight = true;
+      await this.processIncomingOffer(valid, remotePubkeyHex, duplicate);
+    }
+  }
+
+  private async processIncomingOffer(offer: WebRtcSignal, remote: string, cached: CachedSignal): Promise<void> {
     try {
-      await this.handleIncomingOffer(offer, remote, local, cached);
+      await this.handleIncomingOffer(offer, remote, cached);
     } catch (error) {
       cached.response = undefined;
       cached.responseIsLive = undefined;
@@ -705,42 +605,30 @@ export class WebRtcTransport implements Transport {
     }
   }
 
-  private async handleIncomingOffer(
+  private async admitIncomingOffer(
     offer: WebRtcSignal,
     remotePubkeyHex: string,
-    localPubkeyHex: string,
     cached: CachedSignal,
-  ): Promise<void> {
+  ): Promise<{ admitted: boolean; competingDial?: PendingDial }> {
     const context = this.ctx;
-    if (this.pendingInbound.has(offer.negotiationId)) return;
-    const competingDial = [...this.pendingDials.values()]
-      .find((dial) => dial.remotePubkeyHex === remotePubkeyHex);
+    if (this.pendingInbound.has(offer.negotiationId)) return { admitted: false };
+    const competingDial = [...this.pendingDials.values()].find((dial) => dial.remotePubkeyHex === remotePubkeyHex);
     if (!this.cfg.acceptConnections && !competingDial) {
       await this.rejectIncomingOffer(offer, remotePubkeyHex, cached);
-      return;
+      return { admitted: false };
     }
-    const admitted = competingDial || !this.cfg.allowIncomingPeer
-      || await this.cfg.allowIncomingPeer(remotePubkeyHex);
-    if (this.ctx !== context || !this.peerAllowed(remotePubkeyHex)) return;
-    if (!admitted) {
+    const allowed = competingDial || !this.cfg.allowIncomingPeer || await this.cfg.allowIncomingPeer(remotePubkeyHex);
+    if (this.ctx !== context || !this.peerAllowed(remotePubkeyHex)) return { admitted: false };
+    if (!allowed || hasPendingInboundForPeer(this.pendingInbound.values(), remotePubkeyHex)) {
       await this.rejectIncomingOffer(offer, remotePubkeyHex, cached);
-      return;
-    }
-    if (hasPendingInboundForPeer(this.pendingInbound.values(), remotePubkeyHex)) {
-      await this.rejectIncomingOffer(offer, remotePubkeyHex, cached);
-      return;
+      return { admitted: false };
     }
     if (competingDial) {
-      // Keep deterministic arbitration for the first crossed offer. A fresh
-      // authenticated retry after rejection means the peer abandoned that
-      // negotiation. Yield only while our winning offer is still unanswered,
-      // so a lost offer cannot block recovery until the full dial deadline.
-      const retryOfRejectedOffer = isRetryOfRejectedOffer(competingDial, offer.negotiationId);
-      if (!incomingOfferReplacesPendingDial(localPubkeyHex, remotePubkeyHex)
-        && !retryOfRejectedOffer) {
+      const retryOfRejected = isRetryOfRejectedOffer(competingDial, offer.negotiationId);
+      if (!incomingOfferReplacesPendingDial(this.localPubkeyHex, remotePubkeyHex) && !retryOfRejected) {
         competingDial.rejectedOfferId ??= offer.negotiationId;
         await this.rejectIncomingOffer(offer, remotePubkeyHex, cached);
-        return;
+        return { admitted: false };
       }
       clearTimeout(competingDial.timer);
       cancelOfferRetry(competingDial);
@@ -748,19 +636,21 @@ export class WebRtcTransport implements Transport {
       competingDial.pc.close();
       competingDial.reject(new IncomingOfferHandoff());
     }
-    if (
-      this.conns.size + this.pendingDials.size + this.pendingInbound.size
-      - Number(this.conns.has(remotePubkeyHex))
-      >= this.cfg.maxConnections
-    ) {
+    const used = this.conns.size + this.pendingDials.size + this.pendingInbound.size - Number(this.conns.has(remotePubkeyHex));
+    if (used >= this.cfg.maxConnections) {
       this.logger.warn("inbound WebRTC offer rejected at connection limit", remotePubkeyHex);
       await this.rejectIncomingOffer(offer, remotePubkeyHex, cached);
-      return;
+      return { admitted: false };
     }
+    return { admitted: true, competingDial };
+  }
+
+  private async handleIncomingOffer(offer: WebRtcSignal, remotePubkeyHex: string, cached: CachedSignal): Promise<void> {
+    const context = this.ctx;
+    const { admitted, competingDial } = await this.admitIncomingOffer(offer, remotePubkeyHex, cached);
+    if (!admitted) return;
     const remoteAddr: TransportAddress = { transport: "webrtc", addr: remotePubkeyHex };
-    const pc = new this.RTCPC({
-      iceServers: this.cfg.stunServers.map((u) => ({ urls: u })),
-    });
+    const pc = new this.RTCPC({ iceServers: this.cfg.stunServers.map((urls) => ({ urls })) });
     const timer = setTimeout(() => {
       this.pendingInbound.delete(offer.negotiationId);
       pc.close();
@@ -781,7 +671,7 @@ export class WebRtcTransport implements Transport {
       if (!ownsInbound()) return;
       await waitForIceGatheringComplete(pc, this.cfg.iceGatherTimeoutMs);
       if (!ownsInbound()) return;
-      this.knownSessionIds.add(offer.negotiationId);
+      this.rememberKnownSession(offer.negotiationId);
       const signal = createWebRtcSignal(offer.negotiationId, "answer", { sdp: pc.localDescription!.sdp });
       await sendAnswerWithRouteRetry(() => this.sendWebRtcSignal(remotePubkeyHex, signal), ownsInbound);
       if (!ownsInbound()) return;
@@ -798,28 +688,10 @@ export class WebRtcTransport implements Transport {
     dcPromise.then((dataChannel) => {
       if (!ownsInbound()) { dataChannel.close(); return; }
       let conn: WebRtcConnection | null = null;
-      const ownsConnection = () => ownsInbound()
-        || (conn !== null && this.conns.get(remotePubkeyHex) === conn);
-      conn = new WebRtcConnection({
-        remotePubkeyHex,
-        remoteAddr,
-        pc,
-        dataChannel,
-        onPacket: (data) => {
-          if (!ownsConnection()) return;
-          this.peersWithTraffic.add(remotePubkeyHex);
-          this.ctx?.onPacket({
-            transportType: "webrtc",
-            remoteAddr,
-            data,
-            receivedAtMs: Date.now(),
-          });
-        },
-        onState: (state) => {
-          if (!ownsConnection() || !conn || this.supersededConnections.has(conn)) return;
-          this.handleInboundConnectionState(offer.negotiationId, conn, state);
-        },
-        logger: this.logger,
+      const ownsConnection = () => ownsInbound() || (conn !== null && this.conns.get(remotePubkeyHex) === conn);
+      conn = this.createConnection(remotePubkeyHex, remoteAddr, pc, dataChannel, ownsConnection, (state) => {
+        if (!ownsConnection() || !conn || this.supersededConnections.has(conn)) return;
+        this.handleInboundConnectionState(offer.negotiationId, conn, state);
       });
     }).catch((err) => {
       this.clearPendingInbound(offer.negotiationId);
@@ -838,8 +710,6 @@ export class WebRtcTransport implements Transport {
       this.conns.set(remotePubkeyHex, conn);
       this.autoConnectPolicy.recordSuccess(remotePubkeyHex);
       this.clearPendingInbound(negotiationId);
-      // Switch carriers only when ready. Retiring the old PC is not a
-      // peer disconnect: its authenticated FMP/FSP state remains valid.
       if (existing && existing !== conn) {
         this.supersededConnections.add(existing);
         existing.close();
@@ -858,29 +728,19 @@ export class WebRtcTransport implements Transport {
     if (state === "failed" || state === "disconnected") {
       this.conns.delete(remotePubkeyHex);
       this.clearPendingInbound(negotiationId);
-      conn.pc.close();
+      conn.close();
       this.scheduleAutoReconnect(remotePubkeyHex);
     }
   }
 
   private scheduleAutoReconnect(remotePubkeyHex: string): void {
     this.autoConnectPeers.delete(remotePubkeyHex);
-    if (!this.cfg.autoConnect || this.stopping || !this.ctx) {
-      this.logger.debug("webrtc auto-reconnect disabled", remotePubkeyHex);
-      return;
-    }
-    if (this.autoReconnectTimers.has(remotePubkeyHex)) return;
-    const delay = Math.max(
-      AUTO_RECONNECT_DELAY_MS,
-      this.autoConnectPolicy.cooldownUntil(remotePubkeyHex) - Date.now(),
-    );
+    if (!this.cfg.autoConnect || this.stopping || !this.ctx || this.autoReconnectTimers.has(remotePubkeyHex)) return;
+    const delay = Math.max(AUTO_RECONNECT_DELAY_MS, this.autoConnectPolicy.cooldownUntil(remotePubkeyHex) - Date.now());
     this.logger.debug("webrtc auto-reconnect scheduled", remotePubkeyHex, delay);
     const timer = setTimeout(() => {
       this.autoReconnectTimers.delete(remotePubkeyHex);
-      if (this.stopping || !this.ctx || this.conns.has(remotePubkeyHex)) {
-        this.logger.debug("webrtc auto-reconnect no longer needed", remotePubkeyHex);
-        return;
-      }
+      if (this.stopping || !this.ctx || this.conns.has(remotePubkeyHex)) return;
       this.logger.debug("webrtc auto-reconnect retrying", remotePubkeyHex);
       this.fillAutoConnectSlots();
     }, delay);
@@ -891,8 +751,6 @@ export class WebRtcTransport implements Transport {
     const normalized = remotePubkeyHex.toLowerCase();
     if (!/^(02|03)[0-9a-f]{64}$/.test(normalized)) return normalized;
     const opposite = `${normalized.startsWith("02") ? "03" : "02"}${normalized.slice(2)}`;
-    // Signaling authenticates an x-only identity, which can use the other
-    // compressed parity from discovery. Keep the existing path's address.
     for (const candidate of [normalized, opposite]) {
       if (
         this.conns.has(candidate)
@@ -910,10 +768,7 @@ export class WebRtcTransport implements Transport {
     this.conns.delete(remotePubkeyHex);
     this.peersWithTraffic.delete(remotePubkeyHex);
     this.supersededConnections.add(existing);
-    this.ctx?.onConnectionState?.({
-      remoteAddr: existing.remoteAddr,
-      state: "disconnected",
-    });
+    this.ctx?.onConnectionState?.({ remoteAddr: existing.remoteAddr, state: "disconnected" });
     existing.close();
     this.logger.debug("webrtc connection retired", remotePubkeyHex);
   }
@@ -921,7 +776,6 @@ export class WebRtcTransport implements Transport {
   private handleAutoConnectFailure(remotePubkeyHex: string, awaitingSessionRecovery = false): void {
     if (!this.cfg.autoConnect || this.stopping) return;
     this.autoConnectPeers.delete(remotePubkeyHex);
-    // While this node has no working link, failures say nothing about the peer.
     const attributable = this.ctx?.isLinked?.() ?? true;
     this.autoConnectPolicy.recordFailure(remotePubkeyHex, awaitingSessionRecovery, attributable);
     this.scheduleAutoReconnect(remotePubkeyHex);
@@ -936,9 +790,7 @@ export class WebRtcTransport implements Transport {
     if (close) pending.pc.close();
   }
 
-  private async rejectIncomingOffer(
-    offer: WebRtcSignal, remotePubkeyHex: string, cached: CachedSignal,
-  ): Promise<void> {
+  private async rejectIncomingOffer(offer: WebRtcSignal, remotePubkeyHex: string, cached: CachedSignal): Promise<void> {
     const response = createWebRtcSignal(offer.negotiationId, "reject");
     await this.sendWebRtcSignal(remotePubkeyHex, response);
     this.signalCache.rememberResponse(cached, response);
@@ -950,9 +802,7 @@ export class WebRtcTransport implements Transport {
 
   private async sendWebRtcSignal(remotePubkeyHex: string, signal: WebRtcSignal): Promise<void> {
     if (!this.peerAllowed(remotePubkeyHex)) throw new Error("FIPS peer is blocked");
-    if (!this.ctx?.sendLinkNegotiation) {
-      throw new Error("WebRTC negotiation requires the FIPS link-negotiation service");
-    }
+    if (!this.ctx?.sendLinkNegotiation) throw new Error("WebRTC negotiation requires the FIPS link-negotiation service");
     await this.ctx.sendLinkNegotiation(remotePubkeyHex, signal);
   }
 
@@ -965,11 +815,18 @@ export class WebRtcTransport implements Transport {
   }
 
   private autoConnectCapacityUsed(): number {
-    return this.conns.size
-      + this.pendingDials.size
-      + this.pendingInbound.size
-      + this.autoConnectPeers.size;
+    return this.conns.size + this.pendingDials.size + this.pendingInbound.size + this.autoConnectPeers.size;
   }
 
-  private maxSpeculativeAutoConnects(): number { return Math.max(1, Math.floor(this.cfg.maxConnections / 2)); }
+  private rememberKnownSession(sessionId: string): void {
+    storeBoundedId(this.knownSessionIds, sessionId, MAX_SESSION_IDS);
+  }
+
+  private rememberSeenSignal(signal: WebRtcSignal): void {
+    storeBoundedId(this.seenSessionIds, `${signal.negotiationId}:${signal.kind}`, MAX_SESSION_IDS);
+  }
+
+  private maxSpeculativeAutoConnects(): number {
+    return Math.max(1, Math.floor(this.cfg.maxConnections / 2));
+  }
 }

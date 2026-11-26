@@ -21,6 +21,7 @@ export declare class MemoryTransport implements Transport {
     readonly mtu: number;
     private ctx?;
     private pubkeyHex;
+    private localAddr?;
     private readonly hub;
     private readonly loss;
     private readonly rand;

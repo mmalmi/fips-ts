@@ -37,6 +37,7 @@ export declare class NostrPeerDiscovery {
     private readonly advertTtlMs;
     private readonly logger?;
     private readonly cleanups;
+    private readonly verifiedEventSigs;
     private stopped;
     constructor(opts: NostrPeerDiscoveryOptions);
     stop(): void;
@@ -44,5 +45,6 @@ export declare class NostrPeerDiscovery {
     subscribeAdverts(cb: (event: NostrEvent, advert: FipsAdvertContent, sourceRelayUrl: string) => void, extraFilter?: {
         authors?: string[];
     }): Promise<() => void>;
+    private verifyCachedEvent;
 }
 //# sourceMappingURL=NostrPeerDiscovery.d.ts.map

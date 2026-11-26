@@ -1,7 +1,7 @@
 import type { FipsIdentity, Logger } from "@fips/core";
 
 import { NostrRelayClient, type NostrEvent, type NostrFilter } from "./NostrRelayClient.js";
-import { signEvent, verifyEvent } from "./nostrEvent.js";
+import { computeEventId, signEvent, verifyEventSignature } from "./nostrEvent.js";
 import { advertExpiryMs } from "./WebRtcTransportSupport.js";
 
 export const FIPS_ADVERT_KIND = 37_195;
@@ -11,6 +11,7 @@ export const FIPS_DEFAULT_DISCOVERY_APP = "fips-overlay-v1";
 export const FIPS_PROTOCOL_VERSION = "1";
 export const DEFAULT_FIPS_ADVERT_TTL_MS = 60 * 60 * 1_000;
 const RELAY_OPERATION_WARMUP_MS = 1_500;
+const MAX_VERIFIED_EVENT_SIGS = 512;
 
 export interface FipsAdvertContent {
   identifier: typeof FIPS_ADVERT_IDENTIFIER;
@@ -43,6 +44,7 @@ export class NostrPeerDiscovery {
   private readonly advertTtlMs: number;
   private readonly logger?: Logger;
   private readonly cleanups: Array<() => void> = [];
+  private readonly verifiedEventSigs = new Map<string, string>();
   private stopped = false;
 
   constructor(opts: NostrPeerDiscoveryOptions) {
@@ -56,6 +58,7 @@ export class NostrPeerDiscovery {
 
   stop(): void {
     this.stopped = true;
+    this.verifiedEventSigs.clear();
     for (const cleanup of this.cleanups.splice(0)) cleanup();
   }
 
@@ -92,21 +95,23 @@ export class NostrPeerDiscovery {
   ): Promise<() => void> {
     if (this.stopped) throw new Error("Peer discovery is stopped");
     const deliver = (event: NostrEvent, source: string): void => {
-      if (this.stopped || !verifyEvent(event) || event.kind !== FIPS_ADVERT_KIND ||
-          tagValue(event, "d") !== this.discoveryApp ||
-          tagValue(event, "protocol") !== this.discoveryApp ||
-          (extraFilter.authors && !extraFilter.authors.includes(event.pubkey))) return;
+      if (this.stopped || event.kind !== FIPS_ADVERT_KIND
+        || tagValue(event, "d") !== this.discoveryApp
+        || tagValue(event, "protocol") !== this.discoveryApp
+        || (extraFilter.authors && !extraFilter.authors.includes(event.pubkey))) return;
       const version = tagValue(event, "version");
       if (version && version !== FIPS_PROTOCOL_VERSION) return;
       const now = Date.now();
       const expiry = advertExpiryMs(event, this.advertTtlMs, now);
       if (expiry === undefined || expiry <= now) return;
+      let advert: FipsAdvertContent;
       try {
-        const advert = JSON.parse(event.content) as FipsAdvertContent;
-        if (advert.identifier !== FIPS_ADVERT_IDENTIFIER ||
-            advert.version !== 1 || !Array.isArray(advert.endpoints)) return;
-        cb(event, advert, source);
-      } catch { /* Malformed announcement. */ }
+        advert = JSON.parse(event.content) as FipsAdvertContent;
+      } catch { return; }
+      if (advert.identifier !== FIPS_ADVERT_IDENTIFIER
+        || advert.version !== 1 || !Array.isArray(advert.endpoints)) return;
+      if (!this.verifyCachedEvent(event)) return;
+      cb(event, advert, source);
     };
     if (this.provider) {
       const close = await this.provider.subscribe(
@@ -149,6 +154,19 @@ export class NostrPeerDiscovery {
         if (index >= 0) this.cleanups.splice(index, 1);
       }
     };
+  }
+
+  private verifyCachedEvent(event: NostrEvent): boolean {
+    if (computeEventId(event) !== event.id) return false;
+    if (this.verifiedEventSigs.get(event.id) === event.sig) return true;
+    if (!verifyEventSignature(event.sig, event.id, event.pubkey)) return false;
+    this.verifiedEventSigs.delete(event.id);
+    if (this.verifiedEventSigs.size >= MAX_VERIFIED_EVENT_SIGS) {
+      const oldest = this.verifiedEventSigs.keys().next().value as string | undefined;
+      if (oldest !== undefined) this.verifiedEventSigs.delete(oldest);
+    }
+    this.verifiedEventSigs.set(event.id, event.sig);
+    return true;
   }
 }
 

@@ -864,4 +864,38 @@ describe('WebRTC unanswered negotiation retries', () => {
     await transport.stop()
     expect(vi.getTimerCount()).toBe(0)
   })
+
+  it('bounds negotiation session ID caches and cleans up failed inbound connections', async () => {
+    const { transport } = await fixture(undefined, 2, 1, { allowIncomingPeer: async () => false })
+    await transport.close(remote)
+    for (let i = 0; i < 1_100; i++) {
+      await transport.handleLinkNegotiation(remote.addr, incomingOffer(`churn-${i}`))
+    }
+    const seenIds = Reflect.get(transport, 'seenSessionIds') as Set<string>
+    const knownIds = Reflect.get(transport, 'knownSessionIds') as Set<string>
+    expect(seenIds.size).toBe(1_024)
+    expect(seenIds.has('churn-0:offer')).toBe(false)
+    expect(seenIds.has('churn-1099:offer')).toBe(true)
+    expect(knownIds.size).toBeLessThanOrEqual(1_024)
+
+    const { transport: inboundTransport } = await fixture()
+    await inboundTransport.handleLinkNegotiation(remote.addr, incomingOffer('inbound-fail-cleanup'))
+    const inboundPc = FakePeerConnection.instances.at(-1)!
+    inboundPc.ondatachannel?.({ channel: inboundPc.channel })
+    await flush()
+    // Open the channel without READY_FRAME so WebRtcConnection starts its fallbackTimer.
+    inboundPc.channel.readyState = 'open'
+    inboundPc.channel.dispatchEvent(new Event('open'))
+    await flush()
+    // Failing an inbound connection must invoke conn.close() so its channel and fallbackTimer are torn down.
+    inboundPc.connectionState = 'failed'
+    inboundPc.iceConnectionState = 'failed'
+    inboundPc.dispatchEvent(new Event('connectionstatechange'))
+    await flush()
+    expect(inboundPc.connectionState).toBe('closed')
+    expect(inboundPc.channel.readyState).toBe('closed')
+    await inboundTransport.stop()
+    await transport.stop()
+    expect(vi.getTimerCount()).toBe(0)
+  })
 })

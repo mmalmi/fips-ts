@@ -5,8 +5,10 @@ export declare function isDirectFspTransportFragment(data: Uint8Array): boolean;
 export declare function segmentDirectFspTransportRecord(record: Uint8Array, pathMtu: number): Uint8Array[];
 export declare class DirectFspTransportReassembler {
     private readonly entries;
+    private lastPruneMs;
     ingest(source: string, fragment: Uint8Array, nowMs: number): Uint8Array | undefined;
     clear(): void;
+    private getOrResetEntry;
     private prune;
     private reserveEntry;
 }

@@ -1,6 +1,14 @@
+export declare function writeU16le(buf: Uint8Array, off: number, n: number): void;
+export declare function writeU32le(buf: Uint8Array, off: number, n: number): void;
+export declare function writeU64le(buf: Uint8Array, off: number, n: bigint): void;
+export declare function readU16le(buf: Uint8Array, off: number): number;
+export declare function readU32le(buf: Uint8Array, off: number): number;
+export declare function readU64le(buf: Uint8Array, off: number): bigint;
 export declare class BinaryWriter {
-    private chunks;
+    private buf;
     private len;
+    constructor(initialCapacity?: number);
+    private ensure;
     u8(n: number): void;
     u16le(n: number): void;
     u32le(n: number): void;

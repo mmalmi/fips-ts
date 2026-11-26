@@ -12,23 +12,21 @@
  *   - enforce replay window on the receive side
  */
 
-import { aeadOpen, aeadSeal } from "../crypto/aead.js";
+import { aeadOpen, aeadSealInto } from "../crypto/aead.js";
 import { ReplayWindow } from "../crypto/replay.js";
+import { readU32le, writeU32le } from "../codec/binary.js";
 import { bytesEqual } from "../codec/hex.js";
 import type { FipsIdentity } from "../identity/index.js";
 import { CipherState, NoiseHandshake } from "../noise/index.js";
 import { FmpReceiverReports } from "./receiverReports.js";
 
 import {
-  decodeFmpEstablished,
-  decodeFmpInner,
   decodeFmpMsg1,
   decodeFmpMsg2,
-  encodeFmpEstablished,
-  encodeFmpEstablishedHeader,
-  encodeFmpInner,
   encodeFmpMsg1,
   encodeFmpMsg2,
+  FMP_AEAD_TAG_LEN,
+  FMP_ESTABLISHED_HEADER_LEN,
   FMP_INNER_DATA,
   FMP_INNER_KEEPALIVE,
   FMP_PHASE_ESTABLISHED,
@@ -36,6 +34,8 @@ import {
   FMP_PHASE_MSG2,
   NOISE_IK_MSG1_LEN,
   NOISE_IK_MSG2_LEN,
+  parseFmpEstablished,
+  writeFmpEstablishedHeader,
 } from "./wire.js";
 
 export type FmpRole = "initiator" | "responder";
@@ -206,27 +206,21 @@ export class FmpLink {
     }
     if (this.txCounter >= 0xffff_ffff_ffff_ffffn) throw new Error("FMP nonce exhausted");
     const counter = this.txCounter++;
-    const inner = encodeFmpInner({
-      timestamp: Math.floor(performance.now() - this.sessionStartMs) >>> 0,
-      msgType,
-      payload,
-    });
-    const aad = encodeFmpEstablishedHeader(
-      { flags: 0, receiverIdx: this.remoteSessionIdx, counter },
-      inner.length,
-    );
-    // CipherState manages its own monotonic nonce, but FIPS Established uses
-    // the explicit u64 counter from the frame header. We bypass CipherState's
-    // internal counter and use the AEAD primitive with the frame counter so
-    // both endpoints derive the same 12-byte nonce.
-    const ciphertext = aeadSeal(this.tx.getKey(), counter, inner, aad);
-    return encodeFmpEstablished({
-      flags: 0,
-      receiverIdx: this.remoteSessionIdx,
+    const innerLen = 5 + payload.length;
+    const out = new Uint8Array(FMP_ESTABLISHED_HEADER_LEN + innerLen + FMP_AEAD_TAG_LEN);
+    writeFmpEstablishedHeader(out, { flags: 0, receiverIdx: this.remoteSessionIdx, counter }, innerLen);
+    writeU32le(out, FMP_ESTABLISHED_HEADER_LEN, Math.floor(performance.now() - this.sessionStartMs) >>> 0);
+    out[FMP_ESTABLISHED_HEADER_LEN + 4] = msgType & 0xff;
+    out.set(payload, FMP_ESTABLISHED_HEADER_LEN + 5);
+    // Use the explicit u64 frame counter as the AEAD nonce, encrypting in-place.
+    aeadSealInto(
+      this.tx.getKey(),
       counter,
-      payloadLen: inner.length,
-      ciphertext,
-    });
+      out.subarray(FMP_ESTABLISHED_HEADER_LEN, FMP_ESTABLISHED_HEADER_LEN + innerLen),
+      out.subarray(0, FMP_ESTABLISHED_HEADER_LEN),
+      out.subarray(FMP_ESTABLISHED_HEADER_LEN),
+    );
+    return out;
   }
 
   encryptKeepalive(): Uint8Array {
@@ -237,25 +231,23 @@ export class FmpLink {
     if (this.state !== "established" || !this.rx) {
       throw new Error("FMP link not established");
     }
-    const est = decodeFmpEstablished(packet);
+    const est = parseFmpEstablished(packet);
     if (est.receiverIdx !== this.localSessionIdx) {
       throw new Error("FMP Established receiver_idx mismatch");
     }
     if (!this.rxReplay.check(est.counter)) {
       throw new Error("FMP replay/duplicate counter");
     }
-    const aad = encodeFmpEstablishedHeader(
-      { flags: est.flags, receiverIdx: est.receiverIdx, counter: est.counter },
-      est.payloadLen,
-    );
-    const plaintext = aeadOpen(this.rx.getKey(), est.counter, est.ciphertext, aad);
+    const plaintext = aeadOpen(this.rx.getKey(), est.counter, est.ciphertext, est.aad);
     this.rxReplay.accept(est.counter);
-    const inner = decodeFmpInner(plaintext);
+    if (plaintext.length < 5) throw new Error("FMP inner packet too short");
+    const timestamp = readU32le(plaintext, 0);
+    const msgType = plaintext[4]!;
     this.receiverReports.record({
-      counter: est.counter, timestamp: inner.timestamp, bytes: packet.length,
+      counter: est.counter, timestamp, bytes: packet.length,
       ceFlag: (est.flags & 0x02) !== 0,
     }, performance.now());
-    return { msgType: inner.msgType, payload: inner.payload };
+    return { msgType, payload: plaintext.subarray(5) };
   }
 
   /** Report on this authenticated key/counter epoch; no timer or RR replies. */

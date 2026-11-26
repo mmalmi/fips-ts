@@ -309,4 +309,43 @@ describe("FspSessionManager", () => {
     manager.stop();
   });
 
+  it("indexes responder sessions for opposite-parity pubkey sends and clears index on stop", async () => {
+    const local = await identityFromSecretKey(new Uint8Array(32).fill(0x47));
+    const remote = await identityFromSecretKey(new Uint8Array(32).fill(0x58));
+    const sent: Uint8Array[] = [];
+    const peer = { pubkey: remote.publicKey, pubkeyHex: toHex(remote.publicKey),
+      remoteAddr: { transport: "memory", addr: "remote" } } as never;
+    const manager = new FspSessionManager({
+      identity: local, random: { bytes: length => new Uint8Array(length).fill(0x41) },
+      localEpoch: new Uint8Array(8).fill(0x51),
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      routing: {
+        coords: [local.nodeAddr], hasUsableRoute: () => true, coordinatesFor: () => [remote.nodeAddr],
+        learnReverseRoute: () => {},
+        sendFspReplyToward: async (_: unknown, frame: Uint8Array) => { sent.push(frame); },
+        sendFspToward: async (_: unknown, frame: Uint8Array | ((nextHop: typeof peer) => Uint8Array[])) => {
+          sent.push(...(typeof frame === "function" ? frame(peer) : [frame]));
+        },
+      } as never,
+      getPeerByNodeAddr: () => undefined, emitDatagram: () => {}, emitEndpointData: () => {},
+      handleLinkNegotiation: async () => {}, emitSession: () => {},
+    });
+    const initiator = new FspSession({
+      identity: remote, role: "initiator", remotePubkey: local.publicKey,
+      localEpoch: new Uint8Array(8).fill(0x61),
+    });
+    await manager.handleFromPeer(peer, remote.nodeAddr,
+      initiator.buildSessionSetup(length => new Uint8Array(length), remote.nodeAddr, local.nodeAddr));
+    const msg3 = initiator.handleSessionAck(sent[0]!, length => new Uint8Array(length));
+    await manager.handleFromPeer(peer, remote.nodeAddr, msg3);
+
+    const flippedPrefix = remote.publicKey[0] === 0x02 ? "03" : "02";
+    const oppositeParityDst = `${flippedPrefix}${toHex(remote.xOnlyPubkey)}`;
+    await manager.sendDatagram({ dst: oppositeParityDst, dstPort: 4_242, payload: new Uint8Array([9, 8, 7]) });
+    // Must reuse existing responder session (no new Msg1) and emit only Ack + Ext + Data.
+    expect(sent.map(peekFspPhase)).toEqual([2, FSP_PHASE_ESTABLISHED, FSP_PHASE_ESTABLISHED]);
+    manager.stop();
+    expect((Reflect.get(manager, "sessionsByPubkey") as Map<string, unknown>).size).toBe(0);
+  });
+
 });

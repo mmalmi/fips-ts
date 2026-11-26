@@ -57,6 +57,7 @@ export declare class WebSocketTransport implements Transport {
     private readonly seeds;
     private readonly counters;
     private ctx?;
+    private localXOnlyHex;
     private discoveries?;
     private stopping;
     constructor(config: WebSocketTransportConfig);
@@ -68,13 +69,13 @@ export declare class WebSocketTransport implements Transport {
     stats(): WebSocketTransportStats;
     private stateFor;
     private dial;
-    private receive;
+    private receiveAsync;
+    private processMessage;
     private pump;
     private failSocket;
     private connectionEnded;
     private isReady;
     private isCurrent;
-    private addr;
     private resolveReadyWaiters;
     private rejectReadyWaiters;
     private rejectQueue;

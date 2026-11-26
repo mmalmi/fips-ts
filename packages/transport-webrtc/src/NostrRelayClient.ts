@@ -10,6 +10,8 @@
 
 export type WebSocketCtor = typeof WebSocket;
 
+const textDecoder = new TextDecoder();
+
 export interface NostrEvent {
   id: string;
   pubkey: string;
@@ -214,7 +216,7 @@ export class NostrRelayClient {
   private onMessage(m: MessageEvent): void {
     let arr: unknown;
     try {
-      arr = JSON.parse(typeof m.data === "string" ? m.data : new TextDecoder().decode(m.data as ArrayBuffer));
+      arr = JSON.parse(typeof m.data === "string" ? m.data : textDecoder.decode(m.data as ArrayBuffer));
     } catch {
       return;
     }

@@ -1,6 +1,8 @@
 const MIN_ROUTE_SCORE = 0.05;
 const MAX_ROUTE_SCORE = 64;
 const MAX_ROUTE_WEIGHT = 512;
+const MAX_LEARNED_DESTINATIONS = 4_096;
+const PRUNE_INTERVAL_MS = 60_000;
 
 interface LearnedRoute {
   nextHop: string;
@@ -23,6 +25,7 @@ interface LearnedRoute {
  */
 export class LearnedRouteTable {
   private readonly routes = new Map<string, LearnedRoute[]>();
+  private lastPruneMs = -Infinity;
 
   learn(
     destination: string,
@@ -33,6 +36,9 @@ export class LearnedRouteTable {
     pathMtu?: number,
   ): void {
     if (destination === nextHop || maxRoutesPerDestination === 0) return;
+    if (this.routes.size > 0 && (nowMs - this.lastPruneMs >= PRUNE_INTERVAL_MS || nowMs < this.lastPruneMs)) {
+      this.pruneExpired(nowMs);
+    }
     const expiresAtMs = nowMs + ttlSeconds * 1_000;
     const routes = this.routes.get(destination) ?? [];
     const existing = routes.find((route) => route.nextHop === nextHop);
@@ -60,6 +66,14 @@ export class LearnedRouteTable {
       });
     }
     this.sortAndTruncate(routes, maxRoutesPerDestination);
+    this.routes.delete(destination);
+    if (this.routes.size >= MAX_LEARNED_DESTINATIONS) {
+      this.pruneExpired(nowMs);
+      if (this.routes.size >= MAX_LEARNED_DESTINATIONS) {
+        const oldest = this.routes.keys().next().value as string | undefined;
+        if (oldest !== undefined) this.routes.delete(oldest);
+      }
+    }
     this.routes.set(destination, routes);
   }
 
@@ -88,33 +102,34 @@ export class LearnedRouteTable {
       this.routes.delete(destination);
       return undefined;
     }
-
-    const sendable = routes
-      .map((route, index) => ({ index, weight: routeWeight(route) }))
-      .filter(({ index }) => canSend(routes[index]!.nextHop));
-    if (sendable.length === 0) return undefined;
-
-    const totalWeight = sendable.reduce((sum, candidate) => sum + candidate.weight, 0);
-    let selected = sendable[0]!.index;
-    for (const candidate of sendable) {
-      routes[candidate.index]!.currentWeight += candidate.weight;
-      const selectedRoute = routes[selected]!;
-      const candidateRoute = routes[candidate.index]!;
-      if (
-        candidateRoute.currentWeight > selectedRoute.currentWeight
-        || (
-          candidateRoute.currentWeight === selectedRoute.currentWeight
-          && compareRoutes(candidateRoute, selectedRoute) < 0
-        )
-      ) {
-        selected = candidate.index;
-      }
+    if (routes.length === 1) {
+      const only = routes[0]!;
+      if (!canSend(only.nextHop)) return undefined;
+      only.selected += 1;
+      return only.nextHop;
     }
 
-    routes[selected]!.currentWeight -= totalWeight;
-    routes[selected]!.selected += 1;
-    const nextHop = routes[selected]!.nextHop;
-    this.sortAndTruncate(routes, routes.length);
+    let totalWeight = 0;
+    let selected: LearnedRoute | undefined;
+    for (const route of routes) {
+      if (!canSend(route.nextHop)) continue;
+      const weight = routeWeight(route);
+      totalWeight += weight;
+      route.currentWeight += weight;
+      if (
+        !selected
+        || route.currentWeight > selected.currentWeight
+        || (route.currentWeight === selected.currentWeight && compareRoutes(route, selected) < 0)
+      ) {
+        selected = route;
+      }
+    }
+    if (!selected) return undefined;
+
+    selected.currentWeight -= totalWeight;
+    selected.selected += 1;
+    const nextHop = selected.nextHop;
+    routes.sort(compareRoutes);
     return nextHop;
   }
 
@@ -129,6 +144,15 @@ export class LearnedRouteTable {
 
   clear(): void {
     this.routes.clear();
+    this.lastPruneMs = -Infinity;
+  }
+
+  private pruneExpired(nowMs: number): void {
+    this.lastPruneMs = nowMs;
+    for (const [destination, routes] of this.routes) {
+      this.retainLive(routes, nowMs);
+      if (routes.length === 0) this.routes.delete(destination);
+    }
   }
 
   private retainLive(routes: LearnedRoute[], nowMs: number): void {
@@ -140,8 +164,8 @@ export class LearnedRouteTable {
   }
 
   private sortAndTruncate(routes: LearnedRoute[], maximum: number): void {
-    routes.sort(compareRoutes);
-    routes.length = Math.min(routes.length, maximum);
+    if (routes.length > 1) routes.sort(compareRoutes);
+    if (routes.length > maximum) routes.length = maximum;
   }
 }
 

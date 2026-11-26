@@ -7,6 +7,7 @@
  * Avoids any framework. Works in browser and Node (where the consumer
  * supplies a WebSocket-like constructor).
  */
+const textDecoder = new TextDecoder();
 export class NostrRelayClient {
     url;
     ws;
@@ -173,7 +174,7 @@ export class NostrRelayClient {
     onMessage(m) {
         let arr;
         try {
-            arr = JSON.parse(typeof m.data === "string" ? m.data : new TextDecoder().decode(m.data));
+            arr = JSON.parse(typeof m.data === "string" ? m.data : textDecoder.decode(m.data));
         }
         catch {
             return;

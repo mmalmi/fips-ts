@@ -6,6 +6,47 @@ package's core archive URL in the same release cohort. The workspace overrides
 resolve core locally during qualification; the published packages retain their
 versioned public core URL.
 
+## Runtime 64 qualification
+
+The runtime-v0.0.64 cohort contains core 0.0.59, browser 0.0.24,
+Ethernet 0.0.41, Memory 0.0.19, WebRTC 0.0.63 and WebSocket 0.0.17.
+
+This release improves data-plane throughput, mesh control-plane convergence,
+Nostr peer discovery efficiency, and long-running session memory bounds while
+preserving wire and public API compatibility:
+
+- Core FMP/FSP framing uses single-buffer in-place ChaCha20-Poly1305 sealing,
+  zero-copy established frame parsing, cached per-peer `NodeAddr` derivations,
+  an O(1) `sessionsByPubkey` index, fixed-ring MMP receiver report jitter
+  tracking, and single-hash 32-bit-word `BloomFilter` operations.
+- Multi-node tree routing fixes a reply deadlock in `"tree"` mode where FSP
+  `SessionAck` replies bounced back into a child subtree dead-end after
+  shortcut-path setup frames, while preserving tree-only fail-closed behavior
+  for strict clients. Tree and Bloom filter broadcasts coalesce same-tick
+  updates and reuse cached signed `TreeAnnounce` payloads and shared non-tree
+  aggregate filters.
+- Long-running state maps and sets are now bounded under sustained peer and
+  negotiation churn: `LearnedRouteTable` (periodic expiry sweep plus 4,096
+  destination LRU), `FipsRouting.coordCache` (4,096 LRU),
+  `FmpTransportPacketProcessor.remoteEpochHistory` (1,024 LRU),
+  `WebRtcTransport` `seenSessionIds` and `knownSessionIds` (1,024 bounded FIFO
+  sets), `VirtualEthernetTransport` MAC tables (1,024 LRU), and bounded
+  discovery event queues.
+- `WebRtcTransport` closes failed inbound `WebRtcConnection` handles via
+  `conn.close()` and cleans up `waitForIceGatheringComplete` timers when an
+  `RTCPeerConnection` closes during ICE gathering. `NostrPeerDiscovery` runs
+  cheap kind/tag/version/expiry/JSON checks before Schnorr verification and
+  caches verified event signatures across relays. `WebSocketTransport` uses
+  direct URL lookup, zero-copy record validation, and a synchronous fast path
+  when not backpressured.
+
+Follow the runtime 62 toolchain, compilation, and archive checks below using
+pinned Node.js 22.23.4, pnpm 9.15.4, TypeScript 5.9.3, Vitest 3.2.7, and the
+unchanged lockfile. Compile core with `--force` and the other five packages
+with `tsc -b`, verify core and demo typechecks, run all five unit test suites
+with one worker and no file parallelism (plus the Playwright Chromium e2e suite
+locally), and pack and inspect all six archives against the release commit.
+
 ## Runtime 63 qualification
 
 The runtime-v0.0.63 cohort contains core 0.0.58, browser 0.0.23,

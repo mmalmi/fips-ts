@@ -45,4 +45,15 @@ describe("Rust-compatible reply-learned route table", () => {
 
     expect(table.selectNextHop("dest", 2_000, () => true)).toBe("b");
   });
+
+  it("prunes expired destinations and caps active destinations under churn", () => {
+    const table = new LearnedRouteTable();
+    for (let i = 0; i < 4_500; i += 1) {
+      table.learn(`dest-${i}`, `hop-${i % 16}`, 1_000 + i * 100, 300, 4);
+    }
+    const map = Reflect.get(table, "routes") as Map<string, unknown>;
+    expect(map.size).toBeLessThanOrEqual(4_096);
+    expect(table.has("dest-4499", 1_000 + 4_500 * 100)).toBe(true);
+    expect(table.has("dest-0", 1_000 + 4_500 * 100)).toBe(false);
+  });
 });

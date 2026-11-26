@@ -2,8 +2,9 @@
  * Noise CipherState — ChaCha20-Poly1305 with the FIPS nonce convention
  * (4 zero bytes || u64 LE counter). Empty key disables encryption (passthrough).
  */
-import { chacha20poly1305 } from "@noble/ciphers/chacha";
-import { noiseNonce } from "../crypto/aead.js";
+import { aeadOpen, aeadSeal } from "../crypto/aead.js";
+const EMPTY_AAD = new Uint8Array(0);
+const ZERO_32 = new Uint8Array(32);
 export class CipherState {
     key = null;
     n = 0n;
@@ -12,7 +13,6 @@ export class CipherState {
             throw new Error("ChaChaPoly key must be 32 bytes");
         const cs = new CipherState();
         cs.key = key;
-        cs.n = 0n;
         return cs;
     }
     hasKey() {
@@ -30,7 +30,7 @@ export class CipherState {
             return plaintext;
         if (this.n >= 0xffffffffffffffffn)
             throw new Error("Noise nonce exhausted");
-        const ct = chacha20poly1305(this.key, noiseNonce(this.n), ad).encrypt(plaintext);
+        const ct = aeadSeal(this.key, this.n, plaintext, ad);
         this.n += 1n;
         return ct;
     }
@@ -39,7 +39,7 @@ export class CipherState {
             return ciphertext;
         if (this.n >= 0xffffffffffffffffn)
             throw new Error("Noise nonce exhausted");
-        const pt = chacha20poly1305(this.key, noiseNonce(this.n), ad).decrypt(ciphertext);
+        const pt = aeadOpen(this.key, this.n, ciphertext, ad);
         this.n += 1n;
         return pt;
     }
@@ -47,10 +47,7 @@ export class CipherState {
         if (!this.key)
             return;
         // Noise rekey: encrypt 32 zero bytes with max nonce, take first 32 bytes.
-        const maxNonce = noiseNonce(0xffffffffffffffffn);
-        const cipher = chacha20poly1305(this.key, maxNonce, new Uint8Array());
-        const out = cipher.encrypt(new Uint8Array(32));
-        this.key = out.subarray(0, 32);
+        this.key = aeadSeal(this.key, 0xffffffffffffffffn, ZERO_32, EMPTY_AAD).subarray(0, 32);
     }
     get nonce() {
         return this.n;

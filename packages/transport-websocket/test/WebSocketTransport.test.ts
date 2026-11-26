@@ -133,10 +133,31 @@ describe("WebSocket physical record validation", () => {
     view.setUint16(18, 1, true);
     expect(() => validateFipsWebSocketRecord(fragment)).toThrow("fragment header");
   });
+
+  it("rejects malformed FMP and direct-FSP records", () => {
+    const badVersion = new Uint8Array(69);
+    badVersion[0] = 0x12;
+    expect(() => validateFipsWebSocketRecord(badVersion)).toThrow("bad FMP version");
+
+    const badFlags = new Uint8Array(114);
+    badFlags[0] = 0x01;
+    badFlags[1] = 1;
+    badFlags[2] = 110;
+    expect(() => validateFipsWebSocketRecord(badFlags)).toThrow("invalid FMP Msg1");
+
+    const badFspLen = encodeFspEstablished({
+      flags: FSP_FLAG_DIRECT_TRANSPORT,
+      counter: 0n,
+      payloadLen: 1,
+      ciphertext: new Uint8Array(17),
+    });
+    badFspLen[2] = 2;
+    expect(() => validateFipsWebSocketRecord(badFspLen)).toThrow("payload_len mismatch");
+  });
 });
 
 describe("WebSocketTransport", () => {
-  it.each(["hint", "queued send"])("enforces peer admission at the %s boundary", async boundary => {
+  it.each(["hint", "immediate send", "queued send"])("enforces peer admission at the %s boundary", async boundary => {
     vi.useFakeTimers();
     const { transport, context } = await setup({ randomNonce: () => 11n, maxBufferedBytes: 128, sendPollMs: 5 });
     let allowed = boundary !== "hint";
@@ -152,15 +173,20 @@ describe("WebSocketTransport", () => {
         expect(await outcome).toContain("blocked");
       } else {
         expect(await outcome).toBe("connected");
-        socket.bufferedAmount = 129;
         const record = new Uint8Array(69);
         record[0] = 0x02;
         record[2] = 65;
-        const sent = transport.send(addr, record).then(() => "sent", error => error.message as string);
-        allowed = false;
-        socket.bufferedAmount = 0;
-        await vi.advanceTimersByTimeAsync(5);
-        expect(await sent).toContain("blocked");
+        if (boundary === "immediate send") {
+          allowed = false;
+          await expect(transport.send(addr, record)).rejects.toThrow("blocked");
+        } else {
+          socket.bufferedAmount = 129;
+          const sent = transport.send(addr, record).then(() => "sent", error => error.message as string);
+          allowed = false;
+          socket.bufferedAmount = 0;
+          await vi.advanceTimersByTimeAsync(5);
+          expect(await sent).toContain("blocked");
+        }
       }
       expect(socket.sent).toHaveLength(1); // Only the identity-hint request.
     } finally {

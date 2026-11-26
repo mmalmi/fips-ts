@@ -6,7 +6,7 @@
  * (after AEAD decrypt), distinguishing forwarded session datagrams from
  * link-control messages.
  */
-import { BinaryReader, BinaryWriter } from "../codec/binary.js";
+import { readU16le, writeU16le } from "../codec/binary.js";
 import { EXTENSION_LINK_MESSAGE_TYPE } from "./extensions.js";
 export const HandshakeMessageType = {
     NoiseIKMsg1: 0x01,
@@ -95,44 +95,54 @@ export function decodeDisconnect(payload) {
     return { reason: disconnectReasonFromByte(payload[0]) };
 }
 export const SESSION_DATAGRAM_HEADER_SIZE = 36;
-export function encodeSessionDatagram(d) {
+function writeSessionDatagramFields(out, offset, d) {
     if (d.srcAddr.length !== 16)
         throw new Error("src_addr must be 16 bytes");
     if (d.destAddr.length !== 16)
         throw new Error("dest_addr must be 16 bytes");
-    const w = new BinaryWriter();
-    w.u8(LinkMessageType.SessionDatagram);
-    w.u8(d.ttl & 0xff);
-    w.u16le(d.pathMtu);
-    w.bytes(d.srcAddr);
-    w.bytes(d.destAddr);
-    w.bytes(d.payload);
-    return w.toBytes();
+    out[offset] = d.ttl & 0xff;
+    writeU16le(out, offset + 1, d.pathMtu);
+    out.set(d.srcAddr, offset + 3);
+    out.set(d.destAddr, offset + 19);
+    out.set(d.payload, offset + 35);
+    return out;
+}
+export function encodeSessionDatagramPayload(d) {
+    return writeSessionDatagramFields(new Uint8Array(SESSION_DATAGRAM_HEADER_SIZE - 1 + d.payload.length), 0, d);
+}
+export function encodeSessionDatagram(d) {
+    const out = new Uint8Array(SESSION_DATAGRAM_HEADER_SIZE + d.payload.length);
+    out[0] = LinkMessageType.SessionDatagram;
+    return writeSessionDatagramFields(out, 1, d);
 }
 /** Decode from a buffer that includes the leading msg_type byte. */
 export function decodeSessionDatagram(buf) {
     if (buf.length < SESSION_DATAGRAM_HEADER_SIZE) {
         throw new Error(`SessionDatagram too short: ${buf.length} < ${SESSION_DATAGRAM_HEADER_SIZE}`);
     }
-    const r = new BinaryReader(buf);
-    const msgType = r.u8();
+    const msgType = buf[0];
     if (msgType !== LinkMessageType.SessionDatagram) {
         throw new Error(`not a SessionDatagram (msg_type=0x${msgType.toString(16)})`);
     }
-    return decodeSessionDatagramPayload(r.rest());
+    return decodeSessionDatagramPayload(buf.subarray(1));
 }
-/** Decode the payload after the leading msg_type byte has already been consumed. */
-export function decodeSessionDatagramPayload(buf) {
+/** Zero-copy parser for internal routing hot paths. */
+export function parseSessionDatagramPayload(buf) {
     if (buf.length < SESSION_DATAGRAM_HEADER_SIZE - 1) {
         throw new Error(`SessionDatagram payload too short: ${buf.length} < ${SESSION_DATAGRAM_HEADER_SIZE - 1}`);
     }
-    const r = new BinaryReader(buf);
-    const ttl = r.u8();
-    const pathMtu = r.u16le();
-    const srcAddr = r.bytes(16);
-    const destAddr = r.bytes(16);
-    const payload = r.rest();
-    return { ttl, pathMtu, srcAddr, destAddr, payload };
+    return {
+        ttl: buf[0],
+        pathMtu: readU16le(buf, 1),
+        srcAddr: buf.subarray(3, 19),
+        destAddr: buf.subarray(19, 35),
+        payload: buf.subarray(35),
+    };
+}
+/** Decode the payload after the leading msg_type byte has already been consumed. */
+export function decodeSessionDatagramPayload(buf) {
+    const { ttl, pathMtu, srcAddr, destAddr, payload } = parseSessionDatagramPayload(buf);
+    return { ttl, pathMtu, srcAddr: srcAddr.slice(), destAddr: destAddr.slice(), payload: payload.slice() };
 }
 /** Decrement TTL; returns false if it can no longer be forwarded. */
 export function decrementTtl(d) {

@@ -1,6 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 
-import { BinaryReader, BinaryWriter } from "../codec/binary.js";
+import { BinaryReader, BinaryWriter, writeU64le } from "../codec/binary.js";
 import { bytesEqual } from "../codec/hex.js";
 import { signSchnorr, verifySchnorr, type FipsIdentity } from "../identity/index.js";
 import { compareNodeAddr, type NodeAddr } from "../nodeaddr/index.js";
@@ -31,12 +31,12 @@ export function treeDeclarationBytes(
   sequence: bigint,
   timestamp: bigint,
 ): Uint8Array {
-  const writer = new BinaryWriter();
-  writer.bytes(nodeAddr);
-  writer.bytes(parent);
-  writer.u64le(sequence);
-  writer.u64le(timestamp);
-  return writer.toBytes();
+  const out = new Uint8Array(48);
+  out.set(nodeAddr, 0);
+  out.set(parent, 16);
+  writeU64le(out, 32, sequence);
+  writeU64le(out, 40, timestamp);
+  return out;
 }
 
 export function buildTreeAnnounce(
@@ -76,8 +76,15 @@ export function decodeTreeAnnounce(buf: Uint8Array): TreeAnnounce {
   if (buf.length < 1 + TREE_ANNOUNCE_MIN_PAYLOAD_SIZE) {
     throw new Error("TreeAnnounce too short");
   }
-  const reader = new BinaryReader(buf);
-  if (reader.u8() !== LinkMessageType.TreeAnnounce) throw new Error("not a TreeAnnounce");
+  if (buf[0] !== LinkMessageType.TreeAnnounce) throw new Error("not a TreeAnnounce");
+  return decodeTreeAnnouncePayload(buf.subarray(1));
+}
+
+export function decodeTreeAnnouncePayload(payload: Uint8Array): TreeAnnounce {
+  if (payload.length < TREE_ANNOUNCE_MIN_PAYLOAD_SIZE) {
+    throw new Error("TreeAnnounce too short");
+  }
+  const reader = new BinaryReader(payload);
   if (reader.u8() !== TREE_ANNOUNCE_VERSION) throw new Error("unsupported TreeAnnounce version");
   const sequence = reader.u64le();
   const timestamp = reader.u64le();
@@ -97,13 +104,6 @@ export function decodeTreeAnnounce(buf: Uint8Array): TreeAnnounce {
   const announce = { sequence, timestamp, parent, ancestry, signature: reader.bytes(64) };
   validateTreeAnnounceSemantics(announce);
   return announce;
-}
-
-export function decodeTreeAnnouncePayload(payload: Uint8Array): TreeAnnounce {
-  const frame = new Uint8Array(payload.length + 1);
-  frame[0] = LinkMessageType.TreeAnnounce;
-  frame.set(payload, 1);
-  return decodeTreeAnnounce(frame);
 }
 
 export function verifyTreeAnnounce(announce: TreeAnnounce, peerPubkey: Uint8Array): boolean {

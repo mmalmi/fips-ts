@@ -11,6 +11,8 @@ import { toHex, type FipsIdentity } from "@fips/core";
 
 import type { NostrEvent } from "./NostrRelayClient.js";
 
+const textEncoder = new TextEncoder();
+
 export interface UnsignedEvent {
   pubkey: string;       // hex x-only (32 bytes hex = 64 chars)
   created_at: number;   // unix seconds
@@ -21,7 +23,7 @@ export interface UnsignedEvent {
 
 export function serializeForId(e: UnsignedEvent): Uint8Array {
   // NIP-01: [0, pubkey, created_at, kind, tags, content]
-  return new TextEncoder().encode(
+  return textEncoder.encode(
     JSON.stringify([0, e.pubkey, e.created_at, e.kind, e.tags, e.content]),
   );
 }
@@ -41,12 +43,14 @@ export function signEvent(
   return { id, sig, ...unsigned };
 }
 
-export function verifyEvent(e: NostrEvent): boolean {
-  const id = computeEventId(e);
-  if (id !== e.id) return false;
+export function verifyEventSignature(sig: string, id: string, pubkey: string): boolean {
   try {
-    return schnorr.verify(e.sig, e.id, e.pubkey);
+    return schnorr.verify(sig, id, pubkey);
   } catch {
     return false;
   }
+}
+
+export function verifyEvent(e: NostrEvent): boolean {
+  return computeEventId(e) === e.id && verifyEventSignature(e.sig, e.id, e.pubkey);
 }

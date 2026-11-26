@@ -16,7 +16,15 @@
  *   4 byte timestamp (u32 LE) + 1 byte msg_type + payload
  */
 
-import { BinaryReader, BinaryWriter } from "../codec/binary.js";
+import {
+  BinaryReader,
+  readU16le,
+  readU32le,
+  readU64le,
+  writeU16le,
+  writeU32le,
+  writeU64le,
+} from "../codec/binary.js";
 
 export const FMP_VERSION = 0;
 
@@ -43,14 +51,21 @@ export interface FmpCommonPrefix {
   payloadLen: number;
 }
 
-export function encodeCommonPrefix(p: FmpCommonPrefix): Uint8Array {
+function writeCommonPrefix(buf: Uint8Array, p: FmpCommonPrefix): void {
   if (p.version < 0 || p.version > 0xf) throw new RangeError("version 4-bit");
   if (p.phase < 0 || p.phase > 0xf) throw new RangeError("phase 4-bit");
-  const w = new BinaryWriter();
-  w.u8(((p.version & 0xf) << 4) | (p.phase & 0xf));
-  w.u8(p.flags & 0xff);
-  w.u16le(p.payloadLen);
-  return w.toBytes();
+  if (!Number.isInteger(p.payloadLen) || p.payloadLen < 0 || p.payloadLen > 0xffff) {
+    throw new RangeError(`u16 out of range: ${p.payloadLen}`);
+  }
+  buf[0] = ((p.version & 0xf) << 4) | (p.phase & 0xf);
+  buf[1] = p.flags & 0xff;
+  writeU16le(buf, 2, p.payloadLen);
+}
+
+export function encodeCommonPrefix(p: FmpCommonPrefix): Uint8Array {
+  const out = new Uint8Array(4);
+  writeCommonPrefix(out, p);
+  return out;
 }
 
 export function decodeCommonPrefix(r: BinaryReader): FmpCommonPrefix {
@@ -74,35 +89,29 @@ export function encodeFmpMsg1(m: FmpMsg1): Uint8Array {
   if (m.noiseMsg1.length !== NOISE_IK_MSG1_LEN) {
     throw new Error(`noise msg1 must be ${NOISE_IK_MSG1_LEN} bytes`);
   }
-  const w = new BinaryWriter();
-  w.bytes(
-    encodeCommonPrefix({
-      version: FMP_VERSION,
-      phase: FMP_PHASE_MSG1,
-      flags: 0,
-      payloadLen: 4 + NOISE_IK_MSG1_LEN,
-    }),
-  );
-  w.u32le(m.senderIdx);
-  w.bytes(m.noiseMsg1);
-  return w.toBytes();
+  const out = new Uint8Array(FMP_MSG1_TOTAL_LEN);
+  writeCommonPrefix(out, {
+    version: FMP_VERSION,
+    phase: FMP_PHASE_MSG1,
+    flags: 0,
+    payloadLen: 4 + NOISE_IK_MSG1_LEN,
+  });
+  writeU32le(out, 4, m.senderIdx);
+  out.set(m.noiseMsg1, 8);
+  return out;
 }
 
 export function decodeFmpMsg1(buf: Uint8Array): FmpMsg1 {
   if (buf.length !== FMP_MSG1_TOTAL_LEN) {
     throw new Error(`FMP Msg1 must be ${FMP_MSG1_TOTAL_LEN} bytes, got ${buf.length}`);
   }
-  const r = new BinaryReader(buf);
-  const prefix = decodeCommonPrefix(r);
-  if (prefix.version !== FMP_VERSION) throw new Error("bad FMP version");
-  if (prefix.phase !== FMP_PHASE_MSG1) throw new Error("not FMP Msg1");
-  if (prefix.flags !== 0) throw new Error("FMP Msg1 flags must be zero");
-  if (prefix.payloadLen !== 4 + NOISE_IK_MSG1_LEN) {
+  if ((buf[0]! >>> 4) !== FMP_VERSION) throw new Error("bad FMP version");
+  if ((buf[0]! & 0xf) !== FMP_PHASE_MSG1) throw new Error("not FMP Msg1");
+  if (buf[1] !== 0) throw new Error("FMP Msg1 flags must be zero");
+  if (readU16le(buf, 2) !== 4 + NOISE_IK_MSG1_LEN) {
     throw new Error("bad FMP Msg1 payload_len");
   }
-  const senderIdx = r.u32le();
-  const noiseMsg1 = r.bytes(NOISE_IK_MSG1_LEN);
-  return { senderIdx, noiseMsg1 };
+  return { senderIdx: readU32le(buf, 4), noiseMsg1: buf.slice(8) };
 }
 
 export interface FmpMsg2 {
@@ -115,37 +124,34 @@ export function encodeFmpMsg2(m: FmpMsg2): Uint8Array {
   if (m.noiseMsg2.length !== NOISE_IK_MSG2_LEN) {
     throw new Error(`noise msg2 must be ${NOISE_IK_MSG2_LEN} bytes`);
   }
-  const w = new BinaryWriter();
-  w.bytes(
-    encodeCommonPrefix({
-      version: FMP_VERSION,
-      phase: FMP_PHASE_MSG2,
-      flags: 0,
-      payloadLen: 4 + 4 + NOISE_IK_MSG2_LEN,
-    }),
-  );
-  w.u32le(m.senderIdx);
-  w.u32le(m.receiverIdx);
-  w.bytes(m.noiseMsg2);
-  return w.toBytes();
+  const out = new Uint8Array(FMP_MSG2_TOTAL_LEN);
+  writeCommonPrefix(out, {
+    version: FMP_VERSION,
+    phase: FMP_PHASE_MSG2,
+    flags: 0,
+    payloadLen: 4 + 4 + NOISE_IK_MSG2_LEN,
+  });
+  writeU32le(out, 4, m.senderIdx);
+  writeU32le(out, 8, m.receiverIdx);
+  out.set(m.noiseMsg2, 12);
+  return out;
 }
 
 export function decodeFmpMsg2(buf: Uint8Array): FmpMsg2 {
   if (buf.length !== FMP_MSG2_TOTAL_LEN) {
     throw new Error(`FMP Msg2 must be ${FMP_MSG2_TOTAL_LEN} bytes, got ${buf.length}`);
   }
-  const r = new BinaryReader(buf);
-  const prefix = decodeCommonPrefix(r);
-  if (prefix.version !== FMP_VERSION) throw new Error("bad FMP version");
-  if (prefix.phase !== FMP_PHASE_MSG2) throw new Error("not FMP Msg2");
-  if (prefix.flags !== 0) throw new Error("FMP Msg2 flags must be zero");
-  if (prefix.payloadLen !== 4 + 4 + NOISE_IK_MSG2_LEN) {
+  if ((buf[0]! >>> 4) !== FMP_VERSION) throw new Error("bad FMP version");
+  if ((buf[0]! & 0xf) !== FMP_PHASE_MSG2) throw new Error("not FMP Msg2");
+  if (buf[1] !== 0) throw new Error("FMP Msg2 flags must be zero");
+  if (readU16le(buf, 2) !== 4 + 4 + NOISE_IK_MSG2_LEN) {
     throw new Error("bad FMP Msg2 payload_len");
   }
-  const senderIdx = r.u32le();
-  const receiverIdx = r.u32le();
-  const noiseMsg2 = r.bytes(NOISE_IK_MSG2_LEN);
-  return { senderIdx, receiverIdx, noiseMsg2 };
+  return {
+    senderIdx: readU32le(buf, 4),
+    receiverIdx: readU32le(buf, 8),
+    noiseMsg2: buf.slice(12),
+  };
 }
 
 export interface FmpEstablishedHeader {
@@ -159,51 +165,54 @@ export interface FmpEstablished extends FmpEstablishedHeader {
   ciphertext: Uint8Array; // includes 16-byte AEAD tag at end
 }
 
-export function encodeFmpEstablishedHeader(
-  h: FmpEstablishedHeader,
-  payloadLen: number,
-): Uint8Array {
-  const w = new BinaryWriter();
-  w.bytes(
-    encodeCommonPrefix({
-      version: FMP_VERSION,
-      phase: FMP_PHASE_ESTABLISHED,
-      flags: h.flags,
-      payloadLen,
-    }),
-  );
-  w.u32le(h.receiverIdx);
-  w.u64le(h.counter);
-  return w.toBytes();
+export function writeFmpEstablishedHeader(buf: Uint8Array, h: FmpEstablishedHeader, payloadLen: number): void {
+  writeCommonPrefix(buf, { version: FMP_VERSION, phase: FMP_PHASE_ESTABLISHED, flags: h.flags, payloadLen });
+  writeU32le(buf, 4, h.receiverIdx);
+  writeU64le(buf, 8, h.counter);
+}
+
+export function encodeFmpEstablishedHeader(h: FmpEstablishedHeader, payloadLen: number): Uint8Array {
+  const out = new Uint8Array(FMP_ESTABLISHED_HEADER_LEN);
+  writeFmpEstablishedHeader(out, h, payloadLen);
+  return out;
 }
 
 export function encodeFmpEstablished(p: FmpEstablished): Uint8Array {
-  const header = encodeFmpEstablishedHeader(p, p.payloadLen);
-  const w = new BinaryWriter();
-  w.bytes(header);
-  w.bytes(p.ciphertext);
-  return w.toBytes();
+  const out = new Uint8Array(FMP_ESTABLISHED_HEADER_LEN + p.ciphertext.length);
+  writeFmpEstablishedHeader(out, p, p.payloadLen);
+  out.set(p.ciphertext, FMP_ESTABLISHED_HEADER_LEN);
+  return out;
 }
 
-export function decodeFmpEstablished(buf: Uint8Array): FmpEstablished {
+/** Zero-copy established frame parser for internal hot paths. */
+export function parseFmpEstablished(buf: Uint8Array): FmpEstablished & { aad: Uint8Array } {
   if (buf.length < FMP_ESTABLISHED_HEADER_LEN + FMP_AEAD_TAG_LEN) {
     throw new Error(
       `FMP Established too short: ${buf.length} < ${FMP_ESTABLISHED_HEADER_LEN + FMP_AEAD_TAG_LEN}`,
     );
   }
-  const r = new BinaryReader(buf);
-  const prefix = decodeCommonPrefix(r);
-  if (prefix.version !== FMP_VERSION) throw new Error("bad FMP version");
-  if (prefix.phase !== FMP_PHASE_ESTABLISHED) throw new Error("not FMP Established");
-  const receiverIdx = r.u32le();
-  const counter = r.u64le();
-  const ciphertext = r.rest();
-  if (ciphertext.length !== prefix.payloadLen + FMP_AEAD_TAG_LEN) {
+  if ((buf[0]! >>> 4) !== FMP_VERSION) throw new Error("bad FMP version");
+  if ((buf[0]! & 0xf) !== FMP_PHASE_ESTABLISHED) throw new Error("not FMP Established");
+  const payloadLen = readU16le(buf, 2);
+  const ciphertext = buf.subarray(FMP_ESTABLISHED_HEADER_LEN);
+  if (ciphertext.length !== payloadLen + FMP_AEAD_TAG_LEN) {
     throw new Error(
-      `payload_len mismatch: header=${prefix.payloadLen}+tag actual=${ciphertext.length}`,
+      `payload_len mismatch: header=${payloadLen}+tag actual=${ciphertext.length}`,
     );
   }
-  return { flags: prefix.flags, receiverIdx, counter, payloadLen: prefix.payloadLen, ciphertext };
+  return {
+    flags: buf[1]!,
+    receiverIdx: readU32le(buf, 4),
+    counter: readU64le(buf, 8),
+    payloadLen,
+    aad: buf.subarray(0, FMP_ESTABLISHED_HEADER_LEN),
+    ciphertext,
+  };
+}
+
+export function decodeFmpEstablished(buf: Uint8Array): FmpEstablished {
+  const { flags, receiverIdx, counter, payloadLen, ciphertext } = parseFmpEstablished(buf);
+  return { flags, receiverIdx, counter, payloadLen, ciphertext: ciphertext.slice() };
 }
 
 export interface FmpInnerPacket {
@@ -213,24 +222,23 @@ export interface FmpInnerPacket {
 }
 
 export function encodeFmpInner(p: FmpInnerPacket): Uint8Array {
-  const w = new BinaryWriter();
-  w.u32le(p.timestamp);
-  w.u8(p.msgType);
-  w.bytes(p.payload);
-  return w.toBytes();
+  const out = new Uint8Array(5 + p.payload.length);
+  writeU32le(out, 0, p.timestamp);
+  out[4] = p.msgType & 0xff;
+  out.set(p.payload, 5);
+  return out;
 }
 
 export function decodeFmpInner(buf: Uint8Array): FmpInnerPacket {
   if (buf.length < 5) throw new Error("FMP inner packet too short");
-  const r = new BinaryReader(buf);
   return {
-    timestamp: r.u32le(),
-    msgType: r.u8(),
-    payload: r.rest(),
+    timestamp: readU32le(buf, 0),
+    msgType: buf[4]!,
+    payload: buf.slice(5),
   };
 }
 
 export function peekFmpPhase(buf: Uint8Array): number {
   if (buf.length < 1) throw new Error("empty FMP packet");
-  return buf[0] & 0xf;
+  return buf[0]! & 0xf;
 }

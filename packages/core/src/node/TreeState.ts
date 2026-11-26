@@ -11,6 +11,7 @@ interface PeerTreeState {
   sequence: bigint;
   parent: NodeAddr;
   ancestry: TreeCoordEntry[];
+  coords: NodeAddr[];
 }
 
 export class TreeState {
@@ -18,15 +19,18 @@ export class TreeState {
   private timestamp = nowSeconds();
   private parent: NodeAddr;
   private ancestry: TreeCoordEntry[];
+  private cachedCoords: NodeAddr[];
+  private cachedAnnounce?: TreeAnnounce;
   private readonly peers = new Map<string, PeerTreeState>();
 
   constructor(private readonly identity: FipsIdentity) {
     this.parent = identity.nodeAddr;
     this.ancestry = [this.selfEntry()];
+    this.cachedCoords = [identity.nodeAddr];
   }
 
   get coords(): NodeAddr[] {
-    return this.ancestry.map((entry) => entry.nodeAddr);
+    return this.cachedCoords;
   }
 
   get root(): NodeAddr {
@@ -38,13 +42,13 @@ export class TreeState {
   }
 
   announce(): TreeAnnounce {
-    return buildTreeAnnounce(
+    return (this.cachedAnnounce ??= buildTreeAnnounce(
       this.identity,
       this.parent,
       this.sequence,
       this.timestamp,
       this.ancestry,
-    );
+    ));
   }
 
   updatePeer(peerNodeAddr: NodeAddr, announce: TreeAnnounce): boolean {
@@ -55,6 +59,7 @@ export class TreeState {
       sequence: announce.sequence,
       parent: announce.parent,
       ancestry: announce.ancestry,
+      coords: announce.ancestry.map((entry) => entry.nodeAddr),
     });
     return this.evaluateParent();
   }
@@ -73,47 +78,56 @@ export class TreeState {
     if (!bytesEqual(this.parent, this.identity.nodeAddr) && bytesEqual(this.parent, peerNodeAddr)) {
       return true;
     }
-    return this.peers.get(nodeAddrToHex(peerNodeAddr))?.parent
-      ? bytesEqual(this.peers.get(nodeAddrToHex(peerNodeAddr))!.parent, this.identity.nodeAddr)
-      : false;
+    const peerParent = this.peers.get(nodeAddrToHex(peerNodeAddr))?.parent;
+    return peerParent ? bytesEqual(peerParent, this.identity.nodeAddr) : false;
   }
 
   nextHop(destCoords: NodeAddr[], eligible: (nodeHex: string) => boolean): string | undefined {
     if (destCoords.length === 0 || !bytesEqual(this.root, destCoords.at(-1)!)) return undefined;
-    const myDistance = treeDistance(this.coords, destCoords);
-    let best: { nodeHex: string; distance: number } | undefined;
+    const myDistance = treeDistance(this.cachedCoords, destCoords);
+    let bestHex: string | undefined;
+    let bestDistance = myDistance;
     for (const [nodeHex, peer] of this.peers) {
-      if (!eligible(nodeHex)) continue;
-      const distance = treeDistance(peer.ancestry.map((entry) => entry.nodeAddr), destCoords);
-      if (distance >= myDistance) continue;
-      if (!best || distance < best.distance || (distance === best.distance && nodeHex < best.nodeHex)) {
-        best = { nodeHex, distance };
+      const distance = treeDistance(peer.coords, destCoords);
+      if (distance > bestDistance || (distance === bestDistance && (bestHex === undefined || nodeHex >= bestHex))) {
+        continue;
       }
+      if (!eligible(nodeHex)) continue;
+      bestHex = nodeHex;
+      bestDistance = distance;
     }
-    return best?.nodeHex;
+    return bestHex;
   }
 
   private evaluateParent(): boolean {
-    const candidates = [...this.peers.entries()]
-      .filter(([, peer]) => !peer.ancestry.some((entry) => bytesEqual(entry.nodeAddr, this.identity.nodeAddr)))
-      .sort(([hexA, a], [hexB, b]) => {
-        const rootOrder = compareNodeAddr(a.ancestry.at(-1)!.nodeAddr, b.ancestry.at(-1)!.nodeAddr);
-        if (rootOrder !== 0) return rootOrder;
-        const depthOrder = a.ancestry.length - b.ancestry.length;
-        return depthOrder !== 0 ? depthOrder : hexA.localeCompare(hexB);
-      });
-    const best = candidates[0];
-    const shouldRoot = !best || compareNodeAddr(this.identity.nodeAddr, best[1].ancestry.at(-1)!.nodeAddr) <= 0;
-    const nextParent = shouldRoot ? this.identity.nodeAddr : best[1].ancestry[0]!.nodeAddr;
+    let bestHex: string | undefined;
+    let bestPeer: PeerTreeState | undefined;
+    for (const [hex, peer] of this.peers) {
+      if (peer.coords.some((addr) => bytesEqual(addr, this.identity.nodeAddr))) continue;
+      if (bestPeer) {
+        const rootOrder = compareNodeAddr(peer.coords.at(-1)!, bestPeer.coords.at(-1)!);
+        if (rootOrder > 0) continue;
+        if (rootOrder === 0) {
+          const depthOrder = peer.ancestry.length - bestPeer.ancestry.length;
+          if (depthOrder > 0 || (depthOrder === 0 && hex.localeCompare(bestHex!) >= 0)) continue;
+        }
+      }
+      bestHex = hex;
+      bestPeer = peer;
+    }
+    const shouldRoot = !bestPeer || compareNodeAddr(this.identity.nodeAddr, bestPeer.coords.at(-1)!) <= 0;
+    const nextParent = shouldRoot ? this.identity.nodeAddr : bestPeer!.coords[0]!;
     const nextAncestry = shouldRoot
       ? [this.selfEntry()]
-      : [this.selfEntry(), ...best[1].ancestry];
+      : [this.selfEntry(), ...bestPeer!.ancestry];
     if (bytesEqual(this.parent, nextParent) && sameCoords(this.ancestry, nextAncestry)) return false;
     this.sequence += 1n;
     this.timestamp = nowSeconds();
     this.parent = nextParent;
     this.ancestry = nextAncestry;
     this.ancestry[0] = this.selfEntry();
+    this.cachedCoords = this.ancestry.map((entry) => entry.nodeAddr);
+    this.cachedAnnounce = undefined;
     return true;
   }
 

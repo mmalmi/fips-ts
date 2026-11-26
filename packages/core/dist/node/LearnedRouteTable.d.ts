@@ -6,12 +6,14 @@
  */
 export declare class LearnedRouteTable {
     private readonly routes;
+    private lastPruneMs;
     learn(destination: string, nextHop: string, nowMs: number, ttlSeconds: number, maxRoutesPerDestination: number, pathMtu?: number): void;
     pathMtu(destination: string, nextHop: string, nowMs: number): number | undefined;
     recordFailure(destination: string, nextHop: string): void;
     selectNextHop(destination: string, nowMs: number, canSend: (nextHop: string) => boolean): string | undefined;
     has(destination: string, nowMs?: number): boolean;
     clear(): void;
+    private pruneExpired;
     private retainLive;
     private sortAndTruncate;
 }

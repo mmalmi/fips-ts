@@ -145,15 +145,18 @@ export class WebRtcSignalCache {
     if (signal.kind !== "offer" && signal.kind !== "answer") return;
     this.prune();
     if (this.entries.size >= 64) {
-      const evictable = [...this.entries].find(([, value]) =>
-        !value.inFlight && !value.responseIsLive?.());
+      let evictKey: string | undefined;
+      for (const [key, value] of this.entries) {
+        if (!value.inFlight && !value.responseIsLive?.()) { evictKey = key; break; }
+      }
       // Refused offers must not evict a response still needed by a live PC.
-      if (!evictable) return;
-      this.entries.delete(evictable[0]);
+      if (evictKey === undefined) return;
+      this.entries.delete(evictKey);
     }
+    const now = Date.now();
     const cached: CachedSignal = {
-      remote, sdp: signal.payload.sdp!, expiresAtMs: Math.min(signal.expiresAtMs, Date.now() + 60_000),
-      inFlight: signal.kind === "offer", retryable: false, lastAttemptAtMs: Date.now(),
+      remote, sdp: signal.payload.sdp!, expiresAtMs: Math.min(signal.expiresAtMs, now + 60_000),
+      inFlight: signal.kind === "offer", retryable: false, lastAttemptAtMs: now,
     };
     this.entries.set(`${signal.negotiationId}:${signal.kind}`, cached);
     return cached;
@@ -170,8 +173,9 @@ export class WebRtcSignalCache {
   clear(): void { this.entries.clear(); }
 
   private prune(): void {
+    const now = Date.now();
     for (const [key, value] of this.entries) {
-      if (value.expiresAtMs < Date.now()) this.entries.delete(key);
+      if (value.expiresAtMs < now) this.entries.delete(key);
     }
   }
 }

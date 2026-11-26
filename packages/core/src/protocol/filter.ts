@@ -9,7 +9,7 @@
  * `size_class=1` (V1) ⇒ N = 1024 bytes filter (= 8192 bits).
  */
 
-import { BinaryReader, BinaryWriter } from "../codec/binary.js";
+import { readU64le, writeU64le } from "../codec/binary.js";
 
 import { BloomFilter, SIZE_CLASS_BYTES } from "../bloom/index.js";
 
@@ -55,25 +55,54 @@ export function buildFilterAnnounce(
   };
 }
 
-/** Encode including the leading msg_type byte. */
-export function encodeFilterAnnounce(fa: FilterAnnounce): Uint8Array {
+function writeFilterAnnounceBody(out: Uint8Array, offset: number, fa: FilterAnnounce): void {
   if (fa.filter.numBytes !== expectedFilterBytes(fa.sizeClass)) {
-    throw new Error(
-      `filter size ${fa.filter.numBytes} doesn't match size_class ${fa.sizeClass}`,
-    );
+    throw new Error(`filter size ${fa.filter.numBytes} doesn't match size_class ${fa.sizeClass}`);
   }
   if (fa.hashCount !== fa.filter.hashCount) {
+    throw new Error(`hash_count ${fa.hashCount} doesn't match filter.hashCount ${fa.filter.hashCount}`);
+  }
+  writeU64le(out, offset, fa.sequence);
+  out[offset + 8] = fa.hashCount & 0xff;
+  out[offset + 9] = fa.sizeClass & 0xff;
+  out.set(fa.filter.asBytes(), offset + 10);
+}
+
+/** Encode payload without the leading msg_type byte. */
+export function encodeFilterAnnouncePayload(fa: FilterAnnounce): Uint8Array {
+  const out = new Uint8Array(FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE + fa.filter.numBytes);
+  writeFilterAnnounceBody(out, 0, fa);
+  return out;
+}
+
+/** Encode including the leading msg_type byte. */
+export function encodeFilterAnnounce(fa: FilterAnnounce): Uint8Array {
+  const out = new Uint8Array(1 + FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE + fa.filter.numBytes);
+  out[0] = LinkMessageType.FilterAnnounce;
+  writeFilterAnnounceBody(out, 1, fa);
+  return out;
+}
+
+/** Decode FilterAnnounce payload (without leading msg_type byte). */
+export function decodeFilterAnnouncePayload(payload: Uint8Array): FilterAnnounce {
+  if (payload.length < FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE) {
     throw new Error(
-      `hash_count ${fa.hashCount} doesn't match filter.hashCount ${fa.filter.hashCount}`,
+      `FilterAnnounce too short: ${payload.length} < ${FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE}`,
     );
   }
-  const w = new BinaryWriter();
-  w.u8(LinkMessageType.FilterAnnounce);
-  w.u64le(fa.sequence);
-  w.u8(fa.hashCount);
-  w.u8(fa.sizeClass);
-  w.bytes(fa.filter.asBytes());
-  return w.toBytes();
+  const sequence = readU64le(payload, 0);
+  const hashCount = payload[8]!;
+  const sizeClass = payload[9]!;
+  const filterLen = expectedFilterBytes(sizeClass);
+  const remaining = payload.length - FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE;
+  if (remaining < filterLen) {
+    throw new Error(`FilterAnnounce truncated: need ${filterLen} filter bytes, have ${remaining}`);
+  }
+  const filter = BloomFilter.fromBytes(
+    payload.subarray(FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE, FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE + filterLen),
+    hashCount,
+  );
+  return { filter, sequence, hashCount, sizeClass };
 }
 
 /**
@@ -86,21 +115,8 @@ export function decodeFilterAnnounce(buf: Uint8Array): FilterAnnounce {
       `FilterAnnounce too short: ${buf.length} < ${1 + FILTER_ANNOUNCE_MIN_PAYLOAD_SIZE}`,
     );
   }
-  const r = new BinaryReader(buf);
-  const msgType = r.u8();
-  if (msgType !== LinkMessageType.FilterAnnounce) {
-    throw new Error(`not a FilterAnnounce (msg_type=0x${msgType.toString(16)})`);
+  if (buf[0] !== LinkMessageType.FilterAnnounce) {
+    throw new Error(`not a FilterAnnounce (msg_type=0x${buf[0]!.toString(16)})`);
   }
-  const sequence = r.u64le();
-  const hashCount = r.u8();
-  const sizeClass = r.u8();
-  const filterLen = expectedFilterBytes(sizeClass);
-  if (r.remaining < filterLen) {
-    throw new Error(
-      `FilterAnnounce truncated: need ${filterLen} filter bytes, have ${r.remaining}`,
-    );
-  }
-  const filterBytes = r.bytes(filterLen);
-  const filter = BloomFilter.fromBytes(filterBytes, hashCount);
-  return { filter, sequence, hashCount, sizeClass };
+  return decodeFilterAnnouncePayload(buf.subarray(1));
 }

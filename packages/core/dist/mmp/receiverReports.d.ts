@@ -15,7 +15,11 @@ export declare class ReceiverReports {
     private bursts;
     private maxBurst;
     private totalBurst;
-    private transitSamples;
+    private readonly sampleTimes;
+    private readonly sampleTransits;
+    private sampleHead;
+    private sampleCount;
+    private lastTransit;
     resetEpoch(): void;
     record(received: {
         counter: bigint;

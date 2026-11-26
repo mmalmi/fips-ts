@@ -16,6 +16,7 @@ export declare class BloomError extends Error {
 }
 export declare class BloomFilter {
     private readonly bits;
+    private readonly bitMask;
     readonly numBits: number;
     readonly hashCount: number;
     private constructor();
@@ -30,8 +31,11 @@ export declare class BloomFilter {
     containsBytes(data: Uint8Array): boolean;
     /** In-place OR with another same-sized filter. */
     merge(other: BloomFilter): void;
+    /** Return a fresh copy of this filter. */
+    clone(): BloomFilter;
     /** Return a fresh filter = self ∪ other. */
     union(other: BloomFilter): BloomFilter;
+    equals(other: BloomFilter): boolean;
     clear(): void;
     countOnes(): number;
     fillRatio(): number;
@@ -39,8 +43,6 @@ export declare class BloomFilter {
     asBytes(): Uint8Array;
     get numBytes(): number;
     /** Rust-compatible: h1 = LE u64 from SHA-256[0..8]; h2 = LE u64 from SHA-256[8..16]. */
-    private hash;
-    private setBit;
-    private getBit;
+    private probe;
 }
 //# sourceMappingURL=index.d.ts.map

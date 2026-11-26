@@ -13,6 +13,24 @@ import { CipherState } from "./cipherState.js";
 import { noiseHkdf2, noiseHkdf3 } from "./hkdf.js";
 
 const HASHLEN = 32;
+const EMPTY_BYTES = new Uint8Array(0);
+const textEncoder = new TextEncoder();
+const protocolHashCache = new Map<string, Uint8Array>();
+
+function initialHash(protocolName: string): Uint8Array {
+  const cached = protocolHashCache.get(protocolName);
+  if (cached) return cached.slice();
+  const nameBytes = textEncoder.encode(protocolName);
+  let h: Uint8Array;
+  if (nameBytes.length <= HASHLEN) {
+    h = new Uint8Array(HASHLEN);
+    h.set(nameBytes, 0);
+  } else {
+    h = sha256(nameBytes);
+  }
+  if (protocolHashCache.size < 8) protocolHashCache.set(protocolName, h.slice());
+  return h;
+}
 
 export class SymmetricState {
   private h: Uint8Array;
@@ -20,20 +38,13 @@ export class SymmetricState {
   private cipher: CipherState;
 
   constructor(protocolName: string) {
-    const nameBytes = new TextEncoder().encode(protocolName);
-    if (nameBytes.length <= HASHLEN) {
-      const padded = new Uint8Array(HASHLEN);
-      padded.set(nameBytes, 0);
-      this.h = padded;
-    } else {
-      this.h = sha256(nameBytes);
-    }
+    this.h = initialHash(protocolName);
     this.ck = this.h.slice();
     this.cipher = new CipherState();
   }
 
   clone(): SymmetricState {
-    const copy = new SymmetricState("");
+    const copy = Object.create(SymmetricState.prototype) as SymmetricState;
     copy.h = this.h.slice();
     copy.ck = this.ck.slice();
     copy.cipher = this.cipher.clone();
@@ -74,20 +85,20 @@ export class SymmetricState {
    * subsequent MixHash(ciphertext).
    */
   encryptAndHash(plaintext: Uint8Array): Uint8Array {
-    const ct = this.cipher.encryptWithAd(new Uint8Array(0), plaintext);
+    const ct = this.cipher.encryptWithAd(EMPTY_BYTES, plaintext);
     this.mixHash(ct);
     return ct;
   }
 
   decryptAndHash(ciphertext: Uint8Array): Uint8Array {
-    const pt = this.cipher.decryptWithAd(new Uint8Array(0), ciphertext);
+    const pt = this.cipher.decryptWithAd(EMPTY_BYTES, ciphertext);
     this.mixHash(ciphertext);
     return pt;
   }
 
   /** (k1, k2) = HKDF(ck, b"", 2). Returns two fresh CipherStates. */
   split(): [CipherState, CipherState] {
-    const [k1, k2] = noiseHkdf2(this.ck, new Uint8Array(0));
+    const [k1, k2] = noiseHkdf2(this.ck, EMPTY_BYTES);
     return [CipherState.withKey(k1), CipherState.withKey(k2)];
   }
 

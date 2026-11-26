@@ -39,6 +39,7 @@ export class MemoryTransport implements Transport {
   readonly mtu: number;
   private ctx?: TransportContext;
   private pubkeyHex = "";
+  private localAddr?: TransportAddress;
   private readonly hub: MemoryHub;
   private readonly loss: number;
   private readonly rand: () => number;
@@ -54,6 +55,7 @@ export class MemoryTransport implements Transport {
   async start(ctx: TransportContext): Promise<void> {
     this.ctx = ctx;
     this.pubkeyHex = toHex(ctx.localIdentity.publicKey);
+    this.localAddr = { transport: "memory", addr: this.pubkeyHex };
     this.hub.register(this.pubkeyHex, this);
   }
 
@@ -67,6 +69,7 @@ export class MemoryTransport implements Transport {
     }
     this.connected.clear();
     this.ctx = undefined;
+    this.localAddr = undefined;
   }
 
   async connect(addr: TransportAddress): Promise<void> {
@@ -76,7 +79,7 @@ export class MemoryTransport implements Transport {
     this.connected.add(key);
     this.ctx?.onConnectionState?.({ remoteAddr: addr, state: "connected" });
     // Tell the remote we're now reachable too — so it can route packets back.
-    const ourAddr: TransportAddress = { transport: "memory", addr: this.pubkeyHex };
+    const ourAddr = this.localAddr ?? { transport: "memory", addr: this.pubkeyHex };
     remote.connected.add(transportAddressKey(ourAddr));
     remote.ctx?.onConnectionState?.({ remoteAddr: ourAddr, state: "connected" });
   }
@@ -85,7 +88,7 @@ export class MemoryTransport implements Transport {
     if (this.loss > 0 && this.rand() < this.loss) return;
     const remote = this.hub.resolve(addr.addr);
     if (!remote || !remote.ctx) throw new Error(`memory peer offline: ${addr.addr}`);
-    const fromAddr: TransportAddress = { transport: "memory", addr: this.pubkeyHex };
+    const fromAddr = this.localAddr ?? { transport: "memory", addr: this.pubkeyHex };
     // Deliver asynchronously so callers don't see synchronous reentrancy.
     queueMicrotask(() => {
       remote.ctx?.onPacket({

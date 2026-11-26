@@ -80,22 +80,24 @@ export function waitForIceGatheringComplete(
   pc: RTCPeerConnection,
   timeoutMs: number,
 ): Promise<void> {
-  if (pc.iceGatheringState === "complete") return Promise.resolve();
+  if (pc.iceGatheringState === "complete" || pc.connectionState === "closed") return Promise.resolve();
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
+    const finish = () => {
+      clearTimeout(timer);
       pc.removeEventListener("icegatheringstatechange", onChange);
+      pc.removeEventListener("connectionstatechange", onChange);
       resolve();
-    }, timeoutMs);
+    };
+    const timer = setTimeout(finish, timeoutMs);
     function onChange() {
-      if (pc.iceGatheringState === "complete") {
-        clearTimeout(timer);
-        pc.removeEventListener("icegatheringstatechange", onChange);
-        resolve();
-      }
+      if (pc.iceGatheringState === "complete" || pc.connectionState === "closed") finish();
     }
     pc.addEventListener("icegatheringstatechange", onChange);
+    pc.addEventListener("connectionstatechange", onChange);
   });
 }
+
+const MAX_QUEUED_EVENTS = 256;
 
 export class AsyncEventStream<T> implements AsyncIterable<T> {
   private readonly values: T[] = [];
@@ -105,8 +107,12 @@ export class AsyncEventStream<T> implements AsyncIterable<T> {
   push(value: T): void {
     if (this.closed) return;
     const waiter = this.waiters.shift();
-    if (waiter) waiter({ done: false, value });
-    else this.values.push(value);
+    if (waiter) {
+      waiter({ done: false, value });
+    } else {
+      if (this.values.length >= MAX_QUEUED_EVENTS) this.values.shift();
+      this.values.push(value);
+    }
   }
 
   close(): void {
@@ -171,4 +177,13 @@ export interface AdvertWaiter {
   timer: ReturnType<typeof setTimeout>;
   signal?: AbortSignal;
   onAbort?: () => void;
+}
+
+export function storeBoundedId(set: Set<string>, key: string, maxEntries: number): void {
+  set.delete(key);
+  if (set.size >= maxEntries) {
+    const oldest = set.values().next().value as string | undefined;
+    if (oldest !== undefined) set.delete(oldest);
+  }
+  set.add(key);
 }

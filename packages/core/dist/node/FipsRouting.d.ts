@@ -1,8 +1,8 @@
 import { type FipsIdentity } from "../identity/index.js";
 import { type NodeAddr } from "../nodeaddr/index.js";
 import { type SessionDatagram } from "../protocol/link.js";
-import type { Logger, Transport, TransportAddress } from "../transport/types.js";
-import type { AdjacentPeer } from "./PeerState.js";
+import { type Logger, type Transport, type TransportAddress } from "../transport/types.js";
+import { type AdjacentPeer } from "./PeerState.js";
 type OutboundSessionDatagram = Omit<SessionDatagram, "payload"> & {
     payload: Uint8Array | ((nextHop: AdjacentPeer) => Uint8Array[]);
 };
@@ -37,6 +37,10 @@ export declare class FipsRouting {
     private readonly lookupForwardLimiter;
     private readonly deferredLookupForwards;
     private readonly bloomRouting;
+    private readonly localNodeAddrHex;
+    private readonly debugEnabled;
+    private cachedTreeAnnounce?;
+    private pendingTreeBroadcast?;
     private clientSequence;
     constructor(cfg: FipsRoutingConfig);
     get coords(): NodeAddr[];
@@ -46,6 +50,10 @@ export declare class FipsRouting {
     stop(): void;
     removePeer(peerNodeAddr: NodeAddr): void;
     handleLinkMessage(peer: AdjacentPeer, msgType: number, payload: Uint8Array): Promise<void>;
+    private handleLegacyClientMessage;
+    private handleIncomingLookupRequest;
+    private handleExtensionMessage;
+    private handleSessionDatagram;
     sendTreeAnnounce(peer: AdjacentPeer, allowLegacyProbe?: boolean): Promise<void>;
     private handleClientRole;
     scheduleTreeAnnounce(peer: AdjacentPeer): void;
@@ -60,21 +68,25 @@ export declare class FipsRouting {
     /** Post-failure suppression keeps an offline target from triggering a fresh network-wide lookup. */
     private assertLookupAllowed;
     private refreshTransitRoute;
+    private runOriginLookup;
     sendFspToward(remoteNodeAddr: NodeAddr, fspFrame: OutboundSessionDatagram["payload"]): Promise<void>;
     sendFspReplyToward(remoteNodeAddr: NodeAddr, fspFrame: Uint8Array, previousHop: AdjacentPeer): Promise<void>;
     private sendSessionDatagramVia;
     learnReverseRoute(destinationNodeHex: string, nextHop: AdjacentPeer, pathMtu?: number): void;
+    private broadcastTreeAnnounce;
     private sendTreeAnnounceToAll;
     private handleTreeAnnounce;
     private cacheSessionCoordinates;
     private cacheCoordinates;
     private handleLookupRequest;
+    private selectLookupForwardTargets;
+    private answerLocalLookup;
+    private recordLookupReversePath;
     private sendLookupToNextHops;
     private lookupFallbackPeers;
     /** Hold one rate-limited request per target until that target's next forwarding slot. */
     private deferLookupForward;
     private resolveAndForwardLookup;
-    private canResolveLookupDirectly;
     private forwardLookupResponse;
     private handleOriginLookupResponse;
     private originLookupPeers;
@@ -83,9 +95,7 @@ export declare class FipsRouting {
     private pathMtuFor;
     private nextHopFor;
     private pruneLookupReversePaths;
-    private reserveLookupReversePath;
     private resolveRoute;
-    private resolveAndConnectRoute;
     /** Resolve only the identity: FSP signaling can be needed before its carrier exists. */
     resolveIdentity(nodeAddr: NodeAddr, abort: AbortController): Promise<Uint8Array>;
 }

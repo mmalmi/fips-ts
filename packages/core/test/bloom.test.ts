@@ -3,6 +3,7 @@
  * ~/src/fips/crates/fips-core/src/bloom/tests.rs.
  */
 
+import { sha256 } from "@noble/hashes/sha256";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -137,5 +138,41 @@ describe("BloomFilter (Rust bloom/tests.rs)", () => {
     for (const k of keys) {
       expect(f.containsBytes(k)).toBe(true);
     }
+  });
+
+  it("matches reference SHA-256 double-hashing for power-of-two and non-power-of-two sizes", () => {
+    const referenceBits = (data: Uint8Array, numBits: number, hashCount: number): Uint8Array => {
+      const digest = sha256(data);
+      const view = new DataView(digest.buffer, digest.byteOffset, digest.byteLength);
+      const h1 = view.getBigUint64(0, true);
+      const h2 = view.getBigUint64(8, true);
+      const out = new Uint8Array(numBits / 8);
+      for (let i = 0n; i < BigInt(hashCount); i++) {
+        const bit = Number(((h1 + i * h2) & 0xffff_ffff_ffff_ffffn) % BigInt(numBits));
+        out[bit >>> 3] = (out[bit >>> 3]! | (1 << (bit & 7))) & 0xff;
+      }
+      return out;
+    };
+
+    for (const numBits of [DEFAULT_FILTER_SIZE_BITS, 240]) {
+      const f = BloomFilter.withParams(numBits, 5);
+      const key = makeNodeAddr(0xa5);
+      key[15] = 0x5a;
+      f.insertBytes(key);
+      expect(bytesEqual(f.asBytes(), referenceBits(key, numBits, 5))).toBe(true);
+      expect(f.containsBytes(key)).toBe(true);
+    }
+  });
+
+  it("compares filters accurately with equals()", () => {
+    const a = BloomFilter.empty();
+    const b = BloomFilter.empty();
+    expect(a.equals(b)).toBe(true);
+    a.insertBytes(makeNodeAddr(7));
+    expect(a.equals(b)).toBe(false);
+    b.insertBytes(makeNodeAddr(7));
+    expect(a.equals(b)).toBe(true);
+    expect(a.equals(BloomFilter.withParams(1024, DEFAULT_HASH_COUNT))).toBe(false);
+    expect(a.equals(BloomFilter.withParams(DEFAULT_FILTER_SIZE_BITS, 3))).toBe(false);
   });
 });
