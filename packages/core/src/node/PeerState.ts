@@ -45,6 +45,9 @@ export interface AdjacentPeer {
     reject: (err: Error) => void;
     confirmCarrier?: () => void;
   };
+  /** Last authenticated packet received over this link. The heartbeat sweep
+   *  reads this stamp; `undefined` on a peer that has never authenticated. */
+  lastAuthActivityMs?: number;
 }
 
 /** Return the peer's 16-byte NodeAddr, deriving and caching it once per pubkey. */
