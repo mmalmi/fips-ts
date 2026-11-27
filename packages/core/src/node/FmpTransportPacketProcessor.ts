@@ -185,6 +185,7 @@ export class FmpTransportPacketProcessor {
       replacedHandshake.resolve();
     }
     if (!wasEstablished) {
+      peer.lastAuthActivityMs = Date.now();
       this.cfg.emitPeer(peerEvent(peer, "connected"));
       this.replayPendingLookupsAfterEstablishment(peer, replySent);
     }
@@ -371,7 +372,10 @@ export class FmpTransportPacketProcessor {
       this.cfg.peers.set(transportAddressKey(peer.remoteAddr), peer);
       this.cfg.logger.info("FMP peer restart detected", peer.pubkeyHex);
     }
-    if (!wasEstablished) void this.confirmOutgoingHandshake(peer, remoteAddr);
+    if (!wasEstablished) {
+      peer.lastAuthActivityMs = Date.now();
+      void this.confirmOutgoingHandshake(peer, remoteAddr);
+    }
     this.cfg.logger.debug("fips msg2 handled", remoteAddr.transport, remoteAddr.addr);
   }
 
@@ -474,6 +478,10 @@ export class FmpTransportPacketProcessor {
     const { peer, link, promotePending } = match;
     this.cfg.assertPeerAllowed?.(peer.pubkey);
     const { msgType, payload } = receiveFmpLinkPacket(peer, link, packet, this.cfg.emitError);
+    // Any packet that passed authentication resets the link-dead stamp.
+    // Stamp after `receiveFmpLinkPacket` so a spoofed packet whose decrypt
+    // throws never reaches this line and never keeps a dead link alive.
+    peer.lastAuthActivityMs = Date.now();
     if (peer.link === link) peer.outgoingHandshake?.confirmCarrier?.();
     if (promotePending) {
       const previous = peer.link;

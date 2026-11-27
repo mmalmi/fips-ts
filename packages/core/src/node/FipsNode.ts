@@ -48,6 +48,10 @@ import { PeerAdmission } from "./PeerAdmission.js";
 const defaultRandom: RandomSource = { bytes: (n) => randomBytes(n) };
 const FMP_HANDSHAKE_RESEND_MS = 1_000;
 const FMP_HEARTBEAT_INTERVAL_MS = 5_000;
+// Matches the original FIPS daemon's `node.link_dead_timeout_secs` (default
+// and floor 30 s): an established link that has received nothing in this
+// long is torn down through the same path a transport-level disconnect takes.
+const FMP_LINK_DEAD_TIMEOUT_MS = 30_000;
 
 export class FipsNode {
   readonly identity: FipsIdentity;
@@ -708,6 +712,25 @@ export class FipsNode {
         this.emit("error", { err: err as Error, where: "send Heartbeat" });
       }
     }));
+    await this.sweepDeadLinks(nowMs);
+  }
+
+  // Sweep established peers whose last authenticated packet is older than the
+  // link-dead timeout. End each through the path a transport-level disconnect
+  // takes, so every map, route, tree and session index the peer sits in clears
+  // together. The near end also tells the transport the link is dead through
+  // `close` where it has one — a libp2p stream can be aborted while the
+  // opener's redial still runs over the connection it is carried on.
+  private async sweepDeadLinks(nowMs: number): Promise<void> {
+    for (const peer of [...this.peers.values()]) {
+      if (peer.link.state !== "established") continue;
+      const lastAuth = peer.lastAuthActivityMs;
+      if (lastAuth === undefined || nowMs - lastAuth < FMP_LINK_DEAD_TIMEOUT_MS) continue;
+      try {
+        await peer.transport.close?.(peer.remoteAddr);
+      } catch { /* already closed */ }
+      this.onTransportConn(peer.transport, { remoteAddr: peer.remoteAddr, state: "disconnected" });
+    }
   }
 }
 
