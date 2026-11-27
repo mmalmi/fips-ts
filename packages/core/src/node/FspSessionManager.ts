@@ -52,6 +52,7 @@ interface Session {
   previousFsp?: { fsp: FspSession; kBit: boolean; expiresAtMs: number };
   earlyEstablishedRecords?: Array<{ peer: AdjacentPeer; frame: Uint8Array }>;
   earlyEstablishedBytes?: number;
+  lastApplicationActivityMs: number;
   setupPromise?: Promise<void>;
   setupTimer?: ReturnType<typeof setTimeout>;
   setupResolve?: () => void;
@@ -83,6 +84,10 @@ interface FspSessionManagerConfig {
 }
 
 const FSP_REKEY_DRAIN_MS = 45_000;
+// Matches the original FIPS daemon's `node.session.idle_timeout_secs` (90 s):
+// an established session carrying no application data for this long is
+// removed. Receiver reports and other session control do not count.
+const FSP_SESSION_IDLE_TIMEOUT_MS = 90_000;
 const MAX_MISSING_SESSION_RECOVERIES = 64;
 const MISSING_SESSION_RETRY_MS = 15_000;
 const FSP_DEFAULT_PATH_MTU = 1_200;
@@ -158,13 +163,7 @@ export class FspSessionManager {
         this.rejectSessionSetup(session, nodeHex, new Error("remote FIPS peer restarted"));
         continue;
       }
-      this.closeSessionHandles(session);
-      this.sessions.delete(nodeHex);
-      this.cfg.emitSession({
-        remotePubkey: session.remotePubkeyHex ?? remotePubkeyHex,
-        state: "closed",
-        ...(session.fsp.peerId && { peerId: session.fsp.peerId }),
-      });
+      this.removeEstablishedSession(nodeHex, session);
     }
   }
 
@@ -176,6 +175,7 @@ export class FspSessionManager {
   }): Promise<void> {
     const session = await this.ensureSession(args.dst);
     const data: DataPacket = { srcPort: args.srcPort ?? 0, dstPort: args.dstPort, payload: args.payload };
+    session.lastApplicationActivityMs = Date.now();
     await this.sendEncryptedFrame(
       session,
       (flags) => session.fsp.encryptDatagram(data, flags),
@@ -185,6 +185,7 @@ export class FspSessionManager {
 
   async sendEndpointData(args: { dst: string; payload: Uint8Array }): Promise<void> {
     const session = await this.ensureSession(args.dst);
+    session.lastApplicationActivityMs = Date.now();
     await this.sendSessionMessage(session, FSP_MSG_ENDPOINT_DATA, args.payload);
   }
 
@@ -235,6 +236,7 @@ export class FspSessionManager {
 
   async sendReceiverReports(): Promise<void> {
     if (this.reportsSending) return;
+    this.sweepIdleSessions();
     if (this.sessions.size === 0) { this.syncReportTimer(); return; }
     this.reportsSending = true;
     try {
@@ -250,6 +252,15 @@ export class FspSessionManager {
       }));
     } finally {
       this.reportsSending = false;
+    }
+  }
+
+  private sweepIdleSessions(): void {
+    const nowMs = Date.now();
+    for (const [nodeHex, session] of [...this.sessions]) {
+      if (session.fsp.state !== "established") continue;
+      if (nowMs - session.lastApplicationActivityMs < FSP_SESSION_IDLE_TIMEOUT_MS) continue;
+      this.removeEstablishedSession(nodeHex, session);
     }
   }
 
@@ -437,10 +448,12 @@ export class FspSessionManager {
     if (result.msgType === FSP_MSG_DATA && result.data) {
       session.extensions ??= new FspExtensions();
       if (await session.extensions.receive(result.data, (payload) => this.sendExtension(session, payload))) return;
+      session.lastApplicationActivityMs = Date.now();
       await this.deliverDatagram(srcHex, peerId, result.data);
       return;
     }
     if (result.msgType === FSP_MSG_ENDPOINT_DATA && result.endpointData) {
+      session.lastApplicationActivityMs = Date.now();
       this.cfg.emitEndpointData({ peerId, src: srcHex, dst: this.localPubkeyHex, payload: result.endpointData });
     }
   }
@@ -544,12 +557,8 @@ export class FspSessionManager {
     } else {
       const next = this.createResponderSetup(fspFrame, srcNodeAddr);
       reply = next.reply;
-      session = {
-        remoteNodeAddr: new Uint8Array(srcNodeAddr),
-        remoteNodeHex: srcNodeHex,
-        fsp: next.fsp,
-        currentKBit: false,
-      };
+      session = { remoteNodeAddr: new Uint8Array(srcNodeAddr), remoteNodeHex: srcNodeHex,
+        fsp: next.fsp, currentKBit: false, lastApplicationActivityMs: Date.now() };
       this.sessions.set(srcNodeHex, session);
       this.syncReportTimer();
       this.cfg.emitSession({ remotePubkey: srcNodeHex, state: "establishing" });
@@ -702,7 +711,8 @@ export class FspSessionManager {
       localEpoch: this.localEpoch,
       strictClient: this.cfg.strictClient,
     });
-    const session: Session = { remoteNodeAddr, remoteNodeHex, remotePubkeyHex, remotePubkey, fsp, currentKBit: false };
+    const session: Session = { remoteNodeAddr, remoteNodeHex, remotePubkeyHex, remotePubkey,
+      fsp, currentKBit: false, lastApplicationActivityMs: Date.now() };
     this.sessions.set(remoteNodeHex, session);
     this.syncReportTimer();
     this.indexSession(session, remotePubkeyHex);
@@ -765,16 +775,17 @@ export class FspSessionManager {
   private rejectSessionSetup(session: Session, remoteNodeHex: string, error: Error): void {
     const reject = session.setupReject;
     this.clearSetupWaiter(session);
-    if (this.sessions.get(remoteNodeHex) === session) {
-      this.closeSessionHandles(session);
-      this.sessions.delete(remoteNodeHex);
-      this.cfg.emitSession({
-        remotePubkey: session.remotePubkeyHex ?? remoteNodeHex,
-        ...(session.fsp.peerId && { peerId: session.fsp.peerId }),
-        state: "closed",
-      });
-    }
+    if (this.sessions.get(remoteNodeHex) === session) this.removeEstablishedSession(remoteNodeHex, session);
     reject?.(error);
+  }
+
+  private removeEstablishedSession(nodeHex: string, session: Session): void {
+    this.closeSessionHandles(session);
+    this.sessions.delete(nodeHex);
+    this.cfg.emitSession({
+      remotePubkey: session.remotePubkeyHex ?? nodeHex, state: "closed",
+      ...(session.fsp.peerId && { peerId: session.fsp.peerId }),
+    });
   }
 
   private clearSetupWaiter(session: Session): void {
