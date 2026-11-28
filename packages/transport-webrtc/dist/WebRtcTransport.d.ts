@@ -58,7 +58,6 @@ export declare class WebRtcTransport implements Transport {
     private handleIncomingSignal;
     private handleDuplicateSignal;
     private processIncomingOffer;
-    private admitIncomingOffer;
     private handleIncomingOffer;
     private handleInboundConnectionState;
     private scheduleAutoReconnect;

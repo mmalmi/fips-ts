@@ -586,28 +586,28 @@ export class WebRtcTransport {
             cached.lastAttemptAtMs = Date.now();
         }
     }
-    async admitIncomingOffer(offer, remotePubkeyHex, cached) {
+    async handleIncomingOffer(offer, remotePubkeyHex, cached) {
         const context = this.ctx;
         if (this.pendingInbound.has(offer.negotiationId))
-            return { admitted: false };
+            return;
         const competingDial = [...this.pendingDials.values()].find((dial) => dial.remotePubkeyHex === remotePubkeyHex);
         if (!this.cfg.acceptConnections && !competingDial) {
             await this.rejectIncomingOffer(offer, remotePubkeyHex, cached);
-            return { admitted: false };
+            return;
         }
         const allowed = competingDial || !this.cfg.allowIncomingPeer || await this.cfg.allowIncomingPeer(remotePubkeyHex);
-        if (this.ctx !== context || !this.peerAllowed(remotePubkeyHex))
-            return { admitted: false };
+        if (this.stopping || this.ctx !== context || !this.peerAllowed(remotePubkeyHex))
+            return;
         if (!allowed || hasPendingInboundForPeer(this.pendingInbound.values(), remotePubkeyHex)) {
             await this.rejectIncomingOffer(offer, remotePubkeyHex, cached);
-            return { admitted: false };
+            return;
         }
         if (competingDial) {
             const retryOfRejected = isRetryOfRejectedOffer(competingDial, offer.negotiationId);
             if (!incomingOfferReplacesPendingDial(this.localPubkeyHex, remotePubkeyHex) && !retryOfRejected) {
                 competingDial.rejectedOfferId ??= offer.negotiationId;
                 await this.rejectIncomingOffer(offer, remotePubkeyHex, cached);
-                return { admitted: false };
+                return;
             }
             clearTimeout(competingDial.timer);
             cancelOfferRetry(competingDial);
@@ -619,15 +619,10 @@ export class WebRtcTransport {
         if (used >= this.cfg.maxConnections) {
             this.logger.warn("inbound WebRTC offer rejected at connection limit", remotePubkeyHex);
             await this.rejectIncomingOffer(offer, remotePubkeyHex, cached);
-            return { admitted: false };
-        }
-        return { admitted: true, competingDial };
-    }
-    async handleIncomingOffer(offer, remotePubkeyHex, cached) {
-        const context = this.ctx;
-        const { admitted, competingDial } = await this.admitIncomingOffer(offer, remotePubkeyHex, cached);
-        if (!admitted)
             return;
+        }
+        // Admission and the pending reservation must stay synchronous. Yielding here
+        // lets concurrent offers exceed the limit or create a connection after stop.
         const remoteAddr = { transport: "webrtc", addr: remotePubkeyHex };
         const pc = new this.RTCPC({ iceServers: this.cfg.stunServers.map((urls) => ({ urls })) });
         const timer = setTimeout(() => {

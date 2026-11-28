@@ -276,7 +276,7 @@ describe("FipsNode FMP handshake", () => {
     }
   }, 10_000);
 
-  it("keeps a replacement link when the retired startup epoch is replayed in either direction", async () => {
+  it.each([0, 1024])("keeps a replacement link when the retired startup epoch is replayed after %i other identities", async (historyChurn) => {
     const survivorIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x11));
     const restartedIdentity = await identityFromSecretKey(new Uint8Array(32).fill(0x12));
     const survivorTransport = new FlakyMemoryTransport();
@@ -319,6 +319,17 @@ describe("FipsNode FMP handshake", () => {
         expect(survivorPeer.link.role).toBe("responder");
         expect(survivorPeer.link.remoteEpoch).toEqual((replacement as any).startupEpoch);
 
+        // Simulate authenticated history churn after this active peer established.
+        // The replay below still goes through the real FMP handshake parser.
+        for (let i = 0; i < historyChurn; i += 1) {
+          (survivor as any).packetProcessor.rememberRemoteEpoch(
+            `retired-test-peer-${i}`,
+            new Uint8Array(8).fill(i & 0xff),
+          );
+        }
+
+        expect((survivor as any).packetProcessor.remoteEpochHistory.size).toBeLessThanOrEqual(1024);
+
         const replay = new FmpLink({
           identity: restartedIdentity,
           remotePubkey: survivorIdentity.publicKey,
@@ -336,6 +347,8 @@ describe("FipsNode FMP handshake", () => {
 
         expect(errors).toEqual([]);
         expect(survivorPeer.pendingResponderLink).toBeUndefined();
+        expect(survivorPeer.link.state).toBe("established");
+        expect((survivor as any).peersByPubkey.get(toHex(restartedIdentity.publicKey))).toBe(survivorPeer);
         expect(survivorPeer.link.remoteEpoch).toEqual((replacement as any).startupEpoch);
 
         const staleOutbound = new FmpLink({

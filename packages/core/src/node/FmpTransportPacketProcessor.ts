@@ -563,11 +563,16 @@ export class FmpTransportPacketProcessor {
       if (history.length > FMP_REMOTE_EPOCH_HISTORY_LIMIT) history.shift();
     }
     this.remoteEpochHistory.delete(remotePubkeyHex);
-    if (this.remoteEpochHistory.size >= MAX_REMOTE_EPOCH_PEERS) {
-      const oldest = this.remoteEpochHistory.keys().next().value as string | undefined;
-      if (oldest !== undefined) this.remoteEpochHistory.delete(oldest);
-    }
     this.remoteEpochHistory.set(remotePubkeyHex, history);
+    if (this.remoteEpochHistory.size > MAX_REMOTE_EPOCH_PEERS) {
+      // Keep replay protection for active peers. Inactive history stays bounded;
+      // active identities may exceed the cache target only while still indexed.
+      for (const candidate of this.remoteEpochHistory.keys()) {
+        if (this.cfg.peersByPubkey.has(candidate)) continue;
+        this.remoteEpochHistory.delete(candidate);
+        if (this.remoteEpochHistory.size <= MAX_REMOTE_EPOCH_PEERS) break;
+      }
+    }
   }
 
   private isRetiredRemoteEpoch(remotePubkeyHex: string, epoch: Uint8Array): boolean {

@@ -6,6 +6,35 @@ package's core archive URL in the same release cohort. The workspace overrides
 resolve core locally during qualification; the published packages retain their
 versioned public core URL.
 
+## Runtime 67 qualification
+
+The runtime-v0.0.67 cohort contains core 0.0.62, browser 0.0.27,
+Ethernet 0.0.44, Memory 0.0.22, WebRTC 0.0.66 and WebSocket 0.0.20.
+
+Two corrections follow review of the runtime 64 and 65 production changes:
+
+- Inbound WebRTC offers reserve capacity without an intervening asynchronous
+  yield. Concurrent offers cannot exceed the connection limit, and an awaited
+  authorization cannot construct a connection after shutdown has begun.
+- Retired FMP startup epochs remain remembered for indexed active peers, so
+  history churn cannot make a replay close a healthy replacement link. Each
+  identity retains at most eight epochs. Inactive history stays bounded; total
+  history may exceed the 1,024-entry target while more identities remain active.
+
+The 64-hop discovery setting is retained. These corrections preserve the wire
+format, identity checks and peer-authorization policy.
+
+Use the pinned runtime 60 macOS tools and unchanged lockfile. Run all five unit
+suites, including concurrent admission/shutdown and real retired-epoch replay
+checks. Typecheck core, the transports and demo. Rebuild core and all dependent
+packages, repeat compilation and compare every generated file. Run all Chromium
+browser cases with the retained, hash-bound `FIPS_RS_FIXTURE_BIN` explicitly set;
+no fixture rebuild or download is implicit. Keep source and generated files
+unchanged while the browser server runs. Inspect every member and import the
+entrypoint of all six packed archives. Complete the unchanged source, full-history
+and public-byte gates below. Opt-in native unit skips remain explicit; browser
+interoperability is a diagnostic fixture check, not native-device qualification.
+
 ## Runtime 66 qualification
 
 The runtime-v0.0.66 cohort contains core 0.0.61, browser 0.0.26,
